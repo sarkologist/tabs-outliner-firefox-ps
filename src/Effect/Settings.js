@@ -48,7 +48,9 @@ export const setShortcuts = (obj) => () => {
 
 export const onShortcut = (handle) => () => {
   document.addEventListener("keydown", (e) => {
-    if (editableTarget(e.target) || isModifier(e.key)) return;
+    // ignore auto-repeat (held key): one keypress = one action, so holding "e"
+    // can't fire a stream of exports/imports/new-groups
+    if (e.repeat || editableTarget(e.target) || isModifier(e.key)) return;
     if (handle(comboOf(e))()) e.preventDefault();
   });
 };

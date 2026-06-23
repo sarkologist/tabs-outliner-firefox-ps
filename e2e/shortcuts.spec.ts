@@ -73,6 +73,21 @@ test.describe("sidebar keyboard shortcuts", () => {
     await expect(groupRows(page)).toHaveCount(0);
   });
 
+  test("auto-repeat (held key) does not re-fire a shortcut", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    await blur(page);
+    // a repeat keydown (as the browser sends while a key is held) is ignored
+    await page.evaluate(() =>
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "n", repeat: true, bubbles: true }))
+    );
+    await page.waitForTimeout(300);
+    await expect(groupRows(page)).toHaveCount(0);
+    // a normal (non-repeat) press still works
+    await page.keyboard.press("n");
+    await expect(groupRows(page)).toHaveCount(1);
+  });
+
   test("a user override re-binds a command, picked up live (no reload)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
