@@ -1,0 +1,22 @@
+:root {
+  --row-h: 22px;
+  --indent: 14px;
+  --fg: #1a1a1a;
+  --muted: #888;
+  --bg: #ffffff;
+  --hover: #eef3ff;
+  --accent: #2563eb;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 system-ui, -apple-system, sans-serif;
+}
+
+body {
+  padding: 6px;
+}

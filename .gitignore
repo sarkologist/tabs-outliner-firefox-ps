@@ -1,0 +1,11 @@
+node_modules/
+dist/
+output/
+.spago/
+.psc-package/
+test-results/
+playwright-report/
+*.log
+.DS_Store
+.purs-repl
+.spec-results

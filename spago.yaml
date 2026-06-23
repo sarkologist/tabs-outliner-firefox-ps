@@ -1,0 +1,36 @@
+package:
+  name: tabs-outliner
+  dependencies:
+    - aff
+    - aff-promise
+    - argonaut-codecs
+    - argonaut-core
+    - arrays
+    - console
+    - effect
+    - either
+    - foldable-traversable
+    - halogen
+    - integers
+    - maybe
+    - now
+    - ordered-collections
+    - prelude
+    - refs
+    - strings
+    - transformers
+    - tuples
+    - web-dom
+    - web-events
+    - web-html
+  test:
+    main: Test.Main
+    dependencies:
+      - quickcheck
+      - spec
+      - spec-node
+      - spec-quickcheck
+workspace:
+  packageSet:
+    registry: 77.8.0
+  extraPackages: {}

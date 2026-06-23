@@ -1,0 +1,26 @@
+{
+  "name": "tabs-outliner-rewrite",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ps:build": "spago build",
+    "ps:test": "spago test",
+    "bundle": "node scripts/bundle.mjs",
+    "copy-static": "node scripts/copy-static.mjs",
+    "build": "spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs",
+    "test": "spago test",
+    "test:e2e": "playwright test",
+    "check": "spago test && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0",
+    "esbuild": "^0.28.1",
+    "purescript": "0.15.15",
+    "spago": "^1.0.4",
+    "web-ext": "^10.4.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["purescript", "spago", "esbuild"]
+  }
+}
