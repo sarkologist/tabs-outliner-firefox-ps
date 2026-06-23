@@ -11,7 +11,7 @@ import Data.Array as Array
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Model.Event (BrowserEvent(..), OpenedTab)
-import Model.Tree (applyPatch, insertAtClamped, moveWithin, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, liveTabNode, liveWindowNode, moveWithin, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), Step, defaultNode, emptyPatch)
 
 mkId :: Int -> NodeId
@@ -25,11 +25,9 @@ commit :: Int -> Patch -> Model -> Step
 commit nextId patch model = { model: (applyPatch patch model) { nextId = nextId }, patch }
 
 withTab :: Int -> Model -> (NodeId -> Node -> Step) -> Step
-withTab tabId model f = case Map.lookup tabId model.byTab of
+withTab tabId model f = case liveTabNode tabId model of
   Nothing -> noop model
-  Just nid -> case Map.lookup nid model.nodes of
-    Nothing -> noop model
-    Just n -> f nid n
+  Just n -> f n.id n
 
 -- | The window node id for a browser window, reusing an existing node or
 -- | producing a fresh (not-yet-inserted) one. Callers fold `winNode` into their
@@ -39,13 +37,8 @@ resolveWindow
   -> Int
   -> Model
   -> { winId :: NodeId, winNode :: Node, isNew :: Boolean, nextId :: Int }
-resolveWindow now windowId model = case Map.lookup windowId model.byWindow of
-  Just nid ->
-    { winId: nid
-    , winNode: fromMaybe (defaultNode nid KWindow now) (Map.lookup nid model.nodes)
-    , isNew: false
-    , nextId: model.nextId
-    }
+resolveWindow now windowId model = case liveWindowNode windowId model of
+  Just n -> { winId: n.id, winNode: n, isNew: false, nextId: model.nextId }
   Nothing ->
     let
       nid = mkId model.nextId
@@ -106,15 +99,19 @@ applyBrowser now ev model = case ev of
 
   TabAttached a -> attachTab now a.tabId a.windowId a.index model
 
--- | Flip one node (and, via callers, its descendants) to Closed history.
+-- | Flip one node (and, via callers, its descendants) to Closed history. Groups
+-- | are user annotations with no browser state, so they stay Live even inside a
+-- | closed window subtree.
 closeNode :: Number -> Node -> Node
-closeNode now n = n
-  { status = Closed
-  , tabId = Nothing
-  , windowId = Nothing
-  , active = false
-  , closedAt = Just now
-  }
+closeNode now n = case n.kind of
+  KGroup -> n
+  _ -> n
+    { status = Closed
+    , tabId = Nothing
+    , windowId = Nothing
+    , active = false
+    , closedAt = Just now
+    }
 
 orElse :: Maybe String -> Maybe String -> Maybe String
 orElse old new = case new of
@@ -122,7 +119,7 @@ orElse old new = case new of
   Nothing -> old
 
 openTab :: Number -> OpenedTab -> Model -> Step
-openTab now t model = case Map.lookup t.tabId model.byTab of
+openTab now t model = case liveTabNode t.tabId model of
   Just _ -> noop model -- already tracking this browser tab; ignore duplicate
   Nothing -> case t.url >>= \u -> Map.lookup u model.pendingRestore of
     Just nid | Just n <- Map.lookup nid model.nodes -> rebindRestored now t nid n model
@@ -169,22 +166,20 @@ rebindRestored _ t _ n model =
     commit model'.nextId patch model'
 
 activateTab :: Int -> Int -> Model -> Step
-activateTab tabId windowId model = case Map.lookup tabId model.byTab of
+activateTab tabId windowId model = case liveTabNode tabId model of
   Nothing -> noop model
-  Just nid -> case Map.lookup nid model.nodes of
-    Nothing -> noop model
-    Just n ->
-      let
-        winChildren = case Map.lookup windowId model.byWindow >>= \wid -> Map.lookup wid model.nodes of
-          Just w -> w.children
-          Nothing -> []
-        deact = Array.mapMaybe deactivate winChildren
-        deactivate cid = case Map.lookup cid model.nodes of
-          Just c | c.active, c.id /= nid -> Just (c { active = false })
-          _ -> Nothing
-        patch = { upserts: deact <> [ n { active = true } ], removes: [], roots: Nothing }
-      in
-        commit model.nextId patch model
+  Just n ->
+    let
+      winChildren = case liveWindowNode windowId model of
+        Just w -> w.children
+        Nothing -> []
+      deact = Array.mapMaybe deactivate winChildren
+      deactivate cid = case Map.lookup cid model.nodes of
+        Just c | c.active, c.id /= n.id -> Just (c { active = false })
+        _ -> Nothing
+      patch = { upserts: deact <> [ n { active = true } ], removes: [], roots: Nothing }
+    in
+      commit model.nextId patch model
 
 attachTab :: Number -> Int -> Int -> Int -> Model -> Step
 attachTab now tabId windowId index model = withTab tabId model \nid n ->

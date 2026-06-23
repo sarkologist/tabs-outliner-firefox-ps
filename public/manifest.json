@@ -3,7 +3,10 @@
   "name": "Tabs Outliner",
   "version": "0.1.0",
   "description": "A durable sidebar outline of live and recently-closed tabs.",
-  "permissions": ["tabs", "storage", "unlimitedStorage", "sessions"],
+  "permissions": ["tabs", "storage", "unlimitedStorage"],
+  "background": {
+    "scripts": ["background/background.js"]
+  },
   "sidebar_action": {
     "default_title": "Tabs Outliner",
     "default_panel": "sidebar/sidebar.html"

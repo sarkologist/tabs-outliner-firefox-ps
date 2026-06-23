@@ -3,6 +3,7 @@ module Test.Main where
 import Prelude
 
 import Effect (Effect)
+import Test.Model.CommandSpec as CommandSpec
 import Test.Model.GuardSpec as GuardSpec
 import Test.Model.ReconcileSpec as ReconcileSpec
 import Test.Model.TreeSpec as TreeSpec
@@ -16,4 +17,5 @@ main :: Effect Unit
 main = runSpecAndExitProcess [ consoleReporter ] do
   TreeSpec.spec
   ReconcileSpec.spec
+  CommandSpec.spec
   GuardSpec.spec

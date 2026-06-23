@@ -1,11 +1,11 @@
 :root {
-  --row-h: 22px;
   --indent: 14px;
   --fg: #1a1a1a;
-  --muted: #888;
+  --muted: #9aa0a6;
   --bg: #ffffff;
   --hover: #eef3ff;
   --accent: #2563eb;
+  --font-scale: 1;
 }
 
 html,
@@ -14,9 +14,80 @@ body {
   padding: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 13px/1.4 system-ui, -apple-system, sans-serif;
+  font: calc(13px * var(--font-scale)) / 1.4 system-ui, -apple-system, sans-serif;
 }
 
-body {
-  padding: 6px;
+#app {
+  padding: 4px 0;
+}
+
+#toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #eee;
+}
+
+#toolbar button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  white-space: nowrap;
+}
+
+.row:hover {
+  background: var(--hover);
+}
+
+.toggle,
+.spacer {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  flex: none;
+}
+
+.title {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+}
+
+.row.closed .title {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.rename-input {
+  flex: 1 1 auto;
+  font: inherit;
+}
+
+.row button {
+  opacity: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 11px;
+  flex: none;
+}
+
+.row:hover button {
+  opacity: 1;
+}
+
+.row button:hover {
+  color: var(--accent);
 }

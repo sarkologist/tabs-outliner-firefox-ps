@@ -9,11 +9,12 @@ import Prelude
 import Data.Argonaut.Core (Json)
 import Data.Argonaut.Encode (encodeJson)
 import Data.Array (concatMap, fromFoldable)
+import Data.Array as Array
 import Data.DateTime.Instant (unInstant)
 import Data.Either (Either(..))
 import Data.Foldable (foldl, traverse_)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isNothing)
 import Data.Newtype (unwrap)
 import Effect (Effect)
 import Effect.Aff (Aff, launchAff_)
@@ -28,6 +29,7 @@ import Model.Codec (encodePatch, encodeSnapshot)
 import Model.Command (BrowserAction(..), Request(..), applyCommand, decodeRequest)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
+import Model.Types (Patch)
 
 nowMs :: Effect Number
 nowMs = (unwrap <<< unInstant) <$> now
@@ -63,21 +65,24 @@ main = launchAff_ do
   ref <- liftEffect (Ref.new seeded)
 
   let
+    -- ATOMICITY: read -> applyX -> write is fully synchronous (no `await`
+    -- between them), and Aff fibers are cooperatively scheduled, so two
+    -- concurrent inputs can never interleave their read/compute/write. The
+    -- first suspension point is the persist below. Keep it that way.
     dispatch :: BrowserEvent -> Aff Unit
     dispatch ev = do
       t <- liftEffect nowMs
       m <- liftEffect (Ref.read ref)
       let s = applyBrowser t ev m
       liftEffect (Ref.write s.model ref)
-      Persist.writePatch db s.patch
-      liftEffect (Channel.broadcast api (encodePatch s.patch))
+      persistAndBroadcast api db s.patch
 
   -- Live browser events.
   liftEffect $ Browser.subscribe api \ev -> launchAff_ (dispatch ev)
 
   -- Serve the sidebar: snapshot requests and commands. A command applies,
   -- persists, broadcasts the patch to every sidebar, and runs its browser
-  -- actions (focus/create/remove/restore).
+  -- actions (focus/create/remove).
   liftEffect $ Channel.onRequest api \reqJson -> do
     m <- liftEffect (Ref.read ref)
     case decodeRequest reqJson of
@@ -86,18 +91,26 @@ main = launchAff_ do
         t <- liftEffect nowMs
         let r = applyCommand t cmd m
         liftEffect (Ref.write r.model ref)
-        Persist.writePatch db r.patch
-        liftEffect (Channel.broadcast api (encodePatch r.patch))
+        persistAndBroadcast api db r.patch
         traverse_ (runAction api) r.actions
         pure ackJson
       Left _ -> pure (encodeSnapshot m)
+
+-- Persist + broadcast a patch, skipping the no-op patches that focus/close/
+-- restore commands and ignored events produce (no IDB tx, no message).
+persistAndBroadcast :: BrowserApi -> Persist.Db -> Patch -> Aff Unit
+persistAndBroadcast api db patch = unless (isEmptyPatch patch) do
+  Persist.writePatch db patch
+  liftEffect (Channel.broadcast api (encodePatch patch))
+
+isEmptyPatch :: Patch -> Boolean
+isEmptyPatch p = Array.null p.upserts && Array.null p.removes && isNothing p.roots
 
 ackJson :: Json
 ackJson = encodeJson { ok: true }
 
 runAction :: BrowserApi -> BrowserAction -> Aff Unit
 runAction api = case _ of
-  FocusTab w t -> Browser.focusTab api w t
+  FocusTab t -> Browser.focusTab api t
   CreateTab w u -> Browser.createTab api w u
   RemoveTab t -> Browser.removeTab api t
-  RestoreSession s -> Browser.restoreSession api s

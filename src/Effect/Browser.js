@@ -57,9 +57,11 @@ export const subscribeImpl = (api) => (sink) => () => {
   w.onRemoved.addListener((winId) => sink.windowClosed(winId)());
 };
 
-export const focusTabImpl = (api) => (windowId) => (tabId) => () =>
+export const focusTabImpl = (api) => (tabId) => () =>
   Promise.resolve(api.tabs.update(tabId, { active: true })).then(() =>
-    api.windows.update(windowId, { focused: true })
+    Promise.resolve(api.tabs.get(tabId)).then((t) =>
+      t ? api.windows.update(t.windowId, { focused: true }) : undefined
+    )
   );
 
 export const createTabImpl = (api) => (windowId) => (url) => () => {
@@ -71,6 +73,3 @@ export const createTabImpl = (api) => (windowId) => (url) => () => {
 
 export const removeTabImpl = (api) => (tabId) => () =>
   Promise.resolve(api.tabs.remove(tabId));
-
-export const restoreSessionImpl = (api) => (sessionId) => () =>
-  Promise.resolve(api.sessions.restore(sessionId));

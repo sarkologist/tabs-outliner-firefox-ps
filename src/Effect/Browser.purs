@@ -11,7 +11,6 @@ module Effect.Browser
   , focusTab
   , createTab
   , removeTab
-  , restoreSession
   ) where
 
 import Prelude
@@ -122,19 +121,16 @@ subscribe api handle = subscribeImpl api
   , windowClosed: \w -> handle (WindowClosed { windowId: w })
   }
 
-foreign import focusTabImpl :: BrowserApi -> Int -> Int -> Effect (Promise Unit)
+foreign import focusTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 foreign import createTabImpl :: BrowserApi -> Nullable Int -> Nullable String -> Effect (Promise Unit)
 foreign import removeTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
-foreign import restoreSessionImpl :: BrowserApi -> String -> Effect (Promise Unit)
 
-focusTab :: BrowserApi -> Int -> Int -> Aff Unit
-focusTab api windowId tabId = toAffE (focusTabImpl api windowId tabId)
+-- | Activate a tab and focus its window (the FFI resolves the window from the tab).
+focusTab :: BrowserApi -> Int -> Aff Unit
+focusTab api tabId = toAffE (focusTabImpl api tabId)
 
 createTab :: BrowserApi -> Maybe Int -> Maybe String -> Aff Unit
 createTab api windowId url = toAffE (createTabImpl api (toNullable windowId) (toNullable url))
 
 removeTab :: BrowserApi -> Int -> Aff Unit
 removeTab api tabId = toAffE (removeTabImpl api tabId)
-
-restoreSession :: BrowserApi -> String -> Aff Unit
-restoreSession api sessionId = toAffE (restoreSessionImpl api sessionId)

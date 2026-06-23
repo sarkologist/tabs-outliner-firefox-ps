@@ -31,10 +31,15 @@ instance showStatus :: Show Status where
   show Live = "Live"
   show Closed = "Closed"
 
--- | One node. `tabId`/`windowId` are the *browser* ids this node is bound to
--- | while Live (Nothing once Closed). The tree is the source of truth for
+-- | One node. `tabId` is set only on Live KTab nodes; `windowId` only on Live
+-- | KWindow nodes (Nothing once Closed). The tree is the source of truth for
 -- | structure; these bindings are how live browser events find their node in
 -- | O(1) (via the Model indexes).
+-- |
+-- | `children` is the ordered child list owned by the parent. A structural edit
+-- | (open/move/delete a child) rewrites and persists that one list, so it costs
+-- | O(siblings of the touched node) — bounded by a window's tab count, never
+-- | O(total nodes). That is the deliberate trade for a dead-simple model.
 type Node =
   { id :: NodeId
   , kind :: Kind

@@ -26,7 +26,8 @@
             "tuples",
             "web-dom",
             "web-events",
-            "web-html"
+            "web-html",
+            "web-uievents"
           ]
         },
         "test": {

@@ -75,14 +75,21 @@ export function installFakeBrowser(seed: Seed) {
             tabs: opts.populate ? w.tabIds.map((id) => tabInfo(tabs.get(id))) : undefined,
           }))
         ),
-      update: () => Promise.resolve({}),
+      update: (id: number, props: any) => {
+        if (props && props.focused) driver.winFocusLog.push(id);
+        return Promise.resolve({});
+      },
       onCreated: ev.winCreated,
       onRemoved: ev.winRemoved,
     },
     tabs: {
+      get: (id: number) => Promise.resolve(tabs.has(id) ? tabInfo(tabs.get(id)) : undefined),
       update: (id: number, props: any) => {
         const t = tabs.get(id);
-        if (t && props && props.active) driver.activateTab(id);
+        if (t && props && props.active) {
+          driver.focusLog.push(id);
+          driver.activateTab(id);
+        }
         return Promise.resolve(t ? tabInfo(t) : {});
       },
       create: (props: any) => {
@@ -118,7 +125,9 @@ export function installFakeBrowser(seed: Seed) {
     return [...wins.keys()][0];
   }
 
-  const driver = {
+  const driver: any = {
+    focusLog: [] as number[],
+    winFocusLog: [] as number[],
     openWindow: (id: number) => {
       if (!wins.has(id)) wins.set(id, { id, tabIds: [] });
       ev.winCreated._emit({ id });

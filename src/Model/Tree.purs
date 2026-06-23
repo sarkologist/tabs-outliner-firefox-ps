@@ -48,12 +48,31 @@ isLive n = case n.status of
 lookupNode :: NodeId -> Model -> Maybe Node
 lookupNode id model = Map.lookup id model.nodes
 
--- | The window node id a live tab id is bound to, if any.
-windowNodeOf :: Int -> Model -> Maybe NodeId
-windowNodeOf w model = Map.lookup w model.byWindow
+-- | The LIVE tab node currently bound to browser tab id `t`, validating the
+-- | index hit against the node's actual binding. This is what lets `applyPatch`
+-- | leave stale `byTab`/`byWindow` entries in place (they are simply ignored):
+-- | a reused browser id will not resurrect a closed/rebound node.
+liveTabNode :: Int -> Model -> Maybe Node
+liveTabNode t model = do
+  nid <- Map.lookup t model.byTab
+  n <- Map.lookup nid model.nodes
+  if n.tabId == Just t && isLive n then Just n else Nothing
 
-tabNodeOf :: Int -> Model -> Maybe NodeId
-tabNodeOf t model = Map.lookup t model.byTab
+liveWindowNode :: Int -> Model -> Maybe Node
+liveWindowNode w model = do
+  nid <- Map.lookup w model.byWindow
+  n <- Map.lookup nid model.nodes
+  if n.windowId == Just w && isLive n then Just n else Nothing
+
+-- | Is `ancestor` an ancestor of (or equal to) `start`? Walks parent links
+-- | upward — O(depth), not O(subtree). Used for move cycle-detection.
+isAncestorOrSelf :: NodeId -> NodeId -> Model -> Boolean
+isAncestorOrSelf ancestor start model = go (Just start)
+  where
+  go Nothing = false
+  go (Just cur)
+    | cur == ancestor = true
+    | otherwise = go (Map.lookup cur model.nodes >>= _.parent)
 
 type Entry = { id :: NodeId, depth :: Int }
 

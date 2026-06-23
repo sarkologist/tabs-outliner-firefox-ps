@@ -95,6 +95,17 @@ spec = describe "Model.Reconcile" do
     (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Closed
     (_.status <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Closed
 
+  it "a reused browser tab id creates a fresh node (no stale-index no-op)" do
+    let
+      m = runEvents
+        [ openTab 11 1 0 "A" true -- n2 bound to tab 11
+        , TabClosed { tabId: 11 } -- byTab[11] now points at a closed node (stale)
+        , openTab 11 1 0 "C" true -- browser reuses id 11 for a brand-new tab
+        ]
+    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Closed
+    (_.status <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Live
+    Map.lookup 11 m.byTab `shouldEqual` Just "n3"
+
   describe "patch is O(change)" do
     it "a tab change touches exactly one node" do
       let
