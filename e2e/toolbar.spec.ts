@@ -1,6 +1,23 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { bootBackgroundAndSidebar } from "./support/harness";
+
+const REAL_EXPORT = "/Users/sark/code/tabs-outliner/tabs-outliner-tree-2026-06-12.json";
+
+const countNodes = (page: Page) =>
+  page.evaluate(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const req = indexedDB.open("tabs-outliner", 1);
+        req.onsuccess = () => {
+          const c = req.result.transaction("nodes", "readonly").objectStore("nodes").count();
+          c.onsuccess = () => resolve(c.result);
+          c.onerror = () => reject(c.error);
+        };
+        req.onerror = () => reject(req.error);
+      })
+  );
 
 const seed = {
   windows: [
@@ -93,5 +110,55 @@ test.describe("toolbar", () => {
     await expect(page.getByText("ImportedGroup")).toBeVisible();
     // the imported tab is inert (closed), not a live tab
     await expect(page.locator('[data-status="closed"]').filter({ hasText: "ImportedTab" })).toBeVisible();
+  });
+
+  test("import accepts the original's nested portable-tree format", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    const portable = JSON.stringify({
+      schema: "tabs-outliner-tree",
+      version: 1,
+      roots: [
+        { kind: "window", title: "OrigGroup", children: [{ kind: "tab", title: "OrigTab", url: "http://orig", children: [] }] },
+      ],
+    });
+    page.on("filechooser", (fc) =>
+      fc.setFiles({ name: "tree.json", mimeType: "application/json", buffer: Buffer.from(portable) })
+    );
+    await page.locator("#import").click();
+    await expect(page.getByText("OrigGroup")).toBeVisible();
+    // imported folders come in collapsed (a real export is huge); expand to see the tab
+    await page.locator(".row", { hasText: "OrigGroup" }).locator(".toggle").click();
+    await expect(page.locator('[data-status="closed"]').filter({ hasText: "OrigTab" })).toBeVisible();
+  });
+
+  test("imports a real ~26k-node portable export without choking", async ({ page }) => {
+    test.skip(!existsSync(REAL_EXPORT), "real export file not present on this machine");
+    test.setTimeout(90_000);
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    const buffer = await readFile(REAL_EXPORT);
+    page.on("filechooser", (fc) => fc.setFiles({ name: "tree.json", mimeType: "application/json", buffer }));
+    await page.locator("#import").click();
+    // the whole tree persists (3 seeded + 26061 imported)
+    await expect.poll(() => countNodes(page), { timeout: 60_000 }).toBeGreaterThan(26_000);
+    await expect(page.locator("#notice")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test("import shows a notice on an unrecognized file (no silent failure)", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    page.on("filechooser", (fc) =>
+      fc.setFiles({ name: "junk.json", mimeType: "application/json", buffer: Buffer.from('{"foo":1}') })
+    );
+    await page.locator("#import").click();
+    await expect(page.locator("#notice")).toBeVisible();
+    await expect(page.locator("#notice")).toContainText("unrecognized format");
+    // dismissable
+    await page.locator("#notice").click();
+    await expect(page.locator("#notice")).toHaveCount(0);
   });
 });

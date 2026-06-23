@@ -32,6 +32,7 @@ import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Model.Codec (Snapshot, decodePatch, decodeSnapshot, encodeSnapshot)
 import Model.Command (Command(..), Request(..), encodeRequest)
+import Model.PortableImport (portableToSnapshot)
 import Model.Tree (applyPatch, searchVisible, visible)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), displayTitle, emptyModel)
 import Web.UIEvent.KeyboardEvent (key)
@@ -56,6 +57,7 @@ type State =
   , dragId :: Maybe NodeId
   , query :: String
   , zoom :: Number
+  , notice :: Maybe String
   , listener :: Maybe (HS.Listener Action)
   }
 
@@ -81,11 +83,12 @@ data Action
   | ExportClick
   | ImportClick
   | ImportLoaded String
+  | ClearNotice
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, query: "", zoom: 1.0, listener: Nothing }
+      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, query: "", zoom: 1.0, notice: Nothing, listener: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
   }
@@ -151,13 +154,17 @@ handleAction = case _ of
     st <- H.get
     H.liftEffect (downloadJson "tabs-outliner.json" (stringify (encodeSnapshot st.model)))
   ImportClick -> do
+    H.modify_ _ { notice = Nothing }
     st <- H.get
     case st.listener of
       Just l -> H.liftEffect (pickJson (\text -> HS.notify l (ImportLoaded text)))
       Nothing -> pure unit
-  ImportLoaded text -> case jsonParser text >>= decodeSnapshot of
-    Right snap -> sendCommand (Import snap)
-    Left _ -> pure unit
+  ImportLoaded text -> case parseImport text of
+    Right snap -> do
+      H.modify_ _ { notice = Nothing }
+      sendCommand (Import snap)
+    Left msg -> H.modify_ _ { notice = Just msg }
+  ClearNotice -> H.modify_ _ { notice = Nothing }
 
 dropCommand :: NodeId -> Node -> Model -> Command
 dropCommand dragId target model = case target.kind of
@@ -188,23 +195,40 @@ requestSnapshot api n = do
       delay (Milliseconds 50.0)
       requestSnapshot api (n - 1)
 
+-- Accept our own flat export OR the original's nested portable-tree export.
+parseImport :: String -> Either String Snapshot
+parseImport text = case jsonParser text of
+  Left _ -> Left "Import failed: that file isn't valid JSON."
+  Right json -> case decodeSnapshot json of
+    Right snap -> Right snap
+    Left _ -> case portableToSnapshot json of
+      Just snap -> Right snap
+      Nothing -> Left "Import failed: unrecognized format (expected this app's export or a Tab Session Outliner portable tree)."
+
 render :: State -> H.ComponentHTML Action () Aff
 render st =
   HH.div [ HP.id "app", HP.style ("--font-scale:" <> show st.zoom) ]
-    [ HH.div [ HP.id "toolbar" ]
-        [ HH.input
-            [ HP.id "search", HP.placeholder "Search", HP.value st.query, HE.onValueInput SetQuery ]
-        , tbtn "zoom-out" "A-" (Zoom (1.0 / 1.1))
-        , tbtn "zoom-in" "A+" (Zoom 1.1)
-        , tbtn "new-group" "New group" NewGroupTop
-        , tbtn "export" "Export" ExportClick
-        , tbtn "import" "Import" ImportClick
-        ]
-    , HK.div [ HP.id "tree", HP.attr (AttrName "role") "tree" ] (map (row st) entries)
-    ]
+    ( [ HH.div [ HP.id "toolbar" ]
+          [ HH.input
+              [ HP.id "search", HP.placeholder "Search", HP.value st.query, HE.onValueInput SetQuery ]
+          , tbtn "zoom-out" "A-" (Zoom (1.0 / 1.1))
+          , tbtn "zoom-in" "A+" (Zoom 1.1)
+          , tbtn "new-group" "New group" NewGroupTop
+          , tbtn "export" "Export" ExportClick
+          , tbtn "import" "Import" ImportClick
+          ]
+      ]
+        <> noticeBanner st.notice
+        <> [ HK.div [ HP.id "tree", HP.attr (AttrName "role") "tree" ] (map (row st) entries) ]
+    )
   where
   entries = if st.query == "" then visible st.model else searchVisible st.query st.model
   tbtn i label act = HH.button [ HP.id i, HE.onClick \_ -> act ] [ HH.text label ]
+
+noticeBanner :: Maybe String -> Array (H.ComponentHTML Action () Aff)
+noticeBanner = case _ of
+  Nothing -> []
+  Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
 row :: State -> { id :: NodeId, depth :: Int } -> Tuple String (H.ComponentHTML Action () Aff)
 row st { id, depth } = Tuple id $ case Map.lookup id st.model.nodes of

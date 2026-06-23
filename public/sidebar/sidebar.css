@@ -42,6 +42,16 @@ body {
   padding: 1px 4px;
 }
 
+#notice {
+  margin: 4px 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: #fde2e1;
+  color: #8a1c1c;
+  cursor: pointer;
+  font-size: 12px;
+}
+
 .row {
   display: flex;
   align-items: center;
