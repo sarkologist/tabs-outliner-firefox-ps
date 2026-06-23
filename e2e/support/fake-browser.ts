@@ -21,6 +21,30 @@ export function installFakeBrowser(seed: Seed) {
   let tabSeq = 100000;
   let winSeq = 900000;
 
+  // WebExtensions commands API state (only the sidebar-toggle command we ship).
+  const commandShortcuts = [
+    { name: "_execute_sidebar_action", shortcut: "Ctrl+Shift+Y", _default: "Ctrl+Shift+Y" },
+  ];
+  // Mirror Firefox's commands grammar closely enough that the e2e can't pass for
+  // shortcuts real Firefox would reject.
+  const validateShortcut = (s: string) => {
+    const parts = String(s).split("+");
+    const key = parts[parts.length - 1];
+    const mods = parts.slice(0, -1);
+    const primary = ["Ctrl", "Alt", "Command", "MacCtrl"];
+    const named = ["Comma", "Period", "Space", "Home", "End", "PageUp", "PageDown", "Insert", "Delete", "Up", "Down", "Left", "Right"];
+    const fkey = /^F([1-9]|1[0-9])$/.test(key); // F1..F19
+    // a couple of browser-reserved combos, so the rejection path is exercisable
+    const reserved = ["Ctrl+Shift+Q", "Command+Shift+Q", "MacCtrl+Shift+Q"];
+    if (reserved.includes(s)) return "This shortcut is reserved by the browser.";
+    if (!(/^[A-Z0-9]$/.test(key) || named.includes(key) || fkey)) return "Invalid key.";
+    if (mods.length > 2) return "Use at most two modifiers.";
+    if (new Set(mods).size !== mods.length) return "Duplicate modifier.";
+    if (mods.some((m) => !primary.includes(m) && m !== "Shift")) return "Invalid modifier.";
+    if (!fkey && !mods.some((m) => primary.includes(m))) return "Shortcut must include Ctrl, Alt, Command, or MacCtrl.";
+    return null;
+  };
+
   const listener = () => {
     const ls: Array<(...a: any[]) => void> = [];
     return { addListener: (f: any) => ls.push(f), _emit: (...a: any[]) => ls.slice().forEach((f) => f(...a)) };
@@ -121,14 +145,33 @@ export function installFakeBrowser(seed: Seed) {
     },
     sessions: { restore: () => Promise.resolve({}) },
     runtime: {
+      // real Firefox structured-clones messages across contexts; mirror that so
+      // the harness reflects real serialization cost and no accidental aliasing
       sendMessage: (msg: any) => {
+        const m = structuredClone(msg);
         for (const l of msgListeners.slice()) {
-          const r = l(msg, {});
-          if (r !== undefined) return Promise.resolve(r);
+          const r = l(m, {});
+          if (r !== undefined) return Promise.resolve(r).then((v) => structuredClone(v));
         }
         return Promise.reject(new Error("no receiver"));
       },
       onMessage: { addListener: (f: any) => msgListeners.push(f) },
+    },
+    commands: {
+      getAll: () => Promise.resolve(commandShortcuts.map((c) => ({ name: c.name, shortcut: c.shortcut }))),
+      update: ({ name, shortcut }: { name: string; shortcut: string }) => {
+        const c = commandShortcuts.find((x) => x.name === name);
+        if (!c) return Promise.reject(new Error("Unknown command: " + name));
+        const err = validateShortcut(shortcut);
+        if (err) return Promise.reject(new Error(err));
+        c.shortcut = shortcut;
+        return Promise.resolve();
+      },
+      reset: (name: string) => {
+        const c = commandShortcuts.find((x) => x.name === name);
+        if (c) c.shortcut = c._default;
+        return Promise.resolve();
+      },
     },
   };
 
@@ -139,6 +182,11 @@ export function installFakeBrowser(seed: Seed) {
   const driver: any = {
     focusLog: [] as number[],
     winFocusLog: [] as number[],
+    // current shortcut bound to a command, for assertions
+    commandShortcut: (name: string) => {
+      const c = commandShortcuts.find((x) => x.name === name);
+      return c ? c.shortcut : null;
+    },
     // read-only view of the live windows + their tab urls, for assertions
     listWindows: () =>
       [...wins.values()].map((w) => ({

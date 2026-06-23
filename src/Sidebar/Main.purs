@@ -16,13 +16,13 @@ import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (Aff, attempt, delay)
+import Effect.Aff (Aff, attempt)
 import Effect.Browser (BrowserApi, getBrowser)
 import Effect.Channel (onBroadcast, request)
-import Effect.Persist (modelFromLoaded)
+import Effect.Persist as Persist
+import Effect.Settings as Settings
 import Halogen as H
 import Halogen.Aff as HA
 import Halogen.HTML as HH
@@ -35,6 +35,7 @@ import Halogen.VDom.Driver (runUI)
 import Model.Codec (Snapshot, decodePatch, decodeSnapshot, encodeSnapshot)
 import Model.Command (Command(..), Request(..), encodeRequest)
 import Model.PortableImport (portableToSnapshot)
+import Model.Shortcuts as Sh
 import Model.Tree (applyPatch, searchVisible, visible)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), displayTitle, emptyModel)
 import Web.Event.Event (Event)
@@ -48,6 +49,8 @@ foreign import setZoom :: Number -> Effect Unit
 foreign import scrollMetrics :: Event -> { top :: Number, height :: Number }
 foreign import treeViewportHeight :: Effect Number
 foreign import onResize :: Effect Unit -> Effect Unit
+foreign import focusSearch :: Effect Unit
+foreign import openOptions :: Effect Unit
 
 -- height of one row in px at zoom 1; must match `.row` height in the CSS
 baseRowHeight :: Number
@@ -106,6 +109,8 @@ data Action
   | ImportClick
   | ImportLoaded String
   | ClearNotice
+  | OpenOptions
+  | RunShortcut Sh.Cmd
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
@@ -129,11 +134,25 @@ handleAction = case _ of
       Left _ -> pure unit
     void $ H.subscribe emitter
     H.liftEffect $ onResize (HS.notify listener Remeasure)
+    -- Global keyboard shortcuts: on each keydown read the (possibly user-edited)
+    -- bindings and dispatch the matching command. Reading per-press keeps the
+    -- sidebar in sync with the options page with no reload.
+    H.liftEffect $ Settings.onShortcut \combo -> do
+      overrides <- Settings.getShortcuts
+      case Sh.cmdForCombo overrides combo of
+        Just cmd -> do
+          HS.notify listener (RunShortcut cmd)
+          pure true
+        Nothing -> pure false
     handleAction Remeasure
-    msnap <- H.liftAff (requestSnapshot api 40)
-    case msnap of
-      Just snap -> H.modify_ _ { model = modelFromLoaded snap.nodes snap.roots }
-      Nothing -> pure unit
+    -- Load the initial model straight from IndexedDB (same extension origin as
+    -- the background, which is its only writer). This skips an O(total) snapshot
+    -- encode + structured-clone over the message channel — the slow part of
+    -- opening the sidebar on a large tree. Live updates still arrive as patches,
+    -- and we subscribed above, so none are missed during the load.
+    db <- H.liftAff Persist.open
+    loaded <- H.liftAff (Persist.load db)
+    H.modify_ _ { model = Persist.modelFromLoaded loaded.nodes loaded.roots }
 
   GotPatch p -> H.modify_ \s -> s { model = applyPatch p s.model }
   Scrolled m -> H.modify_ _ { scrollTop = m.top, viewportH = m.height }
@@ -193,6 +212,17 @@ handleAction = case _ of
       sendCommand (Import snap)
     Left msg -> H.modify_ _ { notice = Just msg }
   ClearNotice -> H.modify_ _ { notice = Nothing }
+  OpenOptions -> H.liftEffect openOptions
+  RunShortcut cmd -> case cmd of
+    Sh.NewGroup -> handleAction NewGroupTop
+    Sh.FocusSearch -> H.liftEffect focusSearch
+    Sh.ZoomIn -> handleAction (Zoom 1.1)
+    Sh.ZoomOut -> handleAction (Zoom (1.0 / 1.1))
+    Sh.ResetZoom -> do
+      H.modify_ _ { zoom = 1.0 }
+      H.liftEffect (setZoom 1.0)
+    Sh.Export -> handleAction ExportClick
+    Sh.Import -> handleAction ImportClick
 
 dropCommand :: NodeId -> Node -> Model -> Command
 dropCommand dragId target model = case target.kind of
@@ -212,16 +242,6 @@ sendCommand c = do
   case st.api of
     Just api -> void $ H.liftAff (attempt (request api (encodeRequest (RunCommand c))))
     Nothing -> pure unit
-
-requestSnapshot :: BrowserApi -> Int -> Aff (Maybe Snapshot)
-requestSnapshot _ 0 = pure Nothing
-requestSnapshot api n = do
-  r <- attempt (request api (encodeRequest GetSnapshot))
-  case r of
-    Right json | Right snap <- decodeSnapshot json -> pure (Just snap)
-    _ -> do
-      delay (Milliseconds 50.0)
-      requestSnapshot api (n - 1)
 
 -- Accept our own flat export OR the original's nested portable-tree export.
 parseImport :: String -> Either String Snapshot
@@ -244,6 +264,7 @@ render st =
           , tbtn "new-group" "New group" NewGroupTop
           , tbtn "export" "Export" ExportClick
           , tbtn "import" "Import" ImportClick
+          , tbtn "options" "⚙" OpenOptions
           ]
       ]
         <> noticeBanner st.notice

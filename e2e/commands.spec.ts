@@ -50,7 +50,9 @@ test.describe("commands", () => {
   test("new group adds a folder at the top", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await page.locator("#new-group").click();
-    await expect(page.getByText("New group")).toBeVisible();
+    // scope to the tree: the toolbar's own "New group" button shares this text,
+    // so an unscoped getByText is a strict-mode race (button vs. created node)
+    await expect(page.locator("[role=treeitem]").filter({ hasText: "New group" })).toHaveCount(1);
   });
 
   test("clicking a closed tab restores it (re-binds the node, no duplicate)", async ({ page }) => {

@@ -57,3 +57,17 @@ export const treeViewportHeight = () => {
 export const onResize = (cb) => () => {
   window.addEventListener("resize", () => cb());
 };
+
+// Focus the search box — target of the "focus search" shortcut.
+export const focusSearch = () => {
+  const el = document.getElementById("search");
+  if (el) el.focus();
+};
+
+// Open the extension's options page (the gear button; also reachable from
+// about:addons -> Preferences once options_ui is declared in the manifest).
+export const openOptions = () => {
+  if (globalThis.browser && browser.runtime && browser.runtime.openOptionsPage) {
+    browser.runtime.openOptionsPage();
+  }
+};

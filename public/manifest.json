@@ -16,6 +16,18 @@
     "default_panel": "sidebar/sidebar.html",
     "default_icon": "icons/icon.svg"
   },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "_execute_sidebar_action": {
+      "suggested_key": {
+        "windows": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      }
+    }
+  },
   "browser_specific_settings": {
     "gecko": {
       "id": "tabs-outliner-rewrite@example.local",

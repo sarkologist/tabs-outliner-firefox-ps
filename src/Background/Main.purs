@@ -23,7 +23,7 @@ import Effect.Browser (BrowserApi)
 import Effect.Browser as Browser
 import Effect.Channel as Channel
 import Effect.Persist as Persist
-import Model.Codec (encodePatch, encodeSnapshot)
+import Model.Codec (encodePatch)
 import Model.Command (BrowserAction(..), Request(..), applyCommand, decodeRequest)
 import Model.Event (BrowserEvent)
 import Model.Reconcile (applyBrowser)
@@ -46,7 +46,9 @@ main = launchAff_ do
   let
     model0 = Persist.modelFromLoaded loaded.nodes loaded.roots
     rematched = rematchOnStartup t0 wins model0
-  Persist.writePatch db rematched.patch
+  -- broadcast too, so a sidebar already open at startup gets the re-match
+  -- (it loads the rest straight from IndexedDB)
+  persistAndBroadcast api db rematched.patch
   ref <- liftEffect (Ref.new rematched.model)
 
   let
@@ -65,21 +67,20 @@ main = launchAff_ do
   -- Live browser events.
   liftEffect $ Browser.subscribe api \ev -> launchAff_ (dispatch ev)
 
-  -- Serve the sidebar: snapshot requests and commands. A command applies,
-  -- persists, broadcasts the patch to every sidebar, and runs its browser
-  -- actions (focus/create/remove).
-  liftEffect $ Channel.onRequest api \reqJson -> do
-    m <- liftEffect (Ref.read ref)
-    case decodeRequest reqJson of
-      Right GetSnapshot -> pure (encodeSnapshot m)
-      Right (RunCommand cmd) -> do
-        t <- liftEffect nowMs
-        let r = applyCommand t cmd m
-        liftEffect (Ref.write r.model ref)
-        persistAndBroadcast api db r.patch
-        traverse_ (runAction api) r.actions
-        pure ackJson
-      Left _ -> pure (encodeSnapshot m)
+  -- Serve the sidebar's commands. A command applies, persists, broadcasts the
+  -- patch to every sidebar, and runs its browser actions (focus/create/remove).
+  -- (The sidebar loads its initial model from IndexedDB directly, so there is no
+  -- snapshot request.)
+  liftEffect $ Channel.onRequest api \reqJson -> case decodeRequest reqJson of
+    Right (RunCommand cmd) -> do
+      m <- liftEffect (Ref.read ref)
+      t <- liftEffect nowMs
+      let r = applyCommand t cmd m
+      liftEffect (Ref.write r.model ref)
+      persistAndBroadcast api db r.patch
+      traverse_ (runAction api) r.actions
+      pure ackJson
+    _ -> pure ackJson
 
 -- Persist + broadcast a patch, skipping the no-op patches that focus/close/
 -- restore commands and ignored events produce (no IDB tx, no message).

@@ -1,0 +1,103 @@
+:root {
+  --fg: #1a1a1a;
+  --muted: #9aa0a6;
+  --bg: #ffffff;
+  --accent: #7c3aed;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 system-ui, -apple-system, sans-serif;
+}
+
+#wrap {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 24px 20px;
+}
+
+h1 {
+  font-size: 18px;
+}
+
+.hint {
+  color: #444;
+  font-size: 13px;
+}
+
+.warn {
+  background: #fde2e1;
+  color: #8a1c1c;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+table#shortcuts,
+table#toggle {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+
+#shortcuts th,
+#toggle th {
+  text-align: left;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid #eee;
+  padding: 6px 4px;
+}
+
+#shortcuts td,
+#toggle td {
+  padding: 6px 4px;
+  border-bottom: 1px solid #f3f3f3;
+  vertical-align: middle;
+}
+
+h2 {
+  font-size: 15px;
+  margin-top: 22px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.combo {
+  width: 40%;
+}
+
+.kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 1px 6px;
+  border: 1px solid #ccc;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: #fafafa;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  text-align: center;
+}
+
+.recording {
+  color: var(--accent);
+  font-style: italic;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  margin-right: 6px;
+  padding: 2px 8px;
+}
+
+#reset-all {
+  margin-top: 8px;
+}

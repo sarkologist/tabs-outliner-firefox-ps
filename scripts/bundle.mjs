@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 const targets = [
   { module: "Sidebar.Main", outfile: "dist/sidebar/sidebar.js" },
   { module: "Background.Main", outfile: "dist/background/background.js" },
+  { module: "Options.Main", outfile: "dist/options/options.js" },
 ];
 
 for (const t of targets) {

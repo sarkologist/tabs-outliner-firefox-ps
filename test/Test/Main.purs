@@ -8,6 +8,7 @@ import Test.Model.GuardSpec as GuardSpec
 import Test.Model.PortableImportSpec as PortableImportSpec
 import Test.Model.ReconcileSpec as ReconcileSpec
 import Test.Model.RematchSpec as RematchSpec
+import Test.Model.ShortcutsSpec as ShortcutsSpec
 import Test.Model.TreeSpec as TreeSpec
 import Test.Spec.Reporter.Console (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
@@ -23,3 +24,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   RematchSpec.spec
   PortableImportSpec.spec
   GuardSpec.spec
+  ShortcutsSpec.spec
