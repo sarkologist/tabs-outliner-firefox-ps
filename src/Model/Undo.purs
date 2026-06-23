@@ -21,6 +21,13 @@
 -- |   * `roots`/`children` are restored but merged with siblings that appeared
 -- |     since (a window/tab opened between the command and the undo) so undo
 -- |     never drops an unrelated new node out of the forest.
+-- |
+-- | Waived (matching the reducer's stance on cross-window moves): if a live event
+-- | *re-parents* a node — a tab dragged to another window — between a structural
+-- | command and its undo, undoing can leave that node in two parents' child lists.
+-- | Bulletproofing that needs a field-level inverse / detach-on-reparent, i.e. the
+-- | machinery this rewrite deliberately omits; the case is rare and self-corrects
+-- | on the next edit of either parent.
 module Model.Undo
   ( inversePatch
   , applyEntry
