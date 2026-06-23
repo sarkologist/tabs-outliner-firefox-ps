@@ -142,7 +142,7 @@ test.describe("options page", () => {
 });
 
 test.describe("manifest", () => {
-  test("declares the sidebar-toggle command with a default key", async ({ page }) => {
+  test("declares the sidebar-toggle command with per-platform keys", async ({ page }) => {
     const res = await page.request.get("/manifest.json");
     const manifest = await res.json();
     const key = manifest.commands?.["_execute_sidebar_action"]?.suggested_key;
