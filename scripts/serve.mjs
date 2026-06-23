@@ -18,6 +18,13 @@ const types = {
 createServer(async (req, res) => {
   try {
     let p = decodeURIComponent(new URL(req.url, "http://x").pathname);
+    // A blank same-origin page for the test harness (so IndexedDB + injected
+    // fake browser work, without shipping a harness page in the extension).
+    if (p === "/blank.html") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<!doctype html><meta charset=utf-8><title>harness</title>");
+      return;
+    }
     if (p.endsWith("/")) p += "index.html";
     const file = join(root, normalize(p));
     const data = await readFile(file);
