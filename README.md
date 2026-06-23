@@ -16,8 +16,8 @@ that still delivers the essential product.
 - **Configurable keyboard shortcuts** for the toolbar actions (new group, focus search, zoom,
   export, import), editable on a dedicated options page — plus a browser-level shortcut to
   toggle the sidebar open/closed (default `Ctrl+Shift+Y`, `Cmd+Shift+Y` on macOS; unset on
-  Linux, where it collides with Firefox's Downloads — all platforms customizable in Firefox's
-  *Manage Extension Shortcuts*).
+  Linux, where it collides with Firefox's Downloads). The toggle is editable right on the
+  options page (via the `commands` API) or in Firefox's *Manage Extension Shortcuts*.
 - Persists locally; on restart, **re-binds reopened tabs to their existing nodes by URL**,
   so your organization (tree position, custom titles, collapse) survives a restart.
 

@@ -17,11 +17,14 @@ module Model.Shortcuts
   , bindingFor
   , cmdForCombo
   , formatCombo
+  , toCommandShortcut
   ) where
 
 import Prelude
 
 import Data.Array as Array
+import Data.Either (Either(..))
+import Data.Foldable (any, elem)
 import Data.Maybe (Maybe(..))
 import Data.String (Pattern(..))
 import Data.String.CodeUnits as SCU
@@ -102,3 +105,64 @@ formatCombo :: String -> String
 formatCombo combo = case Array.unsnoc (split (Pattern "+") combo) of
   Just { init, last } | SCU.length last == 1 -> joinWith "+" (init <> [ toUpper last ])
   _ -> combo
+
+-- | Translate a captured canonical combo (e.g. "Ctrl+Shift+y") into a
+-- | WebExtensions `commands` shortcut (e.g. "Ctrl+Shift+Y"), or explain why it
+-- | can't be one. Unlike the in-page shortcuts, a browser command needs a
+-- | primary modifier (Ctrl/Alt/Command/MacCtrl) and a restricted key set. `mac`
+-- | selects the Mac modifier names (the Control key -> MacCtrl, the ⌘ key ->
+-- | Command). The browser still validates the result, so this is a best-effort
+-- | shaping that rejects the obviously-impossible up front.
+toCommandShortcut :: Boolean -> String -> Either String String
+toCommandShortcut mac combo = case Array.unsnoc (split (Pattern "+") combo) of
+  Nothing -> Left "No key was pressed."
+  Just { init: rawMods, last: rawKey } -> case toCommandKey rawKey of
+    Nothing -> Left "That key can't be used for a browser shortcut."
+    Just key ->
+      let mods = map (toCommandMod mac) rawMods
+      in if any isPrimaryMod mods then Right (joinWith "+" (orderMods mods <> [ key ]))
+         else Left "Add a modifier such as Ctrl or Alt — browser shortcuts require one."
+
+-- valid `commands` keys: A-Z, 0-9, F1-F12, a few named keys; nothing else.
+toCommandKey :: String -> Maybe String
+toCommandKey k
+  | SCU.length k == 1 =
+      let u = toUpper k
+      in if isAsciiAlphaNum u then Just u
+         else case k of
+           "," -> Just "Comma"
+           "." -> Just "Period"
+           _ -> Nothing
+  | otherwise = case k of
+      "Space" -> Just "Space"
+      "ArrowUp" -> Just "Up"
+      "ArrowDown" -> Just "Down"
+      "ArrowLeft" -> Just "Left"
+      "ArrowRight" -> Just "Right"
+      "Home" -> Just "Home"
+      "End" -> Just "End"
+      "PageUp" -> Just "PageUp"
+      "PageDown" -> Just "PageDown"
+      "Insert" -> Just "Insert"
+      "Delete" -> Just "Delete"
+      _ | k `elem` fKeys -> Just k
+        | otherwise -> Nothing
+
+fKeys :: Array String
+fKeys = map (\n -> "F" <> show n) (Array.range 1 12)
+
+isAsciiAlphaNum :: String -> Boolean
+isAsciiAlphaNum s = (s >= "A" && s <= "Z") || (s >= "0" && s <= "9")
+
+toCommandMod :: Boolean -> String -> String
+toCommandMod mac = case _ of
+  "Meta" -> "Command"
+  "Ctrl" -> if mac then "MacCtrl" else "Ctrl"
+  m -> m
+
+isPrimaryMod :: String -> Boolean
+isPrimaryMod m = m == "Ctrl" || m == "Alt" || m == "Command" || m == "MacCtrl"
+
+-- the primary modifier(s) first, Shift last (Firefox's canonical order)
+orderMods :: Array String -> Array String
+orderMods ms = Array.filter (_ /= "Shift") ms <> Array.filter (_ == "Shift") ms

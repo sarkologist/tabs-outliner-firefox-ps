@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { bootBackgroundAndSidebar } from "./support/harness";
+import { installFakeBrowser } from "./support/fake-browser";
 
 const seed = {
   windows: [
@@ -29,6 +30,15 @@ async function bootOptions(page: Page, overrides?: Record<string, string>): Prom
   if (overrides) {
     await page.addInitScript((o) => localStorage.setItem("shortcuts", JSON.stringify(o)), overrides);
   }
+  await page.goto("/blank.html");
+  await page.addStyleTag({ path: "dist/options/options.css" });
+  await page.addScriptTag({ path: "dist/options/options.js" });
+}
+
+// Options page with a fake browser injected, so browser.commands exists and the
+// sidebar-toggle row becomes editable (rather than showing the fallback note).
+async function bootOptionsWithCommands(page: Page): Promise<void> {
+  await page.addInitScript(installFakeBrowser, { windows: [] });
   await page.goto("/blank.html");
   await page.addStyleTag({ path: "dist/options/options.css" });
   await page.addScriptTag({ path: "dist/options/options.js" });
@@ -151,5 +161,46 @@ test.describe("manifest", () => {
     expect(key?.windows).toBe("Ctrl+Shift+Y");
     expect(key?.mac).toBe("Command+Shift+Y");
     expect(key?.default).toBeUndefined();
+  });
+});
+
+test.describe("options page — sidebar toggle (commands API)", () => {
+  const TOGGLE = "_execute_sidebar_action";
+  const stored = (page: Page) =>
+    page.evaluate((name) => (globalThis as any).__fake.commandShortcut(name), TOGGLE);
+
+  test("shows the current browser shortcut", async ({ page }) => {
+    await bootOptionsWithCommands(page);
+    await expect(page.locator("#toggle .kbd")).toHaveText("Ctrl+Shift+Y");
+  });
+
+  test("records a new shortcut and writes it through the commands API", async ({ page }) => {
+    await bootOptionsWithCommands(page);
+    await page.locator("#toggle-change").click();
+    await expect(page.locator("#toggle .recording")).toBeVisible();
+    // Meta maps to "Command" on every platform (no Ctrl->MacCtrl variance), so
+    // this is deterministic regardless of where the test runs.
+    await page.keyboard.press("Meta+Shift+K");
+    await expect(page.locator("#toggle .kbd")).toHaveText("Command+Shift+K");
+    expect(await stored(page)).toBe("Command+Shift+K");
+  });
+
+  test("rejects a shortcut with no modifier and leaves the binding unchanged", async ({ page }) => {
+    await bootOptionsWithCommands(page);
+    await page.locator("#toggle-change").click();
+    await page.keyboard.press("k"); // no primary modifier
+    await expect(page.locator("#toggle-error")).toBeVisible();
+    await expect(page.locator("#toggle-error")).toContainText("modifier");
+    expect(await stored(page)).toBe("Ctrl+Shift+Y"); // unchanged
+  });
+
+  test("Reset restores the manifest default", async ({ page }) => {
+    await bootOptionsWithCommands(page);
+    await page.locator("#toggle-change").click();
+    await page.keyboard.press("Meta+Shift+K");
+    await expect(page.locator("#toggle .kbd")).toHaveText("Command+Shift+K");
+    await page.locator("#toggle-reset").click();
+    await expect(page.locator("#toggle .kbd")).toHaveText("Ctrl+Shift+Y");
+    expect(await stored(page)).toBe("Ctrl+Shift+Y");
   });
 });

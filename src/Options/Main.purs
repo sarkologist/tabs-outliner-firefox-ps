@@ -1,18 +1,21 @@
--- | The options page: a small Halogen view for configuring the sidebar's
--- | keyboard shortcuts. Each row shows an action and its current combo; "Change"
--- | records the next keypress (Effect.Settings.captureCombo) and persists it,
--- | "Reset" drops the override back to the default. Bindings live in the shared
--- | localStorage, so the sidebar picks up changes on its next keypress with no
--- | reload.
+-- | The options page: configure the sidebar's keyboard shortcuts. The in-page
+-- | toolbar shortcuts live in shared localStorage (Effect.Settings) and are
+-- | edited in the table. The sidebar-toggle shortcut is a browser-level command
+-- | (Effect.Commands, the WebExtensions commands API) — it must work when the
+-- | sidebar is closed, so the browser owns it and we edit it via commands.update.
+-- | If that API is unavailable, the toggle section falls back to a "configure it
+-- | in Firefox" note.
 module Options.Main where
 
 import Prelude
 
 import Data.Array as Array
+import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff (Aff)
+import Effect.Commands as Commands
 import Effect.Settings as Settings
 import Foreign.Object (Object)
 import Foreign.Object as Object
@@ -35,6 +38,10 @@ type State =
   { overrides :: Object String
   , recording :: Maybe Sh.Cmd
   , listener :: Maybe (HS.Listener Action)
+  , toggle :: Maybe String -- Nothing = commands API unavailable; Just s = current ("" if unset)
+  , toggleMac :: Boolean
+  , toggleRecording :: Boolean
+  , toggleError :: Maybe String
   }
 
 data Action
@@ -43,10 +50,21 @@ data Action
   | Captured String
   | ResetOne Sh.Cmd
   | ResetAll
+  | StartRecordToggle
+  | CapturedToggle String
+  | ResetToggle
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
-  { initialState: \_ -> { overrides: Object.empty, recording: Nothing, listener: Nothing }
+  { initialState: \_ ->
+      { overrides: Object.empty
+      , recording: Nothing
+      , listener: Nothing
+      , toggle: Nothing
+      , toggleMac: false
+      , toggleRecording: false
+      , toggleError: Nothing
+      }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
   }
@@ -57,7 +75,9 @@ handleAction = case _ of
     { emitter, listener } <- H.liftEffect HS.create
     void $ H.subscribe emitter
     overrides <- H.liftEffect Settings.getShortcuts
-    H.modify_ _ { overrides = overrides, listener = Just listener }
+    mac <- H.liftEffect Commands.isMac
+    toggle <- H.liftAff Commands.getSidebarToggle
+    H.modify_ _ { overrides = overrides, listener = Just listener, toggle = toggle, toggleMac = mac }
 
   StartRecord cmd -> do
     st <- H.get
@@ -86,6 +106,32 @@ handleAction = case _ of
     H.liftEffect (Settings.setShortcuts Object.empty)
     H.modify_ _ { overrides = Object.empty }
 
+  StartRecordToggle -> do
+    st <- H.get
+    H.modify_ _ { toggleRecording = true, toggleError = Nothing }
+    case st.listener of
+      Just l -> H.liftEffect $ Settings.captureCombo \combo -> HS.notify l (CapturedToggle combo)
+      Nothing -> pure unit
+
+  CapturedToggle combo
+    | combo == "Escape" || combo == "" -> H.modify_ _ { toggleRecording = false }
+    | otherwise -> do
+        st <- H.get
+        case Sh.toCommandShortcut st.toggleMac combo of
+          Left msg -> H.modify_ _ { toggleRecording = false, toggleError = Just msg }
+          Right shortcut -> do
+            res <- H.liftAff (Commands.setSidebarToggle shortcut)
+            case res of
+              Just err -> H.modify_ _ { toggleRecording = false, toggleError = Just err }
+              Nothing -> do
+                cur <- H.liftAff Commands.getSidebarToggle
+                H.modify_ _ { toggle = cur, toggleRecording = false, toggleError = Nothing }
+
+  ResetToggle -> do
+    _ <- H.liftAff Commands.resetSidebarToggle
+    cur <- H.liftAff Commands.getSidebarToggle
+    H.modify_ _ { toggle = cur, toggleRecording = false, toggleError = Nothing }
+
 render :: State -> H.ComponentHTML Action () Aff
 render st =
   HH.div [ HP.id "wrap" ]
@@ -98,9 +144,7 @@ render st =
             <> map (row st) Sh.allCmds
         )
     , HH.button [ HP.id "reset-all", HE.onClick \_ -> ResetAll ] [ HH.text "Reset all to defaults" ]
-    , HH.h2_ [ HH.text "Toggle the sidebar" ]
-    , HH.p [ HP.class_ (ClassName "hint") ]
-        [ HH.text "Opening and closing the sidebar is a browser-level shortcut (default Ctrl+Shift+Y, or Cmd+Shift+Y on macOS; unset on Linux, where that combo is Firefox's Downloads shortcut). It has to work even when the sidebar is closed, so Firefox handles it directly — set or change it in about:addons → gear menu → Manage Extension Shortcuts." ]
+    , toggleSection st
     ]
 
 row :: State -> Sh.Cmd -> H.ComponentHTML Action () Aff
@@ -119,6 +163,45 @@ row st cmd =
       HH.span [ HP.class_ (ClassName "recording") ] [ HH.text "Press keys… (Esc to cancel)" ]
     else
       HH.span [ HP.class_ (ClassName "kbd") ] [ HH.text (Sh.formatCombo (Sh.bindingFor st.overrides cmd)) ]
+
+-- | The browser-level sidebar-toggle command. Editable here when the commands
+-- | API is present; otherwise a note points at Firefox's own shortcut manager.
+toggleSection :: State -> H.ComponentHTML Action () Aff
+toggleSection st =
+  HH.div_
+    ( [ HH.h2_ [ HH.text "Toggle the sidebar" ]
+      , HH.p [ HP.class_ (ClassName "hint") ]
+          [ HH.text "Opening and closing the sidebar is a browser-level shortcut — it must work even when the sidebar is closed, so the browser handles it. It needs a modifier such as Ctrl or Alt." ]
+      ] <> bodyHtml
+    )
+  where
+  bodyHtml = case st.toggle of
+    Nothing ->
+      [ HH.p [ HP.class_ (ClassName "hint") ]
+          [ HH.text "Set it in about:addons → gear menu → Manage Extension Shortcuts (default Ctrl+Shift+Y; Cmd+Shift+Y on macOS; unset on Linux)." ]
+      ]
+    Just current ->
+      [ HH.table [ HP.id "toggle" ]
+          [ HH.tr_
+              [ HH.td_ [ HH.text "Toggle sidebar" ]
+              , HH.td [ HP.class_ (ClassName "combo") ] [ toggleCell current ]
+              , HH.td_
+                  [ HH.button [ HP.id "toggle-change", HE.onClick \_ -> StartRecordToggle ] [ HH.text "Change" ]
+                  , HH.button [ HP.id "toggle-reset", HE.onClick \_ -> ResetToggle ] [ HH.text "Reset" ]
+                  ]
+              ]
+          ]
+      ] <> errorNote
+  toggleCell current =
+    if st.toggleRecording then
+      HH.span [ HP.class_ (ClassName "recording") ] [ HH.text "Press keys… (Esc to cancel)" ]
+    else if current == "" then
+      HH.span [ HP.class_ (ClassName "muted") ] [ HH.text "Not set" ]
+    else
+      HH.span [ HP.class_ (ClassName "kbd") ] [ HH.text current ]
+  errorNote = case st.toggleError of
+    Just msg -> [ HH.div [ HP.class_ (ClassName "warn"), HP.id "toggle-error" ] [ HH.text msg ] ]
+    Nothing -> []
 
 -- | Warn when two actions resolve to the same combo (the first in allCmds order
 -- | wins on a real keypress, so the other would be dead).

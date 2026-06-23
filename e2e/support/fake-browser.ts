@@ -21,6 +21,20 @@ export function installFakeBrowser(seed: Seed) {
   let tabSeq = 100000;
   let winSeq = 900000;
 
+  // WebExtensions commands API state (only the sidebar-toggle command we ship).
+  const commandShortcuts = [
+    { name: "_execute_sidebar_action", shortcut: "Ctrl+Shift+Y", _default: "Ctrl+Shift+Y" },
+  ];
+  const validateShortcut = (s: string) => {
+    const parts = String(s).split("+");
+    const key = parts[parts.length - 1];
+    const mods = parts.slice(0, -1);
+    const primary = ["Ctrl", "Alt", "Command", "MacCtrl"];
+    if (!key) return "Shortcut is empty.";
+    if (!mods.some((m) => primary.includes(m))) return "Shortcut must include Ctrl, Alt, Command, or MacCtrl.";
+    return null;
+  };
+
   const listener = () => {
     const ls: Array<(...a: any[]) => void> = [];
     return { addListener: (f: any) => ls.push(f), _emit: (...a: any[]) => ls.slice().forEach((f) => f(...a)) };
@@ -133,6 +147,22 @@ export function installFakeBrowser(seed: Seed) {
       },
       onMessage: { addListener: (f: any) => msgListeners.push(f) },
     },
+    commands: {
+      getAll: () => Promise.resolve(commandShortcuts.map((c) => ({ name: c.name, shortcut: c.shortcut }))),
+      update: ({ name, shortcut }: { name: string; shortcut: string }) => {
+        const c = commandShortcuts.find((x) => x.name === name);
+        if (!c) return Promise.reject(new Error("Unknown command: " + name));
+        const err = validateShortcut(shortcut);
+        if (err) return Promise.reject(new Error(err));
+        c.shortcut = shortcut;
+        return Promise.resolve();
+      },
+      reset: (name: string) => {
+        const c = commandShortcuts.find((x) => x.name === name);
+        if (c) c.shortcut = c._default;
+        return Promise.resolve();
+      },
+    },
   };
 
   function firstWindowId() {
@@ -142,6 +172,11 @@ export function installFakeBrowser(seed: Seed) {
   const driver: any = {
     focusLog: [] as number[],
     winFocusLog: [] as number[],
+    // current shortcut bound to a command, for assertions
+    commandShortcut: (name: string) => {
+      const c = commandShortcuts.find((x) => x.name === name);
+      return c ? c.shortcut : null;
+    },
     // read-only view of the live windows + their tab urls, for assertions
     listWindows: () =>
       [...wins.values()].map((w) => ({
