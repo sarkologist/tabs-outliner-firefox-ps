@@ -10,6 +10,8 @@ import Data.Foldable (foldl, foldr)
 import Data.List (List(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Set (Set)
+import Data.Set as Set
 import Data.String as String
 import Model.Types (Model, Node, NodeId, Patch, Status(..), displayTitle)
 
@@ -100,6 +102,30 @@ subtreeIds root model = Array.fromFoldable (go root Nil)
   go id rest = case Map.lookup id model.nodes of
     Nothing -> rest
     Just n -> Cons id (foldr go rest n.children)
+
+-- | Rows to show for a query: every match plus its ancestors (so the path is
+-- | visible), in preorder, ignoring collapse — matches inside collapsed groups
+-- | still appear. O(total), on demand only.
+searchVisible :: String -> Model -> Array Entry
+searchVisible query model = Array.fromFoldable (foldr (go 0) Nil model.roots)
+  where
+  shown = ancestorClosure (searchIds query model) model
+  go :: Int -> NodeId -> List Entry -> List Entry
+  go depth id rest
+    | Set.member id shown = case Map.lookup id model.nodes of
+        Just n -> Cons { id, depth } (foldr (go (depth + 1)) rest n.children)
+        Nothing -> rest
+    | otherwise = rest
+
+-- | A set containing every given id and all of its ancestors.
+ancestorClosure :: Array NodeId -> Model -> Set NodeId
+ancestorClosure ids model = foldl (\s id -> goUp s (Just id)) Set.empty ids
+  where
+  goUp s = case _ of
+    Nothing -> s
+    Just cur
+      | Set.member cur s -> s -- already added this node and its ancestors
+      | otherwise -> goUp (Set.insert cur s) (Map.lookup cur model.nodes >>= _.parent)
 
 -- | Case-insensitive substring search over display title and url. O(total),
 -- | but only ever run on demand (user typed a query).

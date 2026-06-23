@@ -9,6 +9,7 @@ module Model.Codec
   , encodePatch
   , decodePatch
   , encodeSnapshot
+  , encodeSnapshotData
   , decodeSnapshot
   , Snapshot
   ) where
@@ -66,6 +67,9 @@ encodeSnapshot model = encodeJson
   { nodes: map toRec (Array.fromFoldable (Map.values model.nodes))
   , roots: model.roots
   }
+
+encodeSnapshotData :: Snapshot -> Json
+encodeSnapshotData s = encodeJson { nodes: map toRec s.nodes, roots: s.roots }
 
 decodeSnapshot :: Json -> Either String Snapshot
 decodeSnapshot json = do

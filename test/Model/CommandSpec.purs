@@ -8,7 +8,7 @@ import Data.Maybe (Maybe(..))
 import Model.Command (BrowserAction(..), Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Types (Kind(..), Model, Status(..), emptyModel)
+import Model.Types (Kind(..), Model, Status(..), defaultNode, emptyModel)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -77,6 +77,20 @@ spec = describe "Model.Command" do
       closed = (applyBrowser 0.0 (WindowClosed { windowId: 1 }) withGroup).model
     (_.status <$> Map.lookup "n1" closed.nodes) `shouldEqual` Just Closed
     (_.status <$> Map.lookup "n4" closed.nodes) `shouldEqual` Just Live
+
+  it "import adds an exported outline as inert, restorable top-level history" do
+    let
+      grp = (defaultNode "g1" KGroup 0.0) { title = "G", children = [ "t1" ] }
+      tab = (defaultNode "t1" KTab 0.0) { title = "T", url = Just "http://t", tabId = Just 5, parent = Just "g1" }
+      r = applyCommand 0.0 (Import { nodes: [ grp, tab ], roots: [ "g1" ] }) base
+    -- fresh ids (base.nextId is 4): g1 -> n4, t1 -> n5; appended to roots
+    r.model.roots `shouldEqual` [ "n1", "n4" ]
+    (_.kind <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just KGroup
+    (_.status <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just Live -- groups stay live
+    (_.children <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just [ "n5" ]
+    (_.status <$> Map.lookup "n5" r.model.nodes) `shouldEqual` Just Closed -- imported tab is inert
+    (_.tabId <$> Map.lookup "n5" r.model.nodes) `shouldEqual` Just Nothing
+    (_.parent <$> Map.lookup "n5" r.model.nodes) `shouldEqual` Just (Just "n4")
 
   it "restore re-binds the existing node when the tab re-opens (no duplicate)" do
     let

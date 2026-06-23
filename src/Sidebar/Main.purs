@@ -1,11 +1,15 @@
 -- | The sidebar: a thin Halogen view of the background-owned forest. On open it
 -- | pulls one snapshot (retrying until the background answers), then stays live
 -- | by applying broadcast patches. It renders only visible rows (O(visible)),
--- | keyed by NodeId, and sends every user action back as a command.
+-- | keyed by NodeId, and sends every user action back as a command. The toolbar
+-- | adds search (incl. inside collapsed groups), font zoom, and JSON
+-- | export/import.
 module Sidebar.Main where
 
 import Prelude
 
+import Data.Argonaut.Core (stringify)
+import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
@@ -21,18 +25,22 @@ import Halogen as H
 import Halogen.Aff as HA
 import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ClassName(..))
-import Halogen.HTML.Events as HE
 import Halogen.HTML.Elements.Keyed as HK
+import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
-import Model.Codec (Snapshot, decodePatch, decodeSnapshot)
+import Model.Codec (Snapshot, decodePatch, decodeSnapshot, encodeSnapshot)
 import Model.Command (Command(..), Request(..), encodeRequest)
-import Model.Tree (applyPatch, visible)
+import Model.Tree (applyPatch, searchVisible, visible)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), displayTitle, emptyModel)
 import Web.UIEvent.KeyboardEvent (key)
 
 foreign import allowDrops :: Effect Unit
+foreign import downloadJson :: String -> String -> Effect Unit
+foreign import pickJson :: (String -> Effect Unit) -> Effect Unit
+foreign import getZoom :: Effect Number
+foreign import setZoom :: Number -> Effect Unit
 
 main :: Effect Unit
 main = HA.runHalogenAff do
@@ -46,6 +54,9 @@ type State =
   , model :: Model
   , editing :: Maybe Editing
   , dragId :: Maybe NodeId
+  , query :: String
+  , zoom :: Number
+  , listener :: Maybe (HS.Listener Action)
   }
 
 data Action
@@ -65,10 +76,16 @@ data Action
   | DragStart NodeId
   | DropOn NodeId
   | DragEnd
+  | SetQuery String
+  | Zoom Number
+  | ExportClick
+  | ImportClick
+  | ImportLoaded String
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
-  { initialState: \_ -> { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing }
+  { initialState: \_ ->
+      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, query: "", zoom: 1.0, listener: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
   }
@@ -78,9 +95,10 @@ handleAction = case _ of
   Initialize -> do
     api <- H.liftEffect getBrowser
     H.liftEffect allowDrops
-    H.modify_ _ { api = Just api }
-    -- subscribe to broadcasts first, so no patch is missed after the snapshot
+    z <- H.liftEffect getZoom
     { emitter, listener } <- H.liftEffect HS.create
+    H.modify_ _ { api = Just api, zoom = z, listener = Just listener }
+    -- subscribe to broadcasts first, so no patch is missed after the snapshot
     H.liftEffect $ onBroadcast api \json -> case decodePatch json of
       Right p -> HS.notify listener (GotPatch p)
       Left _ -> pure unit
@@ -123,8 +141,24 @@ handleAction = case _ of
       _ -> pure unit
     H.modify_ _ { dragId = Nothing }
 
--- Dropping onto a group nests (append); onto anything else places before it as a
--- sibling. Enough to express reorder and re-parent; finer drop zones are future.
+  SetQuery q -> H.modify_ _ { query = q }
+  Zoom factor -> do
+    st <- H.get
+    let z = clamp 0.6 2.5 (st.zoom * factor)
+    H.modify_ _ { zoom = z }
+    H.liftEffect (setZoom z)
+  ExportClick -> do
+    st <- H.get
+    H.liftEffect (downloadJson "tabs-outliner.json" (stringify (encodeSnapshot st.model)))
+  ImportClick -> do
+    st <- H.get
+    case st.listener of
+      Just l -> H.liftEffect (pickJson (\text -> HS.notify l (ImportLoaded text)))
+      Nothing -> pure unit
+  ImportLoaded text -> case jsonParser text >>= decodeSnapshot of
+    Right snap -> sendCommand (Import snap)
+    Left _ -> pure unit
+
 dropCommand :: NodeId -> Node -> Model -> Command
 dropCommand dragId target model = case target.kind of
   KGroup -> Move dragId (Just target.id) (Array.length target.children)
@@ -156,15 +190,26 @@ requestSnapshot api n = do
 
 render :: State -> H.ComponentHTML Action () Aff
 render st =
-  HH.div [ HP.id "app" ]
+  HH.div [ HP.id "app", HP.style ("--font-scale:" <> show st.zoom) ]
     [ HH.div [ HP.id "toolbar" ]
-        [ HH.button [ HP.id "new-group", HE.onClick \_ -> NewGroupTop ] [ HH.text "New group" ] ]
-    , HK.div [ HP.id "tree", HP.attr (AttrName "role") "tree" ] (map row (visible st.model))
+        [ HH.input
+            [ HP.id "search", HP.placeholder "Search", HP.value st.query, HE.onValueInput SetQuery ]
+        , tbtn "zoom-out" "A-" (Zoom (1.0 / 1.1))
+        , tbtn "zoom-in" "A+" (Zoom 1.1)
+        , tbtn "new-group" "New group" NewGroupTop
+        , tbtn "export" "Export" ExportClick
+        , tbtn "import" "Import" ImportClick
+        ]
+    , HK.div [ HP.id "tree", HP.attr (AttrName "role") "tree" ] (map (row st) entries)
     ]
   where
-  row { id, depth } = Tuple id $ case Map.lookup id st.model.nodes of
-    Nothing -> HH.text ""
-    Just n -> renderNode st depth n
+  entries = if st.query == "" then visible st.model else searchVisible st.query st.model
+  tbtn i label act = HH.button [ HP.id i, HE.onClick \_ -> act ] [ HH.text label ]
+
+row :: State -> { id :: NodeId, depth :: Int } -> Tuple String (H.ComponentHTML Action () Aff)
+row st { id, depth } = Tuple id $ case Map.lookup id st.model.nodes of
+  Nothing -> HH.text ""
+  Just n -> renderNode st depth n
 
 renderNode :: State -> Int -> Node -> H.ComponentHTML Action () Aff
 renderNode st depth n =

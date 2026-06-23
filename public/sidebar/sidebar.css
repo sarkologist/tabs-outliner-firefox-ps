@@ -23,7 +23,9 @@ body {
 
 #toolbar {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
   padding: 4px 8px;
   border-bottom: 1px solid #eee;
 }
@@ -31,6 +33,13 @@ body {
 #toolbar button {
   font: inherit;
   cursor: pointer;
+}
+
+#search {
+  flex: 1 1 80px;
+  min-width: 60px;
+  font: inherit;
+  padding: 1px 4px;
 }
 
 .row {

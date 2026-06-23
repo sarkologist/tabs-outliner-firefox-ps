@@ -5,7 +5,7 @@ import Prelude
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Model.Tree (applyPatch, insertAtClamped, moveWithin, subtreeIds, visible)
+import Model.Tree (applyPatch, insertAtClamped, moveWithin, searchVisible, subtreeIds, visible)
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -44,6 +44,23 @@ spec = describe "Model.Tree" do
         , { id: "B", depth: 1 }
         , { id: "C", depth: 1 }
         ]
+
+  describe "searchVisible" do
+    it "shows matches and their ancestors, even inside collapsed groups" do
+      let
+        titled id title parent children =
+          (defaultNode id KGroup 0.0) { title = title, parent = parent, children = children }
+        m = emptyModel
+          { roots = [ "A" ]
+          , nodes = Map.fromFoldable $ map (\n -> Tuple n.id n)
+              [ titled "A" "alpha" Nothing [ "B", "C" ]
+              , titled "B" "beta" (Just "A") []
+              , (titled "C" "gamma" (Just "A") [ "D" ]) { collapsed = true }
+              , titled "D" "delta" (Just "C") []
+              ]
+          }
+      map _.id (searchVisible "delta" m) `shouldEqual` [ "A", "C", "D" ]
+      map _.id (searchVisible "bet" m) `shouldEqual` [ "A", "B" ]
 
   describe "subtreeIds" do
     it "collects the subtree including the root" do

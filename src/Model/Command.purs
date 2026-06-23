@@ -15,8 +15,9 @@ import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
+import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), defaultNode, emptyPatch)
 
@@ -29,6 +30,7 @@ data Command
   | Move NodeId (Maybe NodeId) Int -- node, new parent (Nothing = root), index
   | Flatten NodeId -- dissolve a group, promoting its children
   | NewGroup (Maybe NodeId) Int -- new folder under parent at index
+  | Import Snapshot -- add an exported outline as inert, restorable top-level nodes
 
 -- | Browser-side effects a command implies (interpreted by the background).
 data BrowserAction
@@ -85,6 +87,29 @@ applyCommand now cmd model = case cmd of
         , roots: rootInsert effParent index nid
         }
       model' = (applyPatch patch model) { nextId = model.nextId + 1 }
+    in
+      { model: model', patch, actions: [] }
+
+  Import snap ->
+    let
+      count = Array.length snap.nodes
+      idMap = Map.fromFoldable
+        (Array.mapWithIndex (\i n -> Tuple n.id ("n" <> show (model.nextId + i))) snap.nodes)
+      remap old = fromMaybe old (Map.lookup old idMap)
+      -- imported nodes are inert history: tabs/windows become Closed (restorable),
+      -- groups stay live, and any live browser binding is dropped.
+      remapNode n = n
+        { id = remap n.id
+        , parent = map remap n.parent
+        , children = map remap n.children
+        , status = if n.kind == KGroup then Live else Closed
+        , tabId = Nothing
+        , windowId = Nothing
+        , active = false
+        }
+      remapped = map remapNode snap.nodes
+      patch = { upserts: remapped, removes: [], roots: Just (model.roots <> map remap snap.roots) }
+      model' = (applyPatch patch model) { nextId = model.nextId + count }
     in
       { model: model', patch, actions: [] }
   where
@@ -227,6 +252,7 @@ encodeCommand = case _ of
   Move nid parent index -> encodeJson { tag: "move", id: nid, parent, index }
   Flatten nid -> encodeJson { tag: "flatten", id: nid }
   NewGroup parent index -> encodeJson { tag: "newGroup", parent, index }
+  Import snap -> encodeJson { tag: "import", body: encodeSnapshotData snap }
 
 decodeCommand :: Json -> Either String Command
 decodeCommand json = do
@@ -240,6 +266,9 @@ decodeCommand json = do
     "move" -> (\r -> Move r.id r.parent r.index) <$> (dec json :: Either String { id :: NodeId, parent :: Maybe NodeId, index :: Int })
     "flatten" -> (\r -> Flatten r.id) <$> (dec json :: Either String { id :: NodeId })
     "newGroup" -> (\r -> NewGroup r.parent r.index) <$> (dec json :: Either String { parent :: Maybe NodeId, index :: Int })
+    "import" -> do
+      { body } <- dec json :: Either String { body :: Json }
+      Import <$> decodeSnapshot body
     other -> Left ("unknown command: " <> other)
 
 dec :: forall a. DecodeJson a => Json -> Either String a
