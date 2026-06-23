@@ -6,6 +6,7 @@ import Effect (Effect)
 import Test.Model.CommandSpec as CommandSpec
 import Test.Model.GuardSpec as GuardSpec
 import Test.Model.ReconcileSpec as ReconcileSpec
+import Test.Model.RematchSpec as RematchSpec
 import Test.Model.TreeSpec as TreeSpec
 import Test.Spec.Reporter.Console (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
@@ -18,4 +19,5 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   TreeSpec.spec
   ReconcileSpec.spec
   CommandSpec.spec
+  RematchSpec.spec
   GuardSpec.spec

@@ -3,8 +3,6 @@
 -- | a fake, so the exact same code runs in Firefox and under Playwright.
 module Effect.Browser
   ( BrowserApi
-  , RuntimeTab
-  , RuntimeWindow
   , getBrowser
   , getAllWindows
   , subscribe
@@ -21,22 +19,11 @@ import Data.Nullable (Nullable, toMaybe, toNullable)
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Model.Event (BrowserEvent(..))
+import Model.Types (RuntimeWindow)
 
 foreign import data BrowserApi :: Type
 
 foreign import getBrowser :: Effect BrowserApi
-
-type RuntimeTab =
-  { tabId :: Int
-  , windowId :: Int
-  , index :: Int
-  , url :: Maybe String
-  , title :: String
-  , active :: Boolean
-  , favIconUrl :: Maybe String
-  }
-
-type RuntimeWindow = { windowId :: Int, tabs :: Array RuntimeTab }
 
 type RawTab =
   { tabId :: Int

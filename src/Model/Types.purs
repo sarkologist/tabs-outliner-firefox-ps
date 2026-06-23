@@ -11,6 +11,21 @@ import Data.Maybe (Maybe(..), fromMaybe)
 
 type NodeId = String
 
+-- | A live browser tab/window as reported by `windows.getAll`. Lives here (a
+-- | pure module) so the reducer and the startup re-match can use it without
+-- | depending on the Effect layer.
+type RuntimeTab =
+  { tabId :: Int
+  , windowId :: Int
+  , index :: Int
+  , url :: Maybe String
+  , title :: String
+  , active :: Boolean
+  , favIconUrl :: Maybe String
+  }
+
+type RuntimeWindow = { windowId :: Int, tabs :: Array RuntimeTab }
+
 -- | A node is a browser window, a browser tab, or a user-made group (folder).
 data Kind = KWindow | KTab | KGroup
 
