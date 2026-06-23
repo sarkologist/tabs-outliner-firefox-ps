@@ -1,0 +1,125 @@
+module Test.Model.ReconcileSpec where
+
+import Prelude
+
+import Data.Array as Array
+import Data.Foldable (foldl)
+import Data.Map as Map
+import Data.Maybe (Maybe(..))
+import Model.Event (BrowserEvent(..))
+import Model.Reconcile (applyBrowser)
+import Model.Tree (applyPatch)
+import Model.Types (Model, Status(..), emptyModel)
+import Test.Spec (Spec, describe, it)
+import Test.Spec.Assertions (shouldEqual)
+
+step :: BrowserEvent -> Model -> Model
+step e m = (applyBrowser 0.0 e m).model
+
+runEvents :: Array BrowserEvent -> Model
+runEvents = foldl (flip step) emptyModel
+
+openTab :: Int -> Int -> Int -> String -> Boolean -> BrowserEvent
+openTab tabId windowId index title active =
+  TabOpened { tabId, windowId, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
+
+spec :: Spec Unit
+spec = describe "Model.Reconcile" do
+  it "lazily creates a window node when a tab opens" do
+    let m = runEvents [ openTab 11 1 0 "A" true ]
+    m.roots `shouldEqual` [ "n1" ]
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
+    (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n1")
+    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Live
+    Map.lookup 11 m.byTab `shouldEqual` Just "n2"
+    Map.lookup 1 m.byWindow `shouldEqual` Just "n1"
+
+  it "does not duplicate a window opened explicitly then populated" do
+    let m = runEvents [ WindowOpened { windowId: 1 }, openTab 11 1 0 "A" true ]
+    Array.length m.roots `shouldEqual` 1
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
+
+  it "keeps a closed tab in place as history" do
+    let m = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
+    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Closed
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Nothing
+    -- still a child of its window (not detached)
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
+
+  it "updates title/url on change" do
+    let m = runEvents [ openTab 11 1 0 "A" true, TabChanged { tabId: 11, title: Just "A2", url: Just "http://a2", favIconUrl: Nothing } ]
+    (_.title <$> Map.lookup "n2" m.nodes) `shouldEqual` Just "A2"
+    (_.url <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "http://a2")
+
+  it "moves the active flag on activation" do
+    let
+      m = runEvents
+        [ openTab 11 1 0 "A" true
+        , openTab 12 1 1 "B" false
+        , TabActivated { tabId: 12, windowId: 1 }
+        ]
+    (_.active <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
+    (_.active <$> Map.lookup "n3" m.nodes) `shouldEqual` Just true
+
+  it "reorders within a window on move" do
+    let
+      m = runEvents
+        [ openTab 11 1 0 "A" true
+        , openTab 12 1 1 "B" false
+        , TabMoved { tabId: 12, windowId: 1, toIndex: 0 }
+        ]
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n3", "n2" ]
+
+  it "re-parents a tab across windows on attach" do
+    let
+      m = runEvents
+        [ openTab 11 1 0 "A" true
+        , openTab 21 2 0 "B" true
+        , TabAttached { tabId: 11, windowId: 2, index: 1 }
+        ]
+      win1 = Map.lookup "n1" m.nodes
+      win2 = Map.lookup "n3" m.nodes
+    (_.children <$> win1) `shouldEqual` Just [] -- tab left window 1
+    (_.children <$> win2) `shouldEqual` Just [ "n4", "n2" ] -- and joined window 2
+    (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n3")
+
+  it "closes a window subtree to history but keeps it as a root" do
+    let
+      m = runEvents
+        [ openTab 11 1 0 "A" true
+        , openTab 12 1 1 "B" false
+        , WindowClosed { windowId: 1 }
+        ]
+    m.roots `shouldEqual` [ "n1" ]
+    (_.status <$> Map.lookup "n1" m.nodes) `shouldEqual` Just Closed
+    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Closed
+    (_.status <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Closed
+
+  describe "patch is O(change)" do
+    it "a tab change touches exactly one node" do
+      let
+        m = runEvents [ openTab 11 1 0 "A" true ]
+        p = (applyBrowser 0.0 (TabChanged { tabId: 11, title: Just "X", url: Nothing, favIconUrl: Nothing }) m).patch
+      Array.length p.upserts `shouldEqual` 1
+      Array.length p.removes `shouldEqual` 0
+
+  describe "background/sidebar consistency by construction" do
+    it "folding patches onto a view yields the same nodes & roots as the authority" do
+      let
+        events =
+          [ openTab 11 1 0 "A" true
+          , openTab 12 1 1 "B" false
+          , openTab 21 2 0 "C" true
+          , TabActivated { tabId: 12, windowId: 1 }
+          , TabMoved { tabId: 12, windowId: 1, toIndex: 0 }
+          , TabChanged { tabId: 21, title: Just "C2", url: Nothing, favIconUrl: Nothing }
+          , TabClosed { tabId: 11 }
+          , TabAttached { tabId: 21, windowId: 1, index: 0 }
+          , WindowClosed { windowId: 2 }
+          ]
+        go acc e =
+          let s = applyBrowser 0.0 e acc.auth
+          in { auth: s.model, view: applyPatch s.patch acc.view }
+        result = foldl go { auth: emptyModel, view: emptyModel } events
+      result.view.nodes `shouldEqual` result.auth.nodes
+      result.view.roots `shouldEqual` result.auth.roots
