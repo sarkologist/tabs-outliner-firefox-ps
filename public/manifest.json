@@ -20,6 +20,13 @@
     "page": "options/options.html",
     "open_in_tab": true
   },
+  "commands": {
+    "_execute_sidebar_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S"
+      }
+    }
+  },
   "browser_specific_settings": {
     "gecko": {
       "id": "tabs-outliner-rewrite@example.local",

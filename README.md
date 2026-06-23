@@ -14,7 +14,9 @@ that still delivers the essential product.
 - Search the outline, including matches inside collapsed groups.
 - Font zoom and JSON export/import of the outline.
 - **Configurable keyboard shortcuts** for the toolbar actions (new group, focus search, zoom,
-  export, import), editable on a dedicated options page.
+  export, import), editable on a dedicated options page — plus a browser-level shortcut to
+  toggle the sidebar open/closed (default `Ctrl+Shift+S`, customizable in Firefox's *Manage
+  Extension Shortcuts*).
 - Persists locally; on restart, **re-binds reopened tabs to their existing nodes by URL**,
   so your organization (tree position, custom titles, collapse) survives a restart.
 

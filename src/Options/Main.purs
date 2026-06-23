@@ -98,6 +98,9 @@ render st =
             <> map (row st) Sh.allCmds
         )
     , HH.button [ HP.id "reset-all", HE.onClick \_ -> ResetAll ] [ HH.text "Reset all to defaults" ]
+    , HH.h2_ [ HH.text "Toggle the sidebar" ]
+    , HH.p [ HP.class_ (ClassName "hint") ]
+        [ HH.text "Opening and closing the sidebar is a browser-level shortcut (default Ctrl+Shift+S). It has to work even when the sidebar is closed, so Firefox handles it directly — change it in about:addons → gear menu → Manage Extension Shortcuts." ]
     ]
 
 row :: State -> Sh.Cmd -> H.ComponentHTML Action () Aff

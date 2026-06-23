@@ -133,4 +133,18 @@ test.describe("options page", () => {
     await expect(page.locator(".warn")).toBeVisible();
     await expect(page.locator(".warn")).toContainText("more than one action");
   });
+
+  test("explains the browser-level sidebar-toggle shortcut", async ({ page }) => {
+    await bootOptions(page);
+    await expect(page.getByRole("heading", { name: "Toggle the sidebar" })).toBeVisible();
+    await expect(page.getByText("Manage Extension Shortcuts")).toBeVisible();
+  });
+});
+
+test.describe("manifest", () => {
+  test("declares the sidebar-toggle command with a default key", async ({ page }) => {
+    const res = await page.request.get("/manifest.json");
+    const manifest = await res.json();
+    expect(manifest.commands?.["_execute_sidebar_action"]?.suggested_key?.default).toBe("Ctrl+Shift+S");
+  });
 });
