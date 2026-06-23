@@ -145,6 +145,6 @@ test.describe("manifest", () => {
   test("declares the sidebar-toggle command with a default key", async ({ page }) => {
     const res = await page.request.get("/manifest.json");
     const manifest = await res.json();
-    expect(manifest.commands?.["_execute_sidebar_action"]?.suggested_key?.default).toBe("Ctrl+Shift+S");
+    expect(manifest.commands?.["_execute_sidebar_action"]?.suggested_key?.default).toBe("Ctrl+Shift+Y");
   });
 });
