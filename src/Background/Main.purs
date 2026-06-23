@@ -6,22 +6,26 @@ module Background.Main where
 
 import Prelude
 
+import Data.Argonaut.Core (Json)
+import Data.Argonaut.Encode (encodeJson)
 import Data.Array (concatMap, fromFoldable)
-import Data.Foldable (foldl)
+import Data.DateTime.Instant (unInstant)
+import Data.Either (Either(..))
+import Data.Foldable (foldl, traverse_)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Newtype (unwrap)
-import Data.DateTime.Instant (unInstant)
 import Effect (Effect)
 import Effect.Aff (Aff, launchAff_)
 import Effect.Class (liftEffect)
 import Effect.Now (now)
 import Effect.Ref as Ref
-import Effect.Browser (RuntimeWindow)
+import Effect.Browser (BrowserApi, RuntimeWindow)
 import Effect.Browser as Browser
 import Effect.Channel as Channel
 import Effect.Persist as Persist
 import Model.Codec (encodePatch, encodeSnapshot)
+import Model.Command (BrowserAction(..), Request(..), applyCommand, decodeRequest)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 
@@ -71,7 +75,29 @@ main = launchAff_ do
   -- Live browser events.
   liftEffect $ Browser.subscribe api \ev -> launchAff_ (dispatch ev)
 
-  -- Serve the sidebar's one-shot snapshot request. (Commands join here in M4.)
-  liftEffect $ Channel.onRequest api \_req -> do
+  -- Serve the sidebar: snapshot requests and commands. A command applies,
+  -- persists, broadcasts the patch to every sidebar, and runs its browser
+  -- actions (focus/create/remove/restore).
+  liftEffect $ Channel.onRequest api \reqJson -> do
     m <- liftEffect (Ref.read ref)
-    pure (encodeSnapshot m)
+    case decodeRequest reqJson of
+      Right GetSnapshot -> pure (encodeSnapshot m)
+      Right (RunCommand cmd) -> do
+        t <- liftEffect nowMs
+        let r = applyCommand t cmd m
+        liftEffect (Ref.write r.model ref)
+        Persist.writePatch db r.patch
+        liftEffect (Channel.broadcast api (encodePatch r.patch))
+        traverse_ (runAction api) r.actions
+        pure ackJson
+      Left _ -> pure (encodeSnapshot m)
+
+ackJson :: Json
+ackJson = encodeJson { ok: true }
+
+runAction :: BrowserApi -> BrowserAction -> Aff Unit
+runAction api = case _ of
+  FocusTab w t -> Browser.focusTab api w t
+  CreateTab w u -> Browser.createTab api w u
+  RemoveTab t -> Browser.removeTab api t
+  RestoreSession s -> Browser.restoreSession api s

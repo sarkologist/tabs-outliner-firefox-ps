@@ -2,11 +2,20 @@ import type { Page } from "@playwright/test";
 import { installFakeBrowser, type Seed } from "./fake-browser";
 
 // Boot the real background module in the page against an injected fake browser.
-// (M3 will add the sidebar bundle on top of the same fake.)
 export async function bootBackground(page: Page, seed: Seed): Promise<void> {
   await page.addInitScript(installFakeBrowser, seed);
   await page.goto("/blank.html");
   await page.addScriptTag({ path: "dist/background/background.js" });
+}
+
+// Boot both the real background and the real sidebar in one page (mirroring the
+// original's harness: separate contexts collapsed into one, bridged by the fake
+// runtime message bus). The sidebar mounts Halogen onto <body>.
+export async function bootBackgroundAndSidebar(page: Page, seed: Seed): Promise<void> {
+  await page.addInitScript(installFakeBrowser, seed);
+  await page.goto("/blank.html");
+  await page.addScriptTag({ path: "dist/background/background.js" });
+  await page.addScriptTag({ path: "dist/sidebar/sidebar.js" });
 }
 
 // All persisted node records (parsed from the per-node JSON store).
