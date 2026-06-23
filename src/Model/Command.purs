@@ -95,20 +95,21 @@ applyCommand now cmd model = case cmd of
       count = Array.length snap.nodes
       idMap = Map.fromFoldable
         (Array.mapWithIndex (\i n -> Tuple n.id ("n" <> show (model.nextId + i))) snap.nodes)
-      remap old = fromMaybe old (Map.lookup old idMap)
+      remap old = Map.lookup old idMap
       -- imported nodes are inert history: tabs/windows become Closed (restorable),
-      -- groups stay live, and any live browser binding is dropped.
+      -- groups stay live, any live browser binding is dropped, and references
+      -- outside the imported set are dropped (never aliased onto live nodes).
       remapNode n = n
-        { id = remap n.id
-        , parent = map remap n.parent
-        , children = map remap n.children
+        { id = fromMaybe n.id (remap n.id)
+        , parent = n.parent >>= remap
+        , children = Array.mapMaybe remap n.children
         , status = if n.kind == KGroup then Live else Closed
         , tabId = Nothing
         , windowId = Nothing
         , active = false
         }
       remapped = map remapNode snap.nodes
-      patch = { upserts: remapped, removes: [], roots: Just (model.roots <> map remap snap.roots) }
+      patch = { upserts: remapped, removes: [], roots: Just (model.roots <> Array.mapMaybe remap snap.roots) }
       model' = (applyPatch patch model) { nextId = model.nextId + count }
     in
       { model: model', patch, actions: [] }

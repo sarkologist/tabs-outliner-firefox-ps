@@ -24,6 +24,7 @@ import Data.Maybe (Maybe(..), maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
+import Model.Tree (insertAtClamped)
 import Model.Types (Kind(..), Model, Node, NodeId, RuntimeTab, RuntimeWindow, Status(..), defaultNode)
 
 type Acc =
@@ -73,8 +74,9 @@ rematchOnStartup now current model0 =
       , nextId = acc3.nextId
       }
     upserts = Array.mapMaybe (\i -> Map.lookup i acc3.nodes) (Array.fromFoldable (Set.toUnfoldable acc3.touched :: List NodeId))
+    roots = if acc3.roots == model0.roots then Nothing else Just acc3.roots
   in
-    { model: model', patch: { upserts, removes: [], roots: Just acc3.roots } }
+    { model: model', patch: { upserts, removes: [], roots } }
 
 isLive :: Node -> Boolean
 isLive n = case n.status of
@@ -144,7 +146,7 @@ chooseWindow urlToWin acc cw =
 
 -- Re-bind a reopened tab to its existing node IN PLACE, or create a new node.
 matchTab :: Number -> NodeId -> Acc -> RuntimeTab -> Acc
-matchTab now winId acc ct = case ct.url >>= \u -> popPool u acc.pool of
+matchTab now winId acc ct = case ct.url >>= \u -> popPoolFor winId u acc of
   Just (Tuple nid pool') -> case Map.lookup nid acc.nodes of
     Just n -> acc
       { nodes = Map.insert nid (rebind n) acc.nodes
@@ -174,7 +176,7 @@ freshTab now winId acc ct =
       { title = ct.title, url = ct.url, favIconUrl = ct.favIconUrl, active = ct.active, tabId = Just ct.tabId, parent = Just winId }
     win = Map.lookup winId acc.nodes
     nodes' = case win of
-      Just w -> Map.insert winId (w { children = Array.snoc w.children nid }) (Map.insert nid n acc.nodes)
+      Just w -> Map.insert winId (w { children = insertAtClamped ct.index nid w.children }) (Map.insert nid n acc.nodes)
       Nothing -> Map.insert nid n acc.nodes
   in
     acc
@@ -184,11 +186,18 @@ freshTab now winId acc ct =
       , nextId = acc.nextId + 1
       }
 
-popPool :: String -> Map String (List NodeId) -> Maybe (Tuple NodeId (Map String (List NodeId)))
-popPool u pool = do
-  lst <- Map.lookup u pool
-  { head, tail } <- List.uncons lst
-  pure (Tuple head (Map.insert u tail pool))
+-- Pop a prior-live tab node bound to url `u`, PREFERRING one that was a child of
+-- the chosen window (so duplicate urls across windows don't steal each other's
+-- nodes), falling back to any matching node.
+popPoolFor :: NodeId -> String -> Acc -> Maybe (Tuple NodeId (Map String (List NodeId)))
+popPoolFor winId u acc = do
+  lst <- Map.lookup u acc.pool
+  let ownedByWindow nid = (Map.lookup nid acc.nodes >>= _.parent) == Just winId
+  case List.find ownedByWindow lst of
+    Just nid -> pure (Tuple nid (Map.insert u (List.delete nid lst) acc.pool))
+    Nothing -> do
+      { head, tail } <- List.uncons lst
+      pure (Tuple head (Map.insert u tail acc.pool))
 
 closeInAcc :: Number -> Acc -> NodeId -> Acc
 closeInAcc now acc nid = case Map.lookup nid acc.nodes of

@@ -11,7 +11,8 @@
     "build": "spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs",
     "test": "spago test",
     "test:e2e": "playwright test",
-    "check": "spago test && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs && playwright test"
+    "lint:ext": "web-ext lint --source-dir dist --no-config-discovery",
+    "check": "spago test && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs && web-ext lint --source-dir dist --no-config-discovery && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
