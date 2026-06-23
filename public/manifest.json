@@ -16,6 +16,10 @@
     "default_panel": "sidebar/sidebar.html",
     "default_icon": "icons/icon.svg"
   },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
   "browser_specific_settings": {
     "gecko": {
       "id": "tabs-outliner-rewrite@example.local",

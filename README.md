@@ -13,6 +13,8 @@ that still delivers the essential product.
 - Close, delete, rename, collapse/expand, flatten, drag-reorder, and group nodes.
 - Search the outline, including matches inside collapsed groups.
 - Font zoom and JSON export/import of the outline.
+- **Configurable keyboard shortcuts** for the toolbar actions (new group, focus search, zoom,
+  export, import), editable on a dedicated options page.
 - Persists locally; on restart, **re-binds reopened tabs to their existing nodes by URL**,
   so your organization (tree position, custom titles, collapse) survives a restart.
 
@@ -35,10 +37,11 @@ rewrite removes that machinery:
 snapshot, and on-demand search are O(total) — enforced by a 52k-node guard test.
 
 ```
-src/Model/      Types, Tree, Reconcile, Command, Rematch, Codec   — pure, the bulk of the logic
-src/Effect/     Browser (the only globalThis.browser seam), Persist, Channel
+src/Model/      Types, Tree, Reconcile, Command, Rematch, Codec, Shortcuts   — pure, the bulk of the logic
+src/Effect/     Browser (the only globalThis.browser seam), Persist, Channel, Settings
 src/Background/  Main — owns the model; observes events; persists + broadcasts
 src/Sidebar/     Main — the Halogen tree view + toolbar
+src/Options/     Main — the Halogen keyboard-shortcuts options page
 ```
 
 ## Develop
