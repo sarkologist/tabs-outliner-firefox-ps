@@ -121,10 +121,13 @@ export function installFakeBrowser(seed: Seed) {
     },
     sessions: { restore: () => Promise.resolve({}) },
     runtime: {
+      // real Firefox structured-clones messages across contexts; mirror that so
+      // the harness reflects real serialization cost and no accidental aliasing
       sendMessage: (msg: any) => {
+        const m = structuredClone(msg);
         for (const l of msgListeners.slice()) {
-          const r = l(msg, {});
-          if (r !== undefined) return Promise.resolve(r);
+          const r = l(m, {});
+          if (r !== undefined) return Promise.resolve(r).then((v) => structuredClone(v));
         }
         return Promise.reject(new Error("no receiver"));
       },

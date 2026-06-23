@@ -16,13 +16,12 @@ import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (Aff, attempt, delay)
+import Effect.Aff (Aff, attempt)
 import Effect.Browser (BrowserApi, getBrowser)
 import Effect.Channel (onBroadcast, request)
-import Effect.Persist (modelFromLoaded)
+import Effect.Persist as Persist
 import Halogen as H
 import Halogen.Aff as HA
 import Halogen.HTML as HH
@@ -130,10 +129,14 @@ handleAction = case _ of
     void $ H.subscribe emitter
     H.liftEffect $ onResize (HS.notify listener Remeasure)
     handleAction Remeasure
-    msnap <- H.liftAff (requestSnapshot api 40)
-    case msnap of
-      Just snap -> H.modify_ _ { model = modelFromLoaded snap.nodes snap.roots }
-      Nothing -> pure unit
+    -- Load the initial model straight from IndexedDB (same extension origin as
+    -- the background, which is its only writer). This skips an O(total) snapshot
+    -- encode + structured-clone over the message channel — the slow part of
+    -- opening the sidebar on a large tree. Live updates still arrive as patches,
+    -- and we subscribed above, so none are missed during the load.
+    db <- H.liftAff Persist.open
+    loaded <- H.liftAff (Persist.load db)
+    H.modify_ _ { model = Persist.modelFromLoaded loaded.nodes loaded.roots }
 
   GotPatch p -> H.modify_ \s -> s { model = applyPatch p s.model }
   Scrolled m -> H.modify_ _ { scrollTop = m.top, viewportH = m.height }
@@ -212,16 +215,6 @@ sendCommand c = do
   case st.api of
     Just api -> void $ H.liftAff (attempt (request api (encodeRequest (RunCommand c))))
     Nothing -> pure unit
-
-requestSnapshot :: BrowserApi -> Int -> Aff (Maybe Snapshot)
-requestSnapshot _ 0 = pure Nothing
-requestSnapshot api n = do
-  r <- attempt (request api (encodeRequest GetSnapshot))
-  case r of
-    Right json | Right snap <- decodeSnapshot json -> pure (Just snap)
-    _ -> do
-      delay (Milliseconds 50.0)
-      requestSnapshot api (n - 1)
 
 -- Accept our own flat export OR the original's nested portable-tree export.
 parseImport :: String -> Either String Snapshot
