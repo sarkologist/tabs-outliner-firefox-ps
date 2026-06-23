@@ -64,6 +64,43 @@ test.describe("commands", () => {
     await expect(page.locator("[role=treeitem]")).toHaveCount(3);
   });
 
+  test("restoring a closed window re-opens it as a new browser window", async ({ page }) => {
+    // two windows: window 1 (the one that stays open) and window 2 (to be closed)
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        { id: 1, tabs: [{ id: 11, url: "http://keep", title: "Keep", active: true }] },
+        {
+          id: 2,
+          tabs: [
+            { id: 21, url: "http://a", title: "Alpha" },
+            { id: 22, url: "http://b", title: "Beta" },
+          ],
+        },
+      ],
+    });
+    await expect(page.getByText("Alpha")).toBeVisible();
+
+    // close window 2 -> its window node + both tabs become closed history
+    await fake(page, "closeWindow", 2);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+    expect(await page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(1);
+
+    // restore it: click the closed Window row's title
+    await page.locator('.row[data-status="closed"]').filter({ hasText: "Window" }).locator(".title").click();
+
+    // everything goes live again, in place — no leftover closed rows, no duplicates
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    await expect(page.locator("[role=treeitem]")).toHaveCount(5);
+
+    // a brand-new browser window holds the restored tabs; window 1 is untouched
+    const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+    expect(windows.length).toBe(2);
+    const kept = windows.find((w: any) => w.id === 1);
+    expect(kept.tabs.map((t: any) => t.url)).toEqual(["http://keep"]);
+    const restored = windows.find((w: any) => w.id !== 1);
+    expect(restored.tabs.map((t: any) => t.url).sort()).toEqual(["http://a", "http://b"]);
+  });
+
   test("drag reorders siblings", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Beta")).toBeVisible();

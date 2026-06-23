@@ -53,12 +53,23 @@ applyBrowser :: Number -> BrowserEvent -> Model -> Step
 applyBrowser now ev model = case ev of
   WindowOpened { windowId } -> case Map.lookup windowId model.byWindow of
     Just _ -> noop model
-    Nothing ->
-      let
-        rw = resolveWindow now windowId model
-        patch = { upserts: [ rw.winNode ], removes: [], roots: Just (model.roots <> [ rw.winId ]) }
-      in
-        commit rw.nextId patch model
+    Nothing -> case Array.uncons model.pendingRestoreWindows of
+      -- a window restore is pending: bind this new browser window to the closed
+      -- window node being restored, so it goes live in place (its tabs rebind by
+      -- url as their own onCreated events arrive) rather than a fresh node.
+      Just { head: wNid, tail } ->
+        let model' = model { pendingRestoreWindows = tail }
+        in case Map.lookup wNid model'.nodes of
+          Just wn | wn.kind == KWindow ->
+            let
+              wn' = wn { status = Live, windowId = Just windowId, closedAt = Nothing }
+              patch = { upserts: [ wn' ], removes: [], roots: Nothing }
+            in
+              commit model'.nextId patch model'
+          -- the restored node was deleted before its window opened: drop the
+          -- stale queue entry and treat this as a brand-new window.
+          _ -> freshWindow now windowId model'
+      Nothing -> freshWindow now windowId model
 
   WindowClosed { windowId } -> case Map.lookup windowId model.byWindow of
     Nothing -> noop model
@@ -98,6 +109,15 @@ applyBrowser now ev model = case ev of
           commit model.nextId { upserts: [ p' ], removes: [], roots: Nothing } model
 
   TabAttached a -> attachTab now a.tabId a.windowId a.index model
+
+-- | A brand-new browser window: add a fresh window node at the end of the roots.
+freshWindow :: Number -> Int -> Model -> Step
+freshWindow now windowId model =
+  let
+    rw = resolveWindow now windowId model
+    patch = { upserts: [ rw.winNode ], removes: [], roots: Just (model.roots <> [ rw.winId ]) }
+  in
+    commit rw.nextId patch model
 
 -- | Flip one node (and, via callers, its descendants) to Closed history. Groups
 -- | are user annotations with no browser state, so they stay Live even inside a

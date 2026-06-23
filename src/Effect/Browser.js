@@ -71,5 +71,8 @@ export const createTabImpl = (api) => (windowId) => (url) => () => {
   return Promise.resolve(api.tabs.create(props));
 };
 
+export const createWindowImpl = (api) => (urls) => () =>
+  Promise.resolve(api.windows.create({ url: urls }));
+
 export const removeTabImpl = (api) => (tabId) => () =>
   Promise.resolve(api.tabs.remove(tabId));

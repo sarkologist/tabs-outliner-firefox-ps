@@ -8,6 +8,7 @@ module Effect.Browser
   , subscribe
   , focusTab
   , createTab
+  , createWindow
   , removeTab
   ) where
 
@@ -110,6 +111,7 @@ subscribe api handle = subscribeImpl api
 
 foreign import focusTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 foreign import createTabImpl :: BrowserApi -> Nullable Int -> Nullable String -> Effect (Promise Unit)
+foreign import createWindowImpl :: BrowserApi -> Array String -> Effect (Promise Unit)
 foreign import removeTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 
 -- | Activate a tab and focus its window (the FFI resolves the window from the tab).
@@ -118,6 +120,10 @@ focusTab api tabId = toAffE (focusTabImpl api tabId)
 
 createTab :: BrowserApi -> Maybe Int -> Maybe String -> Aff Unit
 createTab api windowId url = toAffE (createTabImpl api (toNullable windowId) (toNullable url))
+
+-- | Open one new browser window populated with the given urls.
+createWindow :: BrowserApi -> Array String -> Aff Unit
+createWindow api urls = toAffE (createWindowImpl api urls)
 
 removeTab :: BrowserApi -> Int -> Aff Unit
 removeTab api tabId = toAffE (removeTabImpl api tabId)

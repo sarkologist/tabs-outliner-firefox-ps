@@ -98,4 +98,5 @@ runAction :: BrowserApi -> BrowserAction -> Aff Unit
 runAction api = case _ of
   FocusTab t -> Browser.focusTab api t
   CreateTab w u -> Browser.createTab api w u
+  CreateWindow us -> Browser.createWindow api us
   RemoveTab t -> Browser.removeTab api t

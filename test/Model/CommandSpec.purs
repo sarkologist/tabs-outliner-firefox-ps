@@ -97,8 +97,40 @@ spec = describe "Model.Command" do
       closed = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
       activated = applyCommand 0.0 (Activate "n2") closed
       reopened = (applyBrowser 0.0 (openTab 99 1 0 "A" true) activated.model).model
-    activated.actions `shouldEqual` [ CreateTab Nothing (Just "http://A") ]
+    -- the window is still live, so the tab reopens back into it (not a new window)
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just "http://A") ]
     -- same node id, now live and bound to the new tab; no extra node created
     (_.status <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just Live
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
     Map.size reopened.nodes `shouldEqual` 2
+
+  it "restoring a closed window opens a new window (not the active one)" do
+    let
+      closedWin = (applyBrowser 0.0 (WindowClosed { windowId: 1 }) base).model
+      activated = applyCommand 0.0 (Activate "n1") closedWin
+    -- one new window carrying both tabs' urls, in order — no bare CreateTab
+    activated.actions `shouldEqual` [ CreateWindow [ "http://A", "http://B" ] ]
+    -- the closed window node is queued to rebind to the window that opens
+    activated.model.pendingRestoreWindows `shouldEqual` [ "n1" ]
+
+  it "the restored window node goes live in place when its window opens (no duplicate)" do
+    let
+      closedWin = (applyBrowser 0.0 (WindowClosed { windowId: 1 }) base).model
+      activated = applyCommand 0.0 (Activate "n1") closedWin
+      -- the browser opens the new window (id 2) and re-creates both tabs in it
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ WindowOpened { windowId: 2 }
+        , openTab 21 2 0 "A" true
+        , openTab 22 2 1 "B" false
+        ]
+    -- the existing window node n1 is now live and bound to the new browser window
+    (_.status <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just Live
+    (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 2)
+    reopened.pendingRestoreWindows `shouldEqual` []
+    -- its tabs re-bound to their existing nodes, still under n1, all live
+    (_.status <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just Live
+    (_.status <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just Live
+    (_.children <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just [ "n2", "n3" ]
+    -- no phantom window node, no duplicated tabs
+    reopened.roots `shouldEqual` [ "n1" ]
+    Map.size reopened.nodes `shouldEqual` 3
