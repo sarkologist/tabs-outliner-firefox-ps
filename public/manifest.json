@@ -23,7 +23,8 @@
   "commands": {
     "_execute_sidebar_action": {
       "suggested_key": {
-        "default": "Ctrl+Shift+Y"
+        "windows": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
       }
     }
   },
