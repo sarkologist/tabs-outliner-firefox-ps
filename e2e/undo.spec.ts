@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootBackgroundAndSidebar } from "./support/harness";
+import { bootBackgroundAndSidebar, fake } from "./support/harness";
 
 const seed = {
   windows: [
@@ -84,6 +84,26 @@ test.describe("undo / redo", () => {
 
     // the outline edit was NOT undone — the keystroke belonged to the text field
     await expect(groupRows(page)).toHaveCount(1);
+  });
+
+  test("undo of a rename does not resurrect a tab closed in the meantime", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await rowOf(page, "Alpha").locator(".btn-rename").click();
+    const input = page.locator(".rename-input");
+    await input.fill("Renamed");
+    await input.press("Enter");
+    await expect(page.getByText("Renamed")).toBeVisible();
+
+    // its browser tab closes (a live event) — the row greys out as history
+    await fake(page, "closeTab", 11);
+    await expect(page.locator('.row[data-status="closed"]').filter({ hasText: "Renamed" })).toBeVisible();
+
+    // undo the rename: the title reverts, but the tab stays closed history —
+    // it must NOT come back as a live tab bound to the (now gone) browser tab
+    await blur(page);
+    await page.keyboard.press("Control+z");
+    await expect(page.locator('.row[data-status="closed"]').filter({ hasText: "Alpha" })).toBeVisible();
+    await expect(page.locator('.row[data-status="live"]').filter({ hasText: "Alpha" })).toHaveCount(0);
   });
 
   test("undo with an empty history is a harmless no-op", async ({ page }) => {

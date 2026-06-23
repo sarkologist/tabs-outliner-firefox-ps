@@ -88,6 +88,7 @@ main = launchAff_ do
             Ref.write tail from
             Ref.modify_ (pushBounded a.inverse) to
           persistAndBroadcast api db a.patch
+          traverse_ (runAction api) a.actions
           pure ackJson
 
   -- Live browser events.

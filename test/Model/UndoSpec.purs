@@ -5,7 +5,7 @@ import Prelude
 import Data.Foldable (foldl)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Model.Command (Command(..), applyCommand)
+import Model.Command (BrowserAction(..), Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch)
@@ -117,3 +117,35 @@ spec = describe "Model.Undo" do
     -- the restored group, the kept window, AND the new window all survive
     undoStep.model.roots `shouldEqual` [ "n4", "n1", "n5" ]
     Map.member "n5" undoStep.model.nodes `shouldEqual` true
+
+  -- applyEntry reconciles against live state that changed since the command
+  it "undo of a rename keeps a since-closed tab closed (no resurrection)" do
+    let
+      renamed = applyCommand 0.0 (Rename "n2" "X") base
+      entry = inversePatch 0.0 base renamed.patch
+      -- the tab closes (a live browser event) before the user undoes the rename
+      closed = (applyBrowser 0.0 (TabClosed { tabId: 11 }) renamed.model).model
+      back = (applyEntry 0.0 entry closed).model
+    -- the rename is undone...
+    (_.customTitle <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Nothing
+    -- ...but the tab stays Closed history; it is NOT resurrected as a live tab
+    (_.status <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Closed
+    (_.tabId <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Nothing
+
+  it "undo of a move keeps a tab opened in the parent meanwhile (no orphan)" do
+    let
+      moved = applyCommand 0.0 (Move "n3" Nothing 0) base -- n3 out of window n1
+      entry = inversePatch 0.0 base moved.patch
+      -- a new tab (n4, tab 13) opens in window 1 after the move, before the undo
+      withTab = (applyBrowser 0.0 (openTab 13 1 1 "C" false) moved.model).model
+      back = (applyEntry 0.0 entry withTab).model
+    -- n3 returns under n1 AND the newly-opened tab survives, in order
+    (_.parent <$> Map.lookup "n3" back.nodes) `shouldEqual` Just (Just "n1")
+    (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n2", "n3", "n4" ]
+
+  it "undo/redo that removes a live tab closes the real browser tab" do
+    let
+      entry = { upserts: [], removes: [ "n2" ], roots: Nothing }
+      a = applyEntry 0.0 entry base -- n2 is the live tab 11
+    a.actions `shouldEqual` [ RemoveTab 11 ]
+    Map.member "n2" a.model.nodes `shouldEqual` false
