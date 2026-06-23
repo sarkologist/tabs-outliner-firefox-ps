@@ -171,7 +171,7 @@ toggleSection st =
   HH.div_
     ( [ HH.h2_ [ HH.text "Toggle the sidebar" ]
       , HH.p [ HP.class_ (ClassName "hint") ]
-          [ HH.text "Opening and closing the sidebar is a browser-level shortcut — it must work even when the sidebar is closed, so the browser handles it. It needs a modifier such as Ctrl or Alt." ]
+          [ HH.text "Opening and closing the sidebar is a browser-level shortcut — it must work even when the sidebar is closed, so the browser handles it. Use a modifier such as Ctrl or Alt (a function key works on its own)." ]
       ] <> bodyHtml
     )
   where

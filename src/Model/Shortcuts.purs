@@ -128,7 +128,7 @@ toCommandShortcut mac combo = case Array.unsnoc (split (Pattern "+") combo) of
          else
            Left "Add a modifier such as Ctrl or Alt — browser shortcuts require one."
 
--- valid `commands` keys: A-Z, 0-9, F1-F12, a few named keys; nothing else.
+-- valid `commands` keys: A-Z, 0-9, F1-F19, a few named keys; nothing else.
 toCommandKey :: String -> Maybe String
 toCommandKey k
   | SCU.length k == 1 =
