@@ -57,6 +57,10 @@ baseRowHeight = 22.0
 overscan :: Int
 overscan = 6
 
+-- keep zoom in a sane range (also guards a corrupt persisted value: rowH must be > 0)
+clampZoom :: Number -> Number
+clampZoom = clamp 0.6 2.5
+
 main :: Effect Unit
 main = HA.runHalogenAff do
   bodyEl <- HA.awaitBody
@@ -118,7 +122,7 @@ handleAction = case _ of
     H.liftEffect allowDrops
     z <- H.liftEffect getZoom
     { emitter, listener } <- H.liftEffect HS.create
-    H.modify_ _ { api = Just api, zoom = z, listener = Just listener }
+    H.modify_ _ { api = Just api, zoom = clampZoom z, listener = Just listener }
     -- subscribe to broadcasts first, so no patch is missed after the snapshot
     H.liftEffect $ onBroadcast api \json -> case decodePatch json of
       Right p -> HS.notify listener (GotPatch p)
@@ -171,7 +175,7 @@ handleAction = case _ of
   SetQuery q -> H.modify_ _ { query = q }
   Zoom factor -> do
     st <- H.get
-    let z = clamp 0.6 2.5 (st.zoom * factor)
+    let z = clampZoom (st.zoom * factor)
     H.modify_ _ { zoom = z }
     H.liftEffect (setZoom z)
   ExportClick -> do
@@ -257,8 +261,10 @@ render st =
   n = Array.length entries
   rowH = baseRowHeight * st.zoom
   totalH = Int.toNumber n * rowH
-  firstIdx = max 0 (Int.floor (st.scrollTop / rowH) - overscan)
   count = Int.ceil (st.viewportH / rowH) + overscan * 2
+  -- clamp the window so a shrunk list (collapse/delete/zoom) shows its tail
+  -- rather than going blank until the browser fires a corrective scroll
+  firstIdx = clamp 0 (max 0 (n - count)) (Int.floor (st.scrollTop / rowH) - overscan)
   slice = Array.slice firstIdx (firstIdx + count) entries
   slot i entry = Tuple entry.id $ case Map.lookup entry.id st.model.nodes of
     Nothing -> HH.text ""
