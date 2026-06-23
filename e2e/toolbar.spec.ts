@@ -127,8 +127,6 @@ test.describe("toolbar", () => {
     );
     await page.locator("#import").click();
     await expect(page.getByText("OrigGroup")).toBeVisible();
-    // imported folders come in collapsed (a real export is huge); expand to see the tab
-    await page.locator(".row", { hasText: "OrigGroup" }).locator(".toggle").click();
     await expect(page.locator('[data-status="closed"]').filter({ hasText: "OrigTab" })).toBeVisible();
   });
 
@@ -144,6 +142,16 @@ test.describe("toolbar", () => {
     await page.locator("#import").click();
     // the whole tree persists (3 seeded + 26061 imported)
     await expect.poll(() => countNodes(page), { timeout: 60_000 }).toBeGreaterThan(26_000);
+    // ...but it imports EXPANDED, and virtualization keeps only a viewport's worth
+    // of rows in the DOM (not 26k)
+    await expect.poll(() => page.locator("[role=treeitem]").count()).toBeGreaterThan(10);
+    expect(await page.locator("[role=treeitem]").count()).toBeLessThan(300);
+    // scrolling swaps which rows are mounted
+    const firstId = await page.locator("[role=treeitem]").first().getAttribute("data-node-id");
+    await page.locator("#tree").evaluate((el) => (el.scrollTop = 8000));
+    await expect
+      .poll(() => page.locator("[role=treeitem]").first().getAttribute("data-node-id"))
+      .not.toBe(firstId);
     await expect(page.locator("#notice")).toHaveCount(0);
     expect(errors).toEqual([]);
   });

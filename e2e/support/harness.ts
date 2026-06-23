@@ -15,6 +15,8 @@ export async function bootBackgroundAndSidebar(page: Page, seed: Seed): Promise<
   await page.addInitScript(installFakeBrowser, seed);
   await page.goto("/blank.html");
   await page.addScriptTag({ path: "dist/background/background.js" });
+  // the real stylesheet, so the flex/scroll layout virtualization relies on applies
+  await page.addStyleTag({ path: "dist/sidebar/sidebar.css" });
   await page.addScriptTag({ path: "dist/sidebar/sidebar.js" });
 }
 

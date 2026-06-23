@@ -40,3 +40,20 @@ export const getZoom = () => {
 };
 
 export const setZoom = (z) => () => localStorage.setItem("zoom", String(z));
+
+// --- viewport virtualization helpers ---
+
+// Pure: read scroll offset + visible height off a scroll event's target.
+export const scrollMetrics = (e) => ({
+  top: e.target.scrollTop,
+  height: e.target.clientHeight,
+});
+
+export const treeViewportHeight = () => {
+  const el = document.getElementById("tree");
+  return el ? el.clientHeight : 600;
+};
+
+export const onResize = (cb) => () => {
+  window.addEventListener("resize", () => cb());
+};

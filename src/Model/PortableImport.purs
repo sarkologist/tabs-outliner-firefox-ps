@@ -55,9 +55,6 @@ walkOne parent j st = do
       , customTitle = field "customTitle"
       , url = field "url"
       , favIconUrl = field "favIconUrl"
-      -- import folders collapsed: a real export can be tens of thousands of
-      -- nodes; expanding it all at once would swamp the renderer.
-      , collapsed = kind == KGroup
       , parent = parent
       , children = childRes.ids
       }

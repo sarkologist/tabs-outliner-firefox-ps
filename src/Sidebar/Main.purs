@@ -1,6 +1,7 @@
 -- | The sidebar: a thin Halogen view of the background-owned forest. On open it
 -- | pulls one snapshot (retrying until the background answers), then stays live
--- | by applying broadcast patches. It renders only visible rows (O(visible)),
+-- | by applying broadcast patches. It renders only the rows in the viewport
+-- | (virtualized — O(viewport), independent of how many are visible/expanded),
 -- | keyed by NodeId, and sends every user action back as a command. The toolbar
 -- | adds search (incl. inside collapsed groups), font zoom, and JSON
 -- | export/import.
@@ -12,6 +13,7 @@ import Data.Argonaut.Core (stringify)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
+import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Time.Duration (Milliseconds(..))
@@ -35,6 +37,7 @@ import Model.Command (Command(..), Request(..), encodeRequest)
 import Model.PortableImport (portableToSnapshot)
 import Model.Tree (applyPatch, searchVisible, visible)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), displayTitle, emptyModel)
+import Web.Event.Event (Event)
 import Web.UIEvent.KeyboardEvent (key)
 
 foreign import allowDrops :: Effect Unit
@@ -42,6 +45,17 @@ foreign import downloadJson :: String -> String -> Effect Unit
 foreign import pickJson :: (String -> Effect Unit) -> Effect Unit
 foreign import getZoom :: Effect Number
 foreign import setZoom :: Number -> Effect Unit
+foreign import scrollMetrics :: Event -> { top :: Number, height :: Number }
+foreign import treeViewportHeight :: Effect Number
+foreign import onResize :: Effect Unit -> Effect Unit
+
+-- height of one row in px at zoom 1; must match `.row` height in the CSS
+baseRowHeight :: Number
+baseRowHeight = 22.0
+
+-- extra rows rendered above/below the viewport for smooth scrolling
+overscan :: Int
+overscan = 6
 
 main :: Effect Unit
 main = HA.runHalogenAff do
@@ -58,12 +72,16 @@ type State =
   , query :: String
   , zoom :: Number
   , notice :: Maybe String
+  , scrollTop :: Number
+  , viewportH :: Number
   , listener :: Maybe (HS.Listener Action)
   }
 
 data Action
   = Initialize
   | GotPatch Patch
+  | Scrolled { top :: Number, height :: Number }
+  | Remeasure
   | Toggle NodeId Boolean
   | ClickRow NodeId
   | CloseClick NodeId
@@ -88,7 +106,7 @@ data Action
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, query: "", zoom: 1.0, notice: Nothing, listener: Nothing }
+      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0, viewportH: 600.0, listener: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
   }
@@ -106,12 +124,18 @@ handleAction = case _ of
       Right p -> HS.notify listener (GotPatch p)
       Left _ -> pure unit
     void $ H.subscribe emitter
+    H.liftEffect $ onResize (HS.notify listener Remeasure)
+    handleAction Remeasure
     msnap <- H.liftAff (requestSnapshot api 40)
     case msnap of
       Just snap -> H.modify_ _ { model = modelFromLoaded snap.nodes snap.roots }
       Nothing -> pure unit
 
   GotPatch p -> H.modify_ \s -> s { model = applyPatch p s.model }
+  Scrolled m -> H.modify_ _ { scrollTop = m.top, viewportH = m.height }
+  Remeasure -> do
+    h <- H.liftEffect treeViewportHeight
+    H.modify_ _ { viewportH = h }
   Toggle nid value -> sendCommand (Collapse nid value)
   ClickRow nid -> sendCommand (Activate nid)
   CloseClick nid -> sendCommand (CloseNode nid)
@@ -219,10 +243,26 @@ render st =
           ]
       ]
         <> noticeBanner st.notice
-        <> [ HK.div [ HP.id "tree", HP.attr (AttrName "role") "tree" ] (map (row st) entries) ]
+        <>
+          [ HH.div
+              [ HP.id "tree", HP.attr (AttrName "role") "tree", HE.onScroll (Scrolled <<< scrollMetrics) ]
+              [ HK.div
+                  [ HP.id "tree-inner", HP.style ("position:relative;height:" <> show totalH <> "px") ]
+                  (Array.mapWithIndex slot slice)
+              ]
+          ]
     )
   where
   entries = if st.query == "" then visible st.model else searchVisible st.query st.model
+  n = Array.length entries
+  rowH = baseRowHeight * st.zoom
+  totalH = Int.toNumber n * rowH
+  firstIdx = max 0 (Int.floor (st.scrollTop / rowH) - overscan)
+  count = Int.ceil (st.viewportH / rowH) + overscan * 2
+  slice = Array.slice firstIdx (firstIdx + count) entries
+  slot i entry = Tuple entry.id $ case Map.lookup entry.id st.model.nodes of
+    Nothing -> HH.text ""
+    Just node -> renderNode st (firstIdx + i) entry.depth rowH node
   tbtn i label act = HH.button [ HP.id i, HE.onClick \_ -> act ] [ HH.text label ]
 
 noticeBanner :: Maybe String -> Array (H.ComponentHTML Action () Aff)
@@ -230,19 +270,18 @@ noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-row :: State -> { id :: NodeId, depth :: Int } -> Tuple String (H.ComponentHTML Action () Aff)
-row st { id, depth } = Tuple id $ case Map.lookup id st.model.nodes of
-  Nothing -> HH.text ""
-  Just n -> renderNode st depth n
-
-renderNode :: State -> Int -> Node -> H.ComponentHTML Action () Aff
-renderNode st depth n =
+renderNode :: State -> Int -> Int -> Number -> Node -> H.ComponentHTML Action () Aff
+renderNode st idx depth rowH n =
   HH.div
     [ HP.classes (map ClassName [ "row", statusClass n.status ])
     , HP.attr (AttrName "data-node-id") n.id
     , HP.attr (AttrName "data-status") (statusClass n.status)
     , HP.attr (AttrName "role") "treeitem"
-    , HP.style ("padding-left:" <> show (4 + depth * 14) <> "px")
+    , HP.style
+        ( "position:absolute;left:0;right:0;height:" <> show rowH
+            <> "px;top:" <> show (Int.toNumber idx * rowH)
+            <> "px;padding-left:" <> show (4 + depth * 14) <> "px"
+        )
     , HP.draggable true
     , HE.onDragStart \_ -> DragStart n.id
     , HE.onDrop \_ -> DropOn n.id
