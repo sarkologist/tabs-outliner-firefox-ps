@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Tabs Outliner",
+  "name": "Tabs Outliner (PS rewrite)",
   "version": "0.1.0",
-  "description": "A durable sidebar outline of live and recently-closed tabs.",
+  "description": "A durable sidebar outline of live and recently-closed tabs (PureScript rewrite).",
   "permissions": ["tabs", "storage", "unlimitedStorage"],
   "icons": {
     "48": "icons/icon.svg",
@@ -12,7 +12,7 @@
     "scripts": ["background/background.js"]
   },
   "sidebar_action": {
-    "default_title": "Tabs Outliner",
+    "default_title": "Tabs Outliner (PS rewrite)",
     "default_panel": "sidebar/sidebar.html",
     "default_icon": "icons/icon.svg"
   },
