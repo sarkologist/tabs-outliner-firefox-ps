@@ -12,7 +12,7 @@ import Data.Array as Array
 import Data.DateTime.Instant (unInstant)
 import Data.Either (Either(..))
 import Data.Foldable (traverse_)
-import Data.Maybe (isNothing)
+import Data.Maybe (Maybe(..), isNothing)
 import Data.Newtype (unwrap)
 import Effect (Effect)
 import Effect.Aff (Aff, launchAff_)
@@ -29,6 +29,7 @@ import Model.Event (BrowserEvent)
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
 import Model.Types (Patch)
+import Model.Undo (applyEntry, inversePatch, undoable)
 
 nowMs :: Effect Number
 nowMs = (unwrap <<< unInstant) <$> now
@@ -50,6 +51,12 @@ main = launchAff_ do
   -- (it loads the rest straight from IndexedDB)
   persistAndBroadcast api db rematched.patch
   ref <- liftEffect (Ref.new rematched.model)
+  -- Undo/redo are background-only state (not part of the shared, persisted Model):
+  -- stacks of inverse patches. Browser events never touch them — you don't undo a
+  -- tab the browser opened — so they survive arbitrary live activity between a
+  -- command and its undo.
+  undoRef <- liftEffect (Ref.new ([] :: Array Patch))
+  redoRef <- liftEffect (Ref.new ([] :: Array Patch))
 
   let
     -- ATOMICITY: read -> applyX -> write is fully synchronous (no `await`
@@ -64,6 +71,25 @@ main = launchAff_ do
       liftEffect (Ref.write s.model ref)
       persistAndBroadcast api db s.patch
 
+    -- Undo/redo step: pop one inverse patch off `from`, apply it (reusing the
+    -- command persist/broadcast path), and push the resulting inverse onto `to`.
+    -- An empty stack is a no-op, so the sidebar can fire these unconditionally.
+    stepStack :: Ref.Ref (Array Patch) -> Ref.Ref (Array Patch) -> Aff Json
+    stepStack from to = do
+      entries <- liftEffect (Ref.read from)
+      case Array.uncons entries of
+        Nothing -> pure ackJson
+        Just { head: entry, tail } -> do
+          m <- liftEffect (Ref.read ref)
+          t <- liftEffect nowMs
+          let a = applyEntry t entry m
+          liftEffect do
+            Ref.write a.model ref
+            Ref.write tail from
+            Ref.modify_ (pushBounded a.inverse) to
+          persistAndBroadcast api db a.patch
+          pure ackJson
+
   -- Live browser events.
   liftEffect $ Browser.subscribe api \ev -> launchAff_ (dispatch ev)
 
@@ -76,10 +102,18 @@ main = launchAff_ do
       m <- liftEffect (Ref.read ref)
       t <- liftEffect nowMs
       let r = applyCommand t cmd m
-      liftEffect (Ref.write r.model ref)
+      liftEffect do
+        Ref.write r.model ref
+        -- record the inverse so this command can be undone; a fresh edit
+        -- invalidates any redo future
+        when (undoable cmd && not (isEmptyPatch r.patch)) do
+          Ref.modify_ (pushBounded (inversePatch t m r.patch)) undoRef
+          Ref.write [] redoRef
       persistAndBroadcast api db r.patch
       traverse_ (runAction api) r.actions
       pure ackJson
+    Right Undo -> stepStack undoRef redoRef
+    Right Redo -> stepStack redoRef undoRef
     _ -> pure ackJson
 
 -- Persist + broadcast a patch, skipping the no-op patches that focus/close/
@@ -91,6 +125,14 @@ persistAndBroadcast api db patch = unless (isEmptyPatch patch) do
 
 isEmptyPatch :: Patch -> Boolean
 isEmptyPatch p = Array.null p.upserts && Array.null p.removes && isNothing p.roots
+
+-- | Cap on undo depth: bounds the inverse-patch memory a long session can
+-- | accumulate (e.g. repeated large imports), dropping the oldest entry.
+maxUndoDepth :: Int
+maxUndoDepth = 50
+
+pushBounded :: forall a. a -> Array a -> Array a
+pushBounded x xs = Array.take maxUndoDepth (Array.cons x xs)
 
 ackJson :: Json
 ackJson = encodeJson { ok: true }

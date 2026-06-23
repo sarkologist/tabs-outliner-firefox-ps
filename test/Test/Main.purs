@@ -10,6 +10,7 @@ import Test.Model.ReconcileSpec as ReconcileSpec
 import Test.Model.RematchSpec as RematchSpec
 import Test.Model.ShortcutsSpec as ShortcutsSpec
 import Test.Model.TreeSpec as TreeSpec
+import Test.Model.UndoSpec as UndoSpec
 import Test.Spec.Reporter.Console (consoleReporter)
 import Test.Spec.Runner.Node (runSpecAndExitProcess)
 
@@ -25,3 +26,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   PortableImportSpec.spec
   GuardSpec.spec
   ShortcutsSpec.spec
+  UndoSpec.spec

@@ -11,6 +11,9 @@ that still delivers the essential product.
 - Click a live tab to focus it; click a closed one to restore it (re-binding the same
   node — no duplicate).
 - Close, delete, rename, collapse/expand, flatten, drag-reorder, and group nodes.
+- **Undo/redo** of outline edits — rename, move, group, flatten, delete, import — with
+  `Ctrl+Z` / `Ctrl+Shift+Z` (`⌘Z` / `⇧⌘Z` on macOS) or the toolbar's ↶ ↷. Undoing a delete
+  brings the subtree back as restorable history (its live tabs were already closed).
 - Search the outline, including matches inside collapsed groups.
 - Font zoom and JSON export/import of the outline.
 - **Configurable keyboard shortcuts** for the toolbar actions (new group, focus search, zoom,
@@ -30,7 +33,7 @@ rewrite removes that machinery:
 | Concern | Here |
 | --- | --- |
 | State | One forest of nodes (`{kind, status, parent, children, …}`). Liveness is an attribute. |
-| Logic | One **pure reducer** — `Model.Reconcile` (browser events) + `Model.Command` (user commands) — each step returns `{model, patch}`. |
+| Logic | One **pure reducer** — `Model.Reconcile` (browser events) + `Model.Command` (user commands) — each step returns `{model, patch}`. Undo/redo is just that patch, inverted (`Model.Undo`) — no snapshots, no second apply path. |
 | Persistence | **One IndexedDB record per node**; a patch writes only touched records (`Effect.Persist`). The journal/backup layers simply don't exist. |
 | Sidebar sync | Background owns the model; the sidebar pulls one snapshot then applies broadcast **patches** (`Effect.Channel`, ~3 messages). `applyPatch` is shared, so the two stay consistent by construction. |
 | Restart | One bounded pure function, `Model.Rematch.rematchOnStartup` (O(live tabs)). |
@@ -40,7 +43,7 @@ rewrite removes that machinery:
 snapshot, and on-demand search are O(total) — enforced by a 52k-node guard test.
 
 ```
-src/Model/      Types, Tree, Reconcile, Command, Rematch, Codec, Shortcuts   — pure, the bulk of the logic
+src/Model/      Types, Tree, Reconcile, Command, Undo, Rematch, Codec, Shortcuts   — pure, the bulk of the logic
 src/Effect/     Browser (the only globalThis.browser seam), Persist, Channel, Settings
 src/Background/  Main — owns the model; observes events; persists + broadcasts
 src/Sidebar/     Main — the Halogen tree view + toolbar
