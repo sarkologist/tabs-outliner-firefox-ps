@@ -57,3 +57,11 @@ spec = describe "Model.Shortcuts" do
 
   it "toCommandShortcut rejects keys the commands API can't express" do
     toCommandShortcut false "Ctrl+/" `shouldEqual` Left "That key can't be used for a browser shortcut."
+
+  it "toCommandShortcut allows a bare function key (no modifier required)" do
+    toCommandShortcut false "F5" `shouldEqual` Right "F5"
+    toCommandShortcut false "F13" `shouldEqual` Right "F13"
+    toCommandShortcut false "Ctrl+F5" `shouldEqual` Right "Ctrl+F5"
+
+  it "toCommandShortcut rejects more than two modifiers" do
+    toCommandShortcut false "Ctrl+Alt+Shift+k" `shouldEqual` Left "Use at most two modifiers (for example Ctrl and Shift)."

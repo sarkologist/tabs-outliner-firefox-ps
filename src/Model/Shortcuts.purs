@@ -119,9 +119,14 @@ toCommandShortcut mac combo = case Array.unsnoc (split (Pattern "+") combo) of
   Just { init: rawMods, last: rawKey } -> case toCommandKey rawKey of
     Nothing -> Left "That key can't be used for a browser shortcut."
     Just key ->
-      let mods = map (toCommandMod mac) rawMods
-      in if any isPrimaryMod mods then Right (joinWith "+" (orderMods mods <> [ key ]))
-         else Left "Add a modifier such as Ctrl or Alt — browser shortcuts require one."
+      let mods = Array.nub (map (toCommandMod mac) rawMods)
+      in if Array.length mods > 2 then
+           Left "Use at most two modifiers (for example Ctrl and Shift)."
+         -- function keys may stand alone; every other key needs a primary modifier
+         else if isFunctionKey key || any isPrimaryMod mods then
+           Right (joinWith "+" (orderMods mods <> [ key ]))
+         else
+           Left "Add a modifier such as Ctrl or Alt — browser shortcuts require one."
 
 -- valid `commands` keys: A-Z, 0-9, F1-F12, a few named keys; nothing else.
 toCommandKey :: String -> Maybe String
@@ -148,8 +153,12 @@ toCommandKey k
       _ | k `elem` fKeys -> Just k
         | otherwise -> Nothing
 
+-- F1-F19: Firefox accepts up to F19 for command shortcuts (135+; we target 142).
 fKeys :: Array String
-fKeys = map (\n -> "F" <> show n) (Array.range 1 12)
+fKeys = map (\n -> "F" <> show n) (Array.range 1 19)
+
+isFunctionKey :: String -> Boolean
+isFunctionKey k = k `elem` fKeys
 
 isAsciiAlphaNum :: String -> Boolean
 isAsciiAlphaNum s = (s >= "A" && s <= "Z") || (s >= "0" && s <= "9")

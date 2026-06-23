@@ -25,13 +25,23 @@ export function installFakeBrowser(seed: Seed) {
   const commandShortcuts = [
     { name: "_execute_sidebar_action", shortcut: "Ctrl+Shift+Y", _default: "Ctrl+Shift+Y" },
   ];
+  // Mirror Firefox's commands grammar closely enough that the e2e can't pass for
+  // shortcuts real Firefox would reject.
   const validateShortcut = (s: string) => {
     const parts = String(s).split("+");
     const key = parts[parts.length - 1];
     const mods = parts.slice(0, -1);
     const primary = ["Ctrl", "Alt", "Command", "MacCtrl"];
-    if (!key) return "Shortcut is empty.";
-    if (!mods.some((m) => primary.includes(m))) return "Shortcut must include Ctrl, Alt, Command, or MacCtrl.";
+    const named = ["Comma", "Period", "Space", "Home", "End", "PageUp", "PageDown", "Insert", "Delete", "Up", "Down", "Left", "Right"];
+    const fkey = /^F([1-9]|1[0-9])$/.test(key); // F1..F19
+    // a couple of browser-reserved combos, so the rejection path is exercisable
+    const reserved = ["Ctrl+Shift+Q", "Command+Shift+Q", "MacCtrl+Shift+Q"];
+    if (reserved.includes(s)) return "This shortcut is reserved by the browser.";
+    if (!(/^[A-Z0-9]$/.test(key) || named.includes(key) || fkey)) return "Invalid key.";
+    if (mods.length > 2) return "Use at most two modifiers.";
+    if (new Set(mods).size !== mods.length) return "Duplicate modifier.";
+    if (mods.some((m) => !primary.includes(m) && m !== "Shift")) return "Invalid modifier.";
+    if (!fkey && !mods.some((m) => primary.includes(m))) return "Shortcut must include Ctrl, Alt, Command, or MacCtrl.";
     return null;
   };
 

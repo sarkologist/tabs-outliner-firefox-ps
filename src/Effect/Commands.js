@@ -18,7 +18,8 @@ export const getSidebarToggleImpl = () => {
   return Promise.resolve(c.getAll())
     .then((list) => {
       const cmd = (list || []).find((x) => x && x.name === SIDEBAR_CMD);
-      return cmd && typeof cmd.shortcut === "string" ? cmd.shortcut : "";
+      if (!cmd) return null; // command not present => treat as unavailable (fallback note)
+      return typeof cmd.shortcut === "string" ? cmd.shortcut : ""; // "" => found but unbound
     })
     .catch(() => null);
 };

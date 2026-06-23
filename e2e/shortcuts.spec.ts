@@ -194,6 +194,16 @@ test.describe("options page — sidebar toggle (commands API)", () => {
     expect(await stored(page)).toBe("Ctrl+Shift+Y"); // unchanged
   });
 
+  test("surfaces the browser's rejection of a reserved shortcut", async ({ page }) => {
+    await bootOptionsWithCommands(page);
+    await page.locator("#toggle-change").click();
+    // valid format, but the fake marks Command+Shift+Q reserved (as Firefox might)
+    await page.keyboard.press("Meta+Shift+Q");
+    await expect(page.locator("#toggle-error")).toBeVisible();
+    await expect(page.locator("#toggle-error")).toContainText("reserved");
+    expect(await stored(page)).toBe("Ctrl+Shift+Y"); // unchanged
+  });
+
   test("Reset restores the manifest default", async ({ page }) => {
     await bootOptionsWithCommands(page);
     await page.locator("#toggle-change").click();
