@@ -11,7 +11,7 @@ import Data.Array as Array
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Model.Event (BrowserEvent(..), OpenedTab)
-import Model.Tree (applyPatch, insertAtClamped, liveTabNode, liveWindowNode, moveWithin, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, liveTabNode, liveWindowNode, mergePatch, moveWithin, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Step, defaultNode, emptyPatch, isLive)
 
 mkId :: Int -> NodeId
@@ -209,5 +209,10 @@ attachTab now tabId windowId index model = withTab tabId model \nid n ->
     n' = n { parent = Just rw.winId }
     roots' = if rw.isNew then Just (model.roots <> [ rw.winId ]) else Nothing
     patch = { upserts: oldParentUpsert <> [ winNode', n' ], removes: [], roots: roots' }
+    base = commit rw.nextId patch model
   in
-    commit rw.nextId patch model
+    -- the tab left its old parent; if that emptied an un-renamed group, prune it
+    case n.parent of
+      Just pid | pid /= rw.winId ->
+        let p = pruneFrom pid base.model in base { model = p.model, patch = mergePatch base.patch p.patch }
+      _ -> base

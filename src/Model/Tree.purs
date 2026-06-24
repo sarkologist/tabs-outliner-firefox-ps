@@ -9,11 +9,11 @@ import Data.Array as Array
 import Data.Foldable (foldl, foldr)
 import Data.List (List(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.String as String
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, isLive, isLiveTab)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, emptyPatch, isLive, isLiveTab)
 
 -- | Apply a patch to a model: upsert nodes, delete removed ones, update roots,
 -- | and keep the live indexes current. Shared by the background (authority) and
@@ -52,6 +52,39 @@ isLiveWindow :: Model -> Node -> Boolean
 isLiveWindow model n = n.kind == KGroup && Array.any childIsLiveTab n.children
   where
   childIsLiveTab cid = maybe false isLiveTab (Map.lookup cid model.nodes)
+
+-- | Combine two patches applied in sequence (`b` after `a`): later upserts win
+-- | (folded last), removes accumulate, and `b`'s roots — if it set them — win.
+mergePatch :: Patch -> Patch -> Patch
+mergePatch a b =
+  { upserts: a.upserts <> b.upserts
+  , removes: a.removes <> b.removes
+  , roots: case b.roots of
+      Just _ -> b.roots
+      Nothing -> a.roots
+  }
+
+-- | Prune `nid` if it is now a childless, un-renamed group, then walk up doing the
+-- | same to its parent. Emptying a container (by deleting or moving away its last
+-- | child) thus removes it and any ancestors it leaves empty — but a renamed group
+-- | is a deliberate label and is kept. O(depth up the pruned chain). Returns the
+-- | new model and the patch of what it pruned, to fold (via `mergePatch`) into the
+-- | triggering edit's own patch.
+pruneFrom :: NodeId -> Model -> { model :: Model, patch :: Patch }
+pruneFrom nid model = case Map.lookup nid model.nodes of
+  Just n | n.kind == KGroup && Array.null n.children && isNothing n.customTitle ->
+    let
+      parentUpsert = case n.parent >>= (\pid -> Map.lookup pid model.nodes) of
+        Just p -> [ p { children = Array.delete nid p.children } ]
+        Nothing -> []
+      rootsM = if Array.elem nid model.roots then Just (Array.delete nid model.roots) else Nothing
+      step = { upserts: parentUpsert, removes: [ nid ], roots: rootsM }
+      model' = applyPatch step model
+    in
+      case n.parent of
+        Just pid -> let up = pruneFrom pid model' in { model: up.model, patch: mergePatch step up.patch }
+        Nothing -> { model: model', patch: step }
+  _ -> { model, patch: emptyPatch }
 
 lookupNode :: NodeId -> Model -> Maybe Node
 lookupNode id model = Map.lookup id model.nodes

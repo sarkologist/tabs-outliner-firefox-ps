@@ -18,7 +18,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, mergePatch, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, defaultNode, emptyPatch, isLiveTab)
 
 data Command
@@ -90,7 +90,8 @@ applyCommand now cmd model = case cmd of
         rootsM = if Array.elem nid model.roots then Just (Array.delete nid model.roots) else Nothing
         patch = { upserts: parentUpserts, removes: ids, roots: rootsM }
       in
-        { model: applyPatch patch model, patch, actions: map RemoveTab (liveTabIds nid) }
+        withPrune node.parent
+          { model: applyPatch patch model, patch, actions: map RemoveTab (liveTabIds nid) }
 
   Move nid mParent index -> move nid mParent index
 
@@ -150,6 +151,15 @@ applyCommand now cmd model = case cmd of
 
   actionsOnly :: Array BrowserAction -> CmdResult
   actionsOnly actions = { model, patch: emptyPatch, actions }
+
+  -- After an edit detached a child from `mParent`, prune that parent if it is now a
+  -- childless, un-renamed group (cascading up), folding the removal into the edit's
+  -- patch. (A live-tab move detaches later, via the browser event, so it prunes in
+  -- Model.Reconcile instead.)
+  withPrune :: Maybe NodeId -> CmdResult -> CmdResult
+  withPrune mParent r = case mParent of
+    Nothing -> r
+    Just pid -> let p = pruneFrom pid r.model in { model: p.model, patch: mergePatch r.patch p.patch, actions: r.actions }
 
   -- live tab ids in the subtree rooted at nid (a tabId is present only on a live tab)
   liveTabIds :: NodeId -> Array Int
@@ -232,8 +242,7 @@ applyCommand now cmd model = case cmd of
             detached = detachUpserts node
             rootsDetached = Array.delete nid model.roots
             node' = node { parent = mParent }
-          in
-            case mParent of
+            result = case mParent of
               Nothing ->
                 let patch = { upserts: detached <> [ node' ], removes: [], roots: Just (insertAtClamped index nid rootsDetached) }
                 in { model: applyPatch patch model, patch, actions: [] }
@@ -249,6 +258,8 @@ applyCommand now cmd model = case cmd of
                     patch = { upserts, removes: [], roots: rootsM }
                   in
                     { model: applyPatch patch model, patch, actions: [] }
+          -- moving the node out may have emptied its old parent
+          in withPrune node.parent result
 
   -- A live tab dragged to a different owning container: move the REAL browser tab,
   -- not the tree node. The tree re-settles from the resulting browser events.
@@ -300,7 +311,7 @@ applyCommand now cmd model = case cmd of
             case node.parent of
               Just pid -> case Map.lookup pid model.nodes of
                 Nothing -> noChange
-                Just p -> withBrowser { upserts: [ p { children = spliceReplace nid kids p.children } ] <> promote (Just pid), removes: [ nid ], roots: Nothing }
+                Just p -> withPrune node.parent (withBrowser { upserts: [ p { children = spliceReplace nid kids p.children } ] <> promote (Just pid), removes: [ nid ], roots: Nothing })
               Nothing -> withBrowser { upserts: promote Nothing, removes: [ nid ], roots: Just (spliceReplace nid kids model.roots) }
 
 spliceReplace :: NodeId -> Array NodeId -> Array NodeId -> Array NodeId

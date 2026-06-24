@@ -70,17 +70,19 @@ spec = describe "Model.Reconcile" do
         ]
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n3", "n2" ]
 
-  it "re-parents a tab across windows on attach" do
+  it "re-parents a tab across windows on attach, pruning the emptied window" do
     let
       m = runEvents
         [ openTab 11 1 0 "A" true
         , openTab 21 2 0 "B" true
         , TabAttached { tabId: 11, windowId: 2, index: 1 }
         ]
-      win1 = Map.lookup "n1" m.nodes
       win2 = Map.lookup "n3" m.nodes
-    (_.children <$> win1) `shouldEqual` Just [] -- tab left window 1
-    (_.children <$> win2) `shouldEqual` Just [ "n4", "n2" ] -- and joined window 2
+    -- window 1 emptied when its only tab left, so it is pruned (an empty window
+    -- can't exist in the browser anyway)
+    Map.lookup "n1" m.nodes `shouldEqual` Nothing
+    m.roots `shouldEqual` [ "n3" ]
+    (_.children <$> win2) `shouldEqual` Just [ "n4", "n2" ] -- the tab joined window 2
     (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n3")
 
   it "closes a window subtree to history but keeps it as a root" do
