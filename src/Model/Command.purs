@@ -19,7 +19,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, mergePatch, pruneFrom, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, mergePatch, pruneFrom, rootAncestor, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, defaultNode, emptyPatch, isLiveTab)
 
 data Command
@@ -29,6 +29,8 @@ data Command
   | CloseNode NodeId -- close the live tabs in the subtree (keep history)
   | Delete NodeId -- remove the subtree from the tree (and close its live tabs)
   | Move NodeId (Maybe NodeId) Int -- node, new parent (Nothing = root), index
+  | MoveTopLevel NodeId -- pull a nested node out to the root, just after its root ancestor
+  | MoveBottom NodeId -- pull a node out to the very bottom of the root list
   | Flatten NodeId -- dissolve a group, promoting its children
   | NewGroup (Maybe NodeId) Int -- new folder under parent at index
   | Import Snapshot -- add an exported outline as inert, restorable top-level nodes
@@ -95,6 +97,24 @@ applyCommand now cmd model = case cmd of
           { model: applyPatch patch model, patch, actions: map RemoveTab (liveTabIds nid) }
 
   Move nid mParent index -> move nid mParent index
+
+  -- Pull a nested node out to the top level, landing it just after the root it
+  -- currently belongs to (matching the original). A live tab is left alone:
+  -- yanking one out to the root is the deliberately-dropped move-to-new-window,
+  -- so these reorganize only saved/structural nodes (purely in the tree).
+  MoveTopLevel nid -> withNode nid \n -> case n.parent of
+    Nothing -> noChange -- already top level
+    Just _
+      | isLiveTab n -> noChange
+      | otherwise -> case Array.elemIndex (rootAncestor nid model) model.roots of
+          Just ri -> move nid Nothing (ri + 1)
+          Nothing -> noChange
+
+  -- Pull a node out to the very bottom of the root list (a no-op if it's already
+  -- the last root). Same live-tab carve-out as MoveTopLevel.
+  MoveBottom nid -> withNode nid \n ->
+    if isLiveTab n || Array.last model.roots == Just nid then noChange
+    else move nid Nothing (Array.length model.roots)
 
   Flatten nid -> flatten nid
 
@@ -374,6 +394,8 @@ encodeCommand = case _ of
   CloseNode nid -> encodeJson { tag: "close", id: nid }
   Delete nid -> encodeJson { tag: "delete", id: nid }
   Move nid parent index -> encodeJson { tag: "move", id: nid, parent, index }
+  MoveTopLevel nid -> encodeJson { tag: "moveTopLevel", id: nid }
+  MoveBottom nid -> encodeJson { tag: "moveBottom", id: nid }
   Flatten nid -> encodeJson { tag: "flatten", id: nid }
   NewGroup parent index -> encodeJson { tag: "newGroup", parent, index }
   Import snap -> encodeJson { tag: "import", body: encodeSnapshotData snap }
@@ -388,6 +410,8 @@ decodeCommand json = do
     "close" -> (\r -> CloseNode r.id) <$> (dec json :: Either String { id :: NodeId })
     "delete" -> (\r -> Delete r.id) <$> (dec json :: Either String { id :: NodeId })
     "move" -> (\r -> Move r.id r.parent r.index) <$> (dec json :: Either String { id :: NodeId, parent :: Maybe NodeId, index :: Int })
+    "moveTopLevel" -> (\r -> MoveTopLevel r.id) <$> (dec json :: Either String { id :: NodeId })
+    "moveBottom" -> (\r -> MoveBottom r.id) <$> (dec json :: Either String { id :: NodeId })
     "flatten" -> (\r -> Flatten r.id) <$> (dec json :: Either String { id :: NodeId })
     "newGroup" -> (\r -> NewGroup r.parent r.index) <$> (dec json :: Either String { parent :: Maybe NodeId, index :: Int })
     "import" -> do

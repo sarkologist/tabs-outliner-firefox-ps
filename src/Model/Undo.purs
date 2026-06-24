@@ -140,6 +140,8 @@ undoable = case _ of
   Rename _ _ -> true
   Delete _ -> true
   Move _ _ _ -> true
+  MoveTopLevel _ -> true
+  MoveBottom _ -> true
   Flatten _ -> true
   NewGroup _ _ -> true
   Import _ -> true

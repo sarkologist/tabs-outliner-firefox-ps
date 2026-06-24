@@ -280,6 +280,65 @@ spec = describe "Model.Command" do
       r.actions `shouldEqual` []
       (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n3", "n2" ]
 
+  -- "Move to top level" pulls a nested node out to the root just after the root it
+  -- belongs to; "Move to bottom" sends it to the very end. Both reorganize the tree
+  -- only (no browser actions) and leave a live tab alone.
+  describe "move to top level / bottom" do
+    -- two saved top-level groups: R1 = [ A, G=[B] ] and R2 = [ C ] — all closed
+    let
+      closed = applyPatch
+        { upserts:
+            [ (defaultNode "R1" KGroup 0.0) { title = "R1", children = [ "A", "G" ] }
+            , (defaultNode "A" KTab 0.0) { parent = Just "R1", url = Just "http://a", title = "A" }
+            , (defaultNode "G" KGroup 0.0) { parent = Just "R1", title = "G", children = [ "B" ] }
+            , (defaultNode "B" KTab 0.0) { parent = Just "G", url = Just "http://b", title = "B" }
+            , (defaultNode "R2" KGroup 0.0) { title = "R2", children = [ "C" ] }
+            , (defaultNode "C" KTab 0.0) { parent = Just "R2", url = Just "http://c", title = "C" }
+            ]
+        , removes: []
+        , roots: Just [ "R1", "R2" ]
+        }
+        emptyModel
+
+    it "move to top level pulls a nested node out, just after its root ancestor" do
+      let r = applyCommand 0.0 (MoveTopLevel "B") closed
+      -- B lands at root index 1 (right after R1), not at the very end
+      r.model.roots `shouldEqual` [ "R1", "B", "R2" ]
+      (_.parent <$> Map.lookup "B" r.model.nodes) `shouldEqual` Just Nothing
+      -- pulling out G's only child prunes the now-empty group; R1 keeps its other child
+      Map.lookup "G" r.model.nodes `shouldEqual` Nothing
+      (_.children <$> Map.lookup "R1" r.model.nodes) `shouldEqual` Just [ "A" ]
+      r.actions `shouldEqual` [] -- tree-only, never touches the browser
+
+    it "move to bottom pulls a nested node to the very end of the root list" do
+      let r = applyCommand 0.0 (MoveBottom "B") closed
+      r.model.roots `shouldEqual` [ "R1", "R2", "B" ]
+      (_.parent <$> Map.lookup "B" r.model.nodes) `shouldEqual` Just Nothing
+      Map.lookup "G" r.model.nodes `shouldEqual` Nothing
+      r.actions `shouldEqual` []
+
+    it "move to bottom reorders a non-last top-level node to the end" do
+      let m = run (MoveBottom "R1") closed
+      m.roots `shouldEqual` [ "R2", "R1" ]
+
+    it "move to top level is a no-op on a node already at the top level" do
+      (run (MoveTopLevel "R1") closed).roots `shouldEqual` [ "R1", "R2" ]
+
+    it "move to bottom is a no-op on the last top-level node" do
+      (run (MoveBottom "R2") closed).roots `shouldEqual` [ "R1", "R2" ]
+
+    it "move to top level leaves a live tab alone (no detach, no new window)" do
+      let r = applyCommand 0.0 (MoveTopLevel "n2") base -- n2 is a live tab in window n1
+      (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
+      r.model.roots `shouldEqual` [ "n1" ]
+      r.actions `shouldEqual` []
+
+    it "move to bottom leaves a live tab alone (no detach, no new window)" do
+      let r = applyCommand 0.0 (MoveBottom "n2") base
+      (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
+      r.model.roots `shouldEqual` [ "n1" ]
+      r.actions `shouldEqual` []
+
   -- An emptied container is clutter, so it's pruned — unless the user renamed it,
   -- which marks it as a deliberate label worth keeping.
   describe "pruning emptied groups" do

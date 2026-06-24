@@ -16,7 +16,7 @@ import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Int.Bits (and)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
@@ -42,7 +42,7 @@ import Model.PortableImport (portableToSnapshot)
 import Model.Scroll as Scroll
 import Model.Shortcuts as Sh
 import Model.Tree (applyPatch, searchVisible, visible)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, emptyModel, isLive)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, emptyModel, isLive, isLiveTab)
 import Web.Event.Event (Event)
 import Web.UIEvent.KeyboardEvent (key)
 
@@ -109,6 +109,8 @@ data Action
   | CloseClick NodeId
   | DeleteClick NodeId
   | FlattenClick NodeId
+  | MoveTopLevelClick NodeId
+  | MoveBottomClick NodeId
   | NewGroupTop
   | StartRename NodeId String
   | EditInput String
@@ -193,6 +195,8 @@ handleAction = case _ of
   CloseClick nid -> sendCommand (CloseNode nid)
   DeleteClick nid -> sendCommand (Delete nid)
   FlattenClick nid -> sendCommand (Flatten nid)
+  MoveTopLevelClick nid -> sendCommand (MoveTopLevel nid)
+  MoveBottomClick nid -> sendCommand (MoveBottom nid)
   NewGroupTop -> sendCommand (NewGroup Nothing 0)
 
   StartRename nid text -> H.modify_ _ { editing = Just { id: nid, text }, hover = Nothing }
@@ -459,7 +463,8 @@ body editing n = case editing of
       [ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow n.id ]
       [ HH.text (displayTitle n) ]
 
--- Hover-revealed action cluster (rename / close / flatten / delete).
+-- Hover-revealed action cluster (rename / close / flatten / move-to-top-level /
+-- move-to-bottom / delete).
 actionsEl :: Node -> H.ComponentHTML Action () Aff
 actionsEl n = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons n)
 
@@ -468,8 +473,17 @@ buttons n =
   [ btn "btn-rename" "Rename" "pencil" (StartRename n.id (displayTitle n)) ]
     <> (if isLive n then [ btn "btn-close" "Close" "close-circle" (CloseClick n.id) ] else [])
     <> (if n.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick n.id) ] else [])
+    -- Relocation to the top level only makes sense for a nested node; a live tab
+    -- is excluded (pulling one out to the root is the dropped move-to-new-window).
+    <> ( if relocatable then
+           [ btn "btn-to-top-level" "Move to top level" "to-top-level" (MoveTopLevelClick n.id)
+           , btn "btn-to-bottom" "Move to bottom" "to-bottom" (MoveBottomClick n.id)
+           ]
+         else []
+       )
     <> [ btn "btn-delete" "Delete" "trash" (DeleteClick n.id) ]
   where
+  relocatable = isJust n.parent && not (isLiveTab n)
   btn cls label name act =
     HH.button
       [ HP.class_ (ClassName cls), HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ]

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootBackgroundAndSidebar, fake } from "./support/harness";
+import { bootBackgroundAndSidebar, fake, readNodes } from "./support/harness";
 
 const seed = {
   windows: [
@@ -173,5 +173,65 @@ test.describe("commands", () => {
     // drag A down onto C: it must land immediately BEFORE C, i.e. [B, A, C]
     await page.getByText("A", { exact: true }).dragTo(page.getByText("C", { exact: true }));
     await expect.poll(() => titles(page)).toEqual(["Window", "B", "A", "C"]);
+  });
+});
+
+// "Move to top level" / "Move to bottom" pull a nested node out to the root. They
+// reorganize the saved outline only (no browser side effects), so they are offered
+// on nested, non-live nodes — the closed-history tabs left by closing a window.
+test.describe("move to top level / bottom", () => {
+  // window 1 (Alpha, Beta) is closed to leave its tabs as nested history; window 2
+  // (Keep) stays live as the last top-level node, so "after the window" (top level)
+  // and "the very bottom" are distinguishable positions.
+  const twoWindows = {
+    windows: [
+      {
+        id: 1,
+        tabs: [
+          { id: 11, url: "http://a", title: "Alpha", active: true },
+          { id: 12, url: "http://b", title: "Beta" },
+        ],
+      },
+      { id: 2, tabs: [{ id: 21, url: "http://keep", title: "Keep", active: true }] },
+    ],
+  };
+
+  // The persisted parent of the (unique) node with this title — null once top-level.
+  const parentOf = async (page: Page, title: string): Promise<string | null> => {
+    const nodes = await readNodes(page);
+    return nodes.find((n) => n.title === title)?.parent ?? null;
+  };
+
+  test("the move buttons are hidden on a live tab", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await rowOf(page, "Alpha").hover();
+    await expect(rowOf(page, "Alpha").locator(".btn-to-top-level")).toHaveCount(0);
+    await expect(rowOf(page, "Alpha").locator(".btn-to-bottom")).toHaveCount(0);
+  });
+
+  test("move to top level pulls a nested node out, just after its window", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, twoWindows);
+    await fake(page, "closeWindow", 1); // Alpha + Beta become closed history under the closed window
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+    expect(await parentOf(page, "Beta")).not.toBeNull(); // nested to start
+
+    await clickAction(page, "Beta", ".btn-to-top-level");
+
+    // Beta is now a top-level node, landing just after its old window — so the live
+    // "Keep" window stays last; Beta did not go to the very bottom.
+    await expect.poll(() => parentOf(page, "Beta")).toBeNull();
+    expect((await titles(page)).at(-1)).toBe("Keep");
+  });
+
+  test("move to bottom pulls a nested node to the very end", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, twoWindows);
+    await fake(page, "closeWindow", 1);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    await clickAction(page, "Beta", ".btn-to-bottom");
+
+    // top-level now, and the last visible row
+    await expect.poll(() => parentOf(page, "Beta")).toBeNull();
+    expect((await titles(page)).at(-1)).toBe("Beta");
   });
 });
