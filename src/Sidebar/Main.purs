@@ -479,8 +479,8 @@ buttons isLastRoot n =
     -- go); "to bottom" applies to any node that isn't already the last root. Both are
     -- offered on every kind, including live tabs (which get promoted into their own
     -- new window, like a drag to the root).
-    <> (if isJust n.parent then [ btn "btn-to-top-level" "Move to top level" "to-top-level" (MoveTopLevelClick n.id) ] else [])
-    <> (if not isLastRoot then [ btn "btn-to-bottom" "Move to bottom" "to-bottom" (MoveBottomClick n.id) ] else [])
+    <> (if isJust n.parent then [ btn "btn-to-top-level" "Move to top level" "root-outdent" (MoveTopLevelClick n.id) ] else [])
+    <> (if not isLastRoot then [ btn "btn-to-bottom" "Move to bottom" "root-down" (MoveBottomClick n.id) ] else [])
     <> [ btn "btn-delete" "Delete" "trash" (DeleteClick n.id) ]
   where
   btn cls label name act =
