@@ -26,7 +26,7 @@ siblings3 :: Model
 siblings3 = emptyModel
   { roots = [ "W" ]
   , nodes = Map.fromFoldable $ map (\n -> Tuple n.id n)
-      [ node "W" KWindow Nothing [ "A", "B", "C" ]
+      [ node "W" KGroup Nothing [ "A", "B", "C" ]
       , node "A" KTab (Just "W") []
       , node "B" KTab (Just "W") []
       , node "C" KTab (Just "W") []
@@ -38,7 +38,7 @@ fixture :: Model
 fixture = emptyModel
   { roots = [ "W" ]
   , nodes = Map.fromFoldable $ map (\n -> Tuple n.id n)
-      [ node "W" KWindow Nothing [ "A", "G" ]
+      [ node "W" KGroup Nothing [ "A", "G" ]
       , node "A" KTab (Just "W") []
       , node "G" KGroup (Just "W") [ "C" ]
       , node "C" KTab (Just "G") []
@@ -88,3 +88,9 @@ spec = describe "Model.Drop" do
     it "drops onto a group as its last child" do
       moveOf (dropCommand "A" (node "G" KGroup (Just "W") [ "C" ]) fixture)
         `shouldEqual` Just { nid: "A", parent: Just "G", index: 1 }
+
+    it "drops onto a window (a container) as its last child, not a sibling before it" do
+      -- a window is just a container now, so a drop onto W lands inside it; the old
+      -- KWindow path inserted before W as a root sibling (parent Nothing)
+      moveOf (dropCommand "B" (node "W" KGroup Nothing [ "A", "B", "C" ]) siblings3)
+        `shouldEqual` Just { nid: "B", parent: Just "W", index: 3 }

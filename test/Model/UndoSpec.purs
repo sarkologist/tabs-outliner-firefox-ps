@@ -9,7 +9,7 @@ import Model.Command (BrowserAction(..), Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch)
-import Model.Types (Kind(..), Model, Status(..), defaultNode, emptyModel)
+import Model.Types (Kind(..), Model, defaultNode, emptyModel, isLive)
 import Model.Undo (applyEntry, inversePatch, undoable)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -76,15 +76,15 @@ spec = describe "Model.Undo" do
     Map.member "n3" back.nodes `shouldEqual` true
     -- the previously-live window/tabs return Closed (their tabs were closed), and
     -- their browser bindings are cleared, but the tree structure is intact
-    (_.status <$> Map.lookup "n1" back.nodes) `shouldEqual` Just Closed
-    (_.status <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Closed
+    (isLive <$> Map.lookup "n1" back.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "n2" back.nodes) `shouldEqual` Just false
     (_.tabId <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Nothing
     (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n2", "n3" ]
     back.roots `shouldEqual` [ "n1" ]
 
   it "undo of deleting one live tab returns it as closed history under its window" do
     let back = undone (Delete "n2") base
-    (_.status <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Closed
+    (isLive <$> Map.lookup "n2" back.nodes) `shouldEqual` Just false
     (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n2", "n3" ]
 
   it "undo of import removes the imported nodes" do
@@ -129,7 +129,7 @@ spec = describe "Model.Undo" do
     -- the rename is undone...
     (_.customTitle <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Nothing
     -- ...but the tab stays Closed history; it is NOT resurrected as a live tab
-    (_.status <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Closed
+    (isLive <$> Map.lookup "n2" back.nodes) `shouldEqual` Just false
     (_.tabId <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Nothing
 
   it "undo of a move keeps a tab opened in the parent meanwhile (no orphan)" do

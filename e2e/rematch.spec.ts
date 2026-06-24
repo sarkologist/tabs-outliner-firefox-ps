@@ -1,6 +1,6 @@
 import { test, expect, type BrowserContext } from "@playwright/test";
 import { installFakeBrowser, type Seed } from "./support/fake-browser";
-import { readNodes } from "./support/harness";
+import { readNodes, isLive } from "./support/harness";
 
 // Boot a fresh background in a new page of the SAME context, so it shares the
 // IndexedDB written by the previous page — i.e. a browser restart.
@@ -30,8 +30,8 @@ test("startup re-match reuses nodes across a restart (no duplication)", async ({
   const nodes = await readNodes(p2);
   const byTitle = (t: string) => nodes.find((n) => n.title === t);
 
-  expect(byTitle("Alpha").status).toBe("live");
+  expect(isLive(byTitle("Alpha"))).toBe(true);
   expect(byTitle("Alpha").tabId).toBe(91); // same node, fresh browser id
-  expect(byTitle("Beta").status).toBe("closed"); // didn't reopen, kept as history
-  expect(byTitle("Gamma").status).toBe("live"); // genuinely new
+  expect(isLive(byTitle("Beta"))).toBe(false); // didn't reopen, kept as history
+  expect(isLive(byTitle("Gamma"))).toBe(true); // genuinely new
 });

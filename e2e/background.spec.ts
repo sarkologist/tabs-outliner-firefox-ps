@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { bootBackground, readNodes, fake } from "./support/harness";
+import { bootBackground, readNodes, fake, isLive } from "./support/harness";
 
 const titles = async (page: import("@playwright/test").Page) =>
   (await readNodes(page)).map((n) => n.title).sort();
@@ -38,10 +38,11 @@ test.describe("background owner", () => {
     await expect.poll(() => readNodes(page).then((n) => n.length)).toBe(3);
 
     await fake(page, "closeTab", 11);
-    // node count unchanged; the closed node is still present, now status=closed
+    // node count unchanged; the closed node is still present, now closed history
+    // (its tab binding dropped, so no longer live)
     await expect
-      .poll(async () => (await readNodes(page)).find((n) => n.title === "Alpha")?.status)
-      .toBe("closed");
+      .poll(async () => isLive((await readNodes(page)).find((n) => n.title === "Alpha")))
+      .toBe(false);
     expect(await readNodes(page).then((n) => n.length)).toBe(3);
   });
 });

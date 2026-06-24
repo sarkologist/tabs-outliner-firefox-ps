@@ -12,7 +12,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Model.Event (BrowserEvent(..), OpenedTab)
 import Model.Tree (applyPatch, insertAtClamped, liveTabNode, liveWindowNode, moveWithin, subtreeIds)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), Step, defaultNode, emptyPatch)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, Step, defaultNode, emptyPatch, isLive)
 
 mkId :: Int -> NodeId
 mkId i = "n" <> show i
@@ -44,7 +44,7 @@ resolveWindow now windowId model = case liveWindowNode windowId model of
       nid = mkId model.nextId
     in
       { winId: nid
-      , winNode: (defaultNode nid KWindow now) { windowId = Just windowId, title = "Window" }
+      , winNode: (defaultNode nid KGroup now) { windowId = Just windowId, title = "Window" }
       , isNew: true
       , nextId: model.nextId + 1
       }
@@ -60,9 +60,9 @@ applyBrowser now ev model = case ev of
       Just { head: wNid, tail } ->
         let model' = model { pendingRestoreWindows = tail }
         in case Map.lookup wNid model'.nodes of
-          Just wn | wn.kind == KWindow ->
+          Just wn | wn.kind == KGroup ->
             let
-              wn' = wn { status = Live, windowId = Just windowId, closedAt = Nothing }
+              wn' = wn { windowId = Just windowId, closedAt = Nothing }
               patch = { upserts: [ wn' ], removes: [], roots: Nothing }
             in
               commit model'.nextId patch model'
@@ -119,19 +119,15 @@ freshWindow now windowId model =
   in
     commit rw.nextId patch model
 
--- | Flip one node (and, via callers, its descendants) to Closed history. Groups
--- | are user annotations with no browser state, so they stay Live even inside a
--- | closed window subtree.
+-- | Flip one live node to closed history by dropping its browser binding: a live
+-- | tab loses its `tabId`, a live-window container loses its `windowId` (becoming
+-- | a plain saved group). Nodes with no binding (plain sub-groups, already-closed
+-- | tabs) are left untouched — closing a window thus turns it into a saved group
+-- | holding closed tabs, with nested user groups preserved.
 closeNode :: Number -> Node -> Node
-closeNode now n = case n.kind of
-  KGroup -> n
-  _ -> n
-    { status = Closed
-    , tabId = Nothing
-    , windowId = Nothing
-    , active = false
-    , closedAt = Just now
-    }
+closeNode now n
+  | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }
+  | otherwise = n
 
 orElse :: Maybe String -> Maybe String -> Maybe String
 orElse old new = case new of
@@ -171,8 +167,7 @@ rebindRestored :: Number -> OpenedTab -> NodeId -> Node -> Model -> Step
 rebindRestored _ t _ n model =
   let
     n' = n
-      { status = Live
-      , tabId = Just t.tabId
+      { tabId = Just t.tabId
       , active = t.active
       , title = t.title
       , url = t.url

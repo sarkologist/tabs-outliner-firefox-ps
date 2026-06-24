@@ -9,7 +9,7 @@ import Data.Maybe (Maybe(..))
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch)
-import Model.Types (Model, Status(..), emptyModel)
+import Model.Types (Model, emptyModel, isLive)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -30,7 +30,7 @@ spec = describe "Model.Reconcile" do
     m.roots `shouldEqual` [ "n1" ]
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
     (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n1")
-    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Live
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
     Map.lookup 11 m.byTab `shouldEqual` Just "n2"
     Map.lookup 1 m.byWindow `shouldEqual` Just "n1"
 
@@ -41,7 +41,7 @@ spec = describe "Model.Reconcile" do
 
   it "keeps a closed tab in place as history" do
     let m = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
-    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Closed
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Nothing
     -- still a child of its window (not detached)
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
@@ -91,9 +91,9 @@ spec = describe "Model.Reconcile" do
         , WindowClosed { windowId: 1 }
         ]
     m.roots `shouldEqual` [ "n1" ]
-    (_.status <$> Map.lookup "n1" m.nodes) `shouldEqual` Just Closed
-    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Closed
-    (_.status <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Closed
+    (isLive <$> Map.lookup "n1" m.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
 
   it "a reused browser tab id creates a fresh node (no stale-index no-op)" do
     let
@@ -102,8 +102,8 @@ spec = describe "Model.Reconcile" do
         , TabClosed { tabId: 11 } -- byTab[11] now points at a closed node (stale)
         , openTab 11 1 0 "C" true -- browser reuses id 11 for a brand-new tab
         ]
-    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Closed
-    (_.status <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Live
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just true
     Map.lookup 11 m.byTab `shouldEqual` Just "n3"
 
   describe "patch is O(change)" do

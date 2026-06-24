@@ -34,7 +34,6 @@ const seed = {
 const node = (over: Record<string, unknown>) => ({
   id: "",
   kind: "tab",
-  status: "live",
   parent: null,
   children: [],
   title: "",

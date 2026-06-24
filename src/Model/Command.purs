@@ -19,7 +19,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, subtreeIds)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), defaultNode, emptyPatch)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, defaultNode, emptyPatch, isLive, isLiveTab)
 
 data Command
   = Collapse NodeId Boolean
@@ -49,11 +49,12 @@ instance showBrowserAction :: Show BrowserAction where
   show (CreateWindow us) = "CreateWindow " <> show us
   show (RemoveTab t) = "RemoveTab " <> show t
 
--- | Where a restored tab should reopen, decided by its nearest window ancestor.
+-- | Where a restored tab should reopen, decided by its IMMEDIATE PARENT — the
+-- | container that owns it (a node's owning window is its immediate parent).
 data RestoreTarget
-  = IntoWindow Int -- a still-live browser window (reopen the tab back into it)
-  | IntoNewWindow NodeId -- a closed window node (group its tabs into one new window)
-  | IntoCurrent -- no window ancestor (reopen in the current window)
+  = IntoWindow Int -- parent already live as a window (reopen the tab back into it)
+  | IntoNewWindow NodeId -- saved-container parent (its tabs open one new window it goes live as)
+  | IntoCurrent -- no parent container (reopen in the current window)
 
 derive instance eqRestoreTarget :: Eq RestoreTarget
 
@@ -65,9 +66,9 @@ applyCommand now cmd model = case cmd of
 
   Rename nid title -> withNode nid \n -> upsertOnly (n { customTitle = Just title })
 
-  Activate nid -> withNode nid \n -> case n.status, n.tabId of
-    Live, Just t -> actionsOnly [ FocusTab t ]
-    _, _ -> restore nid
+  Activate nid -> withNode nid \n -> case n.tabId of
+    Just t -> actionsOnly [ FocusTab t ]
+    Nothing -> restore nid
 
   CloseNode nid -> actionsOnly (map RemoveTab (liveTabIds nid))
 
@@ -109,14 +110,14 @@ applyCommand now cmd model = case cmd of
       idMap = Map.fromFoldable
         (Array.mapWithIndex (\i n -> Tuple n.id ("n" <> show (model.nextId + i))) snap.nodes)
       remap old = Map.lookup old idMap
-      -- imported nodes are inert history: tabs/windows become Closed (restorable),
-      -- groups stay live, any live browser binding is dropped, and references
-      -- outside the imported set are dropped (never aliased onto live nodes).
+      -- imported nodes are inert history: every browser binding is dropped, so
+      -- tabs/windows become restorable and containers plain saved groups, and
+      -- references outside the imported set are dropped (never aliased onto live
+      -- nodes).
       remapNode n = n
         { id = fromMaybe n.id (remap n.id)
         , parent = n.parent >>= remap
         , children = Array.mapMaybe remap n.children
-        , status = if n.kind == KGroup then Live else Closed
         , tabId = Nothing
         , windowId = Nothing
         , active = false
@@ -141,10 +142,10 @@ applyCommand now cmd model = case cmd of
   actionsOnly :: Array BrowserAction -> CmdResult
   actionsOnly actions = { model, patch: emptyPatch, actions }
 
-  -- live tab ids in the subtree rooted at nid
+  -- live tab ids in the subtree rooted at nid (a tabId is present only on a live tab)
   liveTabIds :: NodeId -> Array Int
   liveTabIds nid = Array.mapMaybe
-    (\i -> Map.lookup i model.nodes >>= \n -> if n.status == Live then n.tabId else Nothing)
+    (\i -> Map.lookup i model.nodes >>= _.tabId)
     (subtreeIds nid model)
 
   -- upsert that removes nid from whatever parent currently holds it (window/group)
@@ -157,14 +158,14 @@ applyCommand now cmd model = case cmd of
 
   -- restore: re-open every closed tab in the subtree, re-binding to existing
   -- nodes via pendingRestore (keyed by url) when each onCreated arrives. Each
-  -- tab is routed by its nearest window ancestor: a still-live window reopens
-  -- the tab back into itself; a closed window has all its tabs grouped into one
-  -- new browser window (whose node rebinds via pendingRestoreWindows); a tab
-  -- with no window ancestor reopens in the current window.
+  -- tab is routed by its immediate parent: a parent already live as a window
+  -- reopens the tab back into it; a saved-group parent has all its tabs grouped
+  -- into one new browser window (whose node rebinds via pendingRestoreWindows)
+  -- and goes live in place; a tab with no parent reopens in the current window.
   restore :: NodeId -> CmdResult
   restore nid =
     let
-      closedTabs = Array.filter (\n -> n.status == Closed && n.kind == KTab)
+      closedTabs = Array.filter (\n -> n.kind == KTab && not (isLiveTab n))
         (Array.mapMaybe (\i -> Map.lookup i model.nodes) (subtreeIds nid model))
       -- only tabs with a url can be reopened; keep subtree (preorder) order
       tagged = Array.mapMaybe
@@ -240,7 +241,12 @@ applyCommand now cmd model = case cmd of
   flatten nid = case Map.lookup nid model.nodes of
     Nothing -> noChange
     Just node
-      | node.kind /= KGroup -> noChange -- only dissolve user groups, not live windows/tabs
+      | node.kind /= KGroup -> noChange -- only dissolve containers (groups/windows), never tabs
+      -- PR1 gate (removed in PR2): don't dissolve a LIVE window (windowId-bound).
+      -- Flattening it would strand the window binding on a deleted node and orphan
+      -- its live tabs to the root with no browser move yet. PR2 moves the tabs /
+      -- wraps the orphans into new windows, then this guard goes.
+      | isLive node -> noChange
       | otherwise ->
           let
             kids = node.children
@@ -264,27 +270,19 @@ applyCommand now cmd model = case cmd of
 spliceReplace :: NodeId -> Array NodeId -> Array NodeId -> Array NodeId
 spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 
--- | Where a closed tab node should reopen, from its nearest window ancestor:
--- | a live window -> back into that window; a closed window -> a new window
--- | shared by that window's tabs; no window ancestor -> the current window.
+-- | Where a closed tab node should reopen, decided by its IMMEDIATE parent — the
+-- | container that owns it (a node's owning window is its immediate parent). A
+-- | parent already live as a window -> back into that window; a parent that is a
+-- | saved group -> a new window that the group goes live as; no parent (a bare
+-- | root tab) -> the current window.
 restoreTargetOf :: Model -> NodeId -> RestoreTarget
-restoreTargetOf model nid = case windowAncestor model nid of
-  Just w
-    | w.status == Live, Just wid <- w.windowId -> IntoWindow wid
-    | otherwise -> IntoNewWindow w.id
+restoreTargetOf model nid = case parentNode nid of
+  Just p
+    | Just wid <- p.windowId -> IntoWindow wid
+    | otherwise -> IntoNewWindow p.id
   Nothing -> IntoCurrent
-
--- | Nearest KWindow ancestor of a node, walking up parent links (O(depth)).
-windowAncestor :: Model -> NodeId -> Maybe Node
-windowAncestor model start = go (parentOf start)
   where
-  parentOf nid = Map.lookup nid model.nodes >>= _.parent
-  go Nothing = Nothing
-  go (Just pid) = case Map.lookup pid model.nodes of
-    Nothing -> Nothing
-    Just p
-      | p.kind == KWindow -> Just p
-      | otherwise -> go p.parent
+  parentNode id = (Map.lookup id model.nodes >>= _.parent) >>= \pid -> Map.lookup pid model.nodes
 
 -- Request protocol -----------------------------------------------------------
 

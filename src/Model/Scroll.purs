@@ -16,7 +16,7 @@ import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Model.Tree (liveWindowNode)
-import Model.Types (Kind(..), Model, NodeId, Status(..))
+import Model.Types (Kind(..), Model, NodeId, isLiveTab)
 
 -- | The live, active tab inside the live browser window `windowId` — the node the
 -- | sidebar reveals for its host window. Preorder, short-circuiting at the first
@@ -30,7 +30,7 @@ activeTabInWindow windowId model = liveWindowNode windowId model >>= \w -> go w.
   go id = case Map.lookup id model.nodes of
     Nothing -> Nothing
     Just n
-      | n.kind == KTab && n.status == Live && n.active -> Just n.id
+      | n.kind == KTab && isLiveTab n && n.active -> Just n.id
       | otherwise -> Array.findMap go n.children
 
 -- | Geometry of the virtualized tree: row height, the scroll viewport height, the
