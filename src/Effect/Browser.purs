@@ -123,7 +123,7 @@ subscribe api handle = subscribeImpl api
 foreign import focusTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 foreign import createTabImpl :: BrowserApi -> Nullable Int -> Nullable String -> Effect (Promise Unit)
 foreign import createWindowImpl :: BrowserApi -> Array String -> Effect (Promise Unit)
-foreign import moveTabToWindowImpl :: BrowserApi -> Int -> Int -> Effect (Promise Unit)
+foreign import moveTabToWindowImpl :: BrowserApi -> Int -> Int -> Int -> Effect (Promise Unit)
 foreign import newWindowWithTabsImpl :: BrowserApi -> Array Int -> Effect (Promise Unit)
 foreign import removeTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 
@@ -138,10 +138,11 @@ createTab api windowId url = toAffE (createTabImpl api (toNullable windowId) (to
 createWindow :: BrowserApi -> Array String -> Aff Unit
 createWindow api urls = toAffE (createWindowImpl api urls)
 
--- | Move a live tab into an existing browser window (appended). Used when a live
--- | tab is reorganized under a container that is already a live window.
-moveTabToWindow :: BrowserApi -> Int -> Int -> Aff Unit
-moveTabToWindow api tabId windowId = toAffE (moveTabToWindowImpl api tabId windowId)
+-- | Move a live tab into an existing browser window at `index` (-1 = append).
+-- | Used when a live tab is reorganized under a container that is already a live
+-- | window.
+moveTabToWindow :: BrowserApi -> Int -> Int -> Int -> Aff Unit
+moveTabToWindow api tabId windowId index = toAffE (moveTabToWindowImpl api tabId windowId index)
 
 -- | Detach tabs into one brand-new browser window (the first creates it, the rest
 -- | move in). Used when live tabs are reorganized under a saved/plain container

@@ -100,7 +100,7 @@ spec = describe "Model.Command" do
         emptyModel
       r = applyCommand 0.0 (Flatten "W") m
     Map.lookup "W" r.model.nodes `shouldEqual` Nothing -- inner window dissolved
-    r.actions `shouldEqual` [ MoveTabToWindow 11 2, MoveTabToWindow 12 2 ] -- tabs merged into the outer window
+    r.actions `shouldEqual` [ MoveTabToWindow 11 2 (-1), MoveTabToWindow 12 2 (-1) ] -- merged (appended) into the outer window
 
   it "closing a window drops its window binding but leaves nested groups untouched" do
     let
@@ -203,9 +203,9 @@ spec = describe "Model.Command" do
   -- Dragging a LIVE tab to a new owning container drives the real browser tab; the
   -- tree is left untouched and re-settles from the resulting onAttached/onCreated.
   describe "live-tab moves drive the browser" do
-    it "into another live window: moves the real tab there (no tree edit yet)" do
-      let r = applyCommand 0.0 (Move "n2" (Just "n4") 1) base2 -- n2 (tab 11) -> window n4 (id 2)
-      r.actions `shouldEqual` [ MoveTabToWindow 11 2 ]
+    it "into another live window: moves the real tab there at the dropped index" do
+      let r = applyCommand 0.0 (Move "n2" (Just "n4") 1) base2 -- n2 (tab 11) -> window n4 (id 2), index 1
+      r.actions `shouldEqual` [ MoveTabToWindow 11 2 1 ]
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1") -- unchanged until events
       r.model.pendingRestoreWindows `shouldEqual` []
 

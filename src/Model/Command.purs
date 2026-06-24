@@ -45,7 +45,7 @@ data BrowserAction
   = FocusTab Int
   | CreateTab (Maybe Int) (Maybe String)
   | CreateWindow (Array String)
-  | MoveTabToWindow Int Int -- tabId, destination (live) windowId
+  | MoveTabToWindow Int Int Int -- tabId, destination (live) windowId, index (-1 = append)
   | NewWindowWithTabs (Array Int) -- detach these tabs into one brand-new window
   | RemoveTab Int
 
@@ -54,7 +54,7 @@ instance showBrowserAction :: Show BrowserAction where
   show (FocusTab t) = "FocusTab " <> show t
   show (CreateTab w u) = "CreateTab " <> show w <> " " <> show u
   show (CreateWindow us) = "CreateWindow " <> show us
-  show (MoveTabToWindow t w) = "MoveTabToWindow " <> show t <> " " <> show w
+  show (MoveTabToWindow t w i) = "MoveTabToWindow " <> show t <> " " <> show w <> " " <> show i
   show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
   show (RemoveTab t) = "RemoveTab " <> show t
 
@@ -226,7 +226,7 @@ applyCommand now cmd model = case cmd of
       -- a live tab changing its owning window (its immediate parent): drive the
       -- real browser tab instead of editing the tree; the tree re-settles from the
       -- resulting onAttached/onCreated events, so this emits no patch.
-      | isLiveTab node && mParent /= node.parent -> moveLiveTab node mParent
+      | isLiveTab node && mParent /= node.parent -> moveLiveTab node mParent index
       | otherwise ->
           let
             detached = detachUpserts node
@@ -252,10 +252,14 @@ applyCommand now cmd model = case cmd of
 
   -- A live tab dragged to a different owning container: move the REAL browser tab,
   -- not the tree node. The tree re-settles from the resulting browser events.
-  moveLiveTab :: Node -> Maybe NodeId -> CmdResult
-  moveLiveTab node mParent = case node.tabId of
+  moveLiveTab :: Node -> Maybe NodeId -> Int -> CmdResult
+  moveLiveTab node mParent index = case node.tabId of
     Nothing -> noChange -- unreachable under the isLiveTab guard; keeps this total
-    Just t -> let r = rehome model mParent [ t ] in { model: r.model, patch: emptyPatch, actions: r.actions }
+    Just t -> case mParent >>= (\pid -> Map.lookup pid model.nodes) >>= _.windowId of
+      -- into an already-live window: move the tab there at the dropped position
+      Just w -> actionsOnly [ MoveTabToWindow t w index ]
+      -- new-window cases (a plain container goes live, or out to the root)
+      Nothing -> let r = rehome model mParent [ t ] in { model: r.model, patch: emptyPatch, actions: r.actions }
 
   -- Browser action(s) to re-home live `tabIds` to container `mParent` (their new
   -- owning window): into an already-live window -> move each there; into a
@@ -268,8 +272,10 @@ applyCommand now cmd model = case cmd of
     | otherwise = case mParent of
         Nothing -> { model: m, actions: [ NewWindowWithTabs tabIds ] }
         Just pid -> case Map.lookup pid m.nodes of
-          Just p | Just w <- p.windowId -> { model: m, actions: map (\t -> MoveTabToWindow t w) tabIds }
-          Just _ -> { model: m { pendingRestoreWindows = Array.snoc m.pendingRestoreWindows pid }, actions: [ NewWindowWithTabs tabIds ] }
+          Just p | Just w <- p.windowId -> { model: m, actions: map (\t -> MoveTabToWindow t w (-1)) tabIds }
+          -- de-dupe the queue so two drags into the same not-yet-live container
+          -- can't both pop a window and double-bind it
+          Just _ -> { model: m { pendingRestoreWindows = pushPending pid m.pendingRestoreWindows }, actions: [ NewWindowWithTabs tabIds ] }
           Nothing -> { model: m, actions: [] }
 
   flatten :: NodeId -> CmdResult
@@ -299,6 +305,10 @@ applyCommand now cmd model = case cmd of
 
 spliceReplace :: NodeId -> Array NodeId -> Array NodeId -> Array NodeId
 spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
+
+-- Append a container to the pending-window queue unless it is already waiting.
+pushPending :: NodeId -> Array NodeId -> Array NodeId
+pushPending pid xs = if Array.elem pid xs then xs else Array.snoc xs pid
 
 -- | Where a closed tab node should reopen, decided by its IMMEDIATE parent — the
 -- | container that owns it (a node's owning window is its immediate parent). A

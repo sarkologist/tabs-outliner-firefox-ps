@@ -106,8 +106,10 @@ main = launchAff_ do
       liftEffect do
         Ref.write r.model ref
         -- record the inverse so this command can be undone; a fresh edit
-        -- invalidates any redo future
-        when (undoable cmd && not (isEmptyPatch r.patch)) do
+        -- invalidates any redo future. A command that relocated real browser tabs
+        -- (a live-tab move, or flattening a live window) is skipped: undo can't move
+        -- those tabs back, so reverting only the tree would desync the two.
+        when (undoable cmd && not (isEmptyPatch r.patch) && not (Array.any relocates r.actions)) do
           Ref.modify_ (pushBounded (inversePatch t m r.patch)) undoRef
           Ref.write [] redoRef
       persistAndBroadcast api db r.patch
@@ -143,6 +145,14 @@ runAction api = case _ of
   FocusTab t -> Browser.focusTab api t
   CreateTab w u -> Browser.createTab api w u
   CreateWindow us -> Browser.createWindow api us
-  MoveTabToWindow t w -> Browser.moveTabToWindow api t w
+  MoveTabToWindow t w i -> Browser.moveTabToWindow api t w i
   NewWindowWithTabs ts -> Browser.newWindowWithTabs api ts
   RemoveTab t -> Browser.removeTab api t
+
+-- | Did this command relocate real browser tabs (move them between windows or into
+-- | a new one)? Such a command can't be undone — undo reverts only the tree, not
+-- | the browser — so the background skips recording an undo entry for it.
+relocates :: BrowserAction -> Boolean
+relocates (MoveTabToWindow _ _ _) = true
+relocates (NewWindowWithTabs _) = true
+relocates _ = false

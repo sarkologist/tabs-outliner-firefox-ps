@@ -19,11 +19,20 @@ test.describe("live-tab moves drive the browser", () => {
     });
     await expect(page.getByText("Gamma")).toBeVisible();
 
-    // drag Beta (window 1) onto Gamma (window 2)
+    // drag Beta (window 1) onto Gamma (window 2): lands BEFORE Gamma
     await page.getByText("Beta").dragTo(page.getByText("Gamma"));
 
-    // the REAL browser tab moved: window 1 keeps Alpha, window 2 gains Beta
-    await expect.poll(() => windowUrls(page)).toEqual([["http://a"], ["http://b", "http://g"]]);
+    // the REAL browser tab moved AND landed at the dropped position (before Gamma);
+    // window 1 keeps Alpha
+    await expect
+      .poll(async () => {
+        const ws: Array<{ id: number; tabs: Array<{ url: string }> }> = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+        return {
+          w1: ws.find((w) => w.id === 1)!.tabs.map((t) => t.url),
+          w2: ws.find((w) => w.id === 2)!.tabs.map((t) => t.url),
+        };
+      })
+      .toEqual({ w1: ["http://a"], w2: ["http://b", "http://g"] });
 
     // and the tree re-settles from the events: Beta now hangs under window 2's node
     const nodes = await readNodes(page);
