@@ -7,7 +7,7 @@ import Prelude
 
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
 
 type NodeId = String
 
@@ -26,30 +26,23 @@ type RuntimeTab =
 
 type RuntimeWindow = { windowId :: Int, tabs :: Array RuntimeTab }
 
--- | A node is a browser window, a browser tab, or a user-made group (folder).
-data Kind = KWindow | KTab | KGroup
+-- | A node is a browser tab or a container (group/folder). A container is also a
+-- | browser *window* whenever it currently owns a live tab — "window" is not a
+-- | separate kind, just a container with a live immediate child (and a windowId
+-- | binding). See `Model.Tree.isLiveWindow`.
+data Kind = KTab | KGroup
 
 derive instance eqKind :: Eq Kind
 derive instance ordKind :: Ord Kind
 instance showKind :: Show Kind where
-  show KWindow = "KWindow"
   show KTab = "KTab"
   show KGroup = "KGroup"
 
--- | Live = currently mirrors a real browser tab/window. Closed = kept as
--- | history (restorable). Groups are always Live (they have no browser object).
-data Status = Live | Closed
-
-derive instance eqStatus :: Eq Status
-derive instance ordStatus :: Ord Status
-instance showStatus :: Show Status where
-  show Live = "Live"
-  show Closed = "Closed"
-
--- | One node. `tabId` is set only on Live KTab nodes; `windowId` only on Live
--- | KWindow nodes (Nothing once Closed). The tree is the source of truth for
--- | structure; these bindings are how live browser events find their node in
--- | O(1) (via the Model indexes).
+-- | One node. Liveness is not stored — it is exactly the presence of a browser
+-- | binding: `tabId` on a live tab, `windowId` on a container that currently is a
+-- | live window. Both are `Nothing` once the object is gone (closed/restorable).
+-- | These bindings are how live browser events find their node in O(1) (via the
+-- | Model indexes), and the source of truth for `isLive`.
 -- |
 -- | `children` is the ordered child list owned by the parent. A structural edit
 -- | (open/move/delete a child) rewrites and persists that one list, so it costs
@@ -58,7 +51,6 @@ instance showStatus :: Show Status where
 type Node =
   { id :: NodeId
   , kind :: Kind
-  , status :: Status
   , parent :: Maybe NodeId
   , children :: Array NodeId
   , title :: String
@@ -122,7 +114,6 @@ defaultNode :: NodeId -> Kind -> Number -> Node
 defaultNode id kind now =
   { id
   , kind
-  , status: Live
   , parent: Nothing
   , children: []
   , title: ""
@@ -140,3 +131,13 @@ defaultNode id kind now =
 
 displayTitle :: Node -> String
 displayTitle n = fromMaybe n.title n.customTitle
+
+-- | A node is live when it currently mirrors a real browser object: a tab bound
+-- | to a `tabId`, or a container bound (as a window) to a `windowId`. Liveness is
+-- | not stored — it is exactly the presence of that binding.
+isLive :: Node -> Boolean
+isLive n = isJust n.tabId || isJust n.windowId
+
+-- | A live tab: bound to a browser tab. (A container never carries a `tabId`.)
+isLiveTab :: Node -> Boolean
+isLiveTab n = isJust n.tabId

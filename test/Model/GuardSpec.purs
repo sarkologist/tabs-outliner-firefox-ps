@@ -26,7 +26,7 @@ bigForest w k =
       let
         wid = "w" <> show i
         tabIds = map (\j -> "t" <> show i <> "_" <> show j) (Array.range 1 k)
-        winNode = (defaultNode wid KWindow 0.0) { windowId = Just i, children = tabIds, title = "W" <> show i }
+        winNode = (defaultNode wid KGroup 0.0) { windowId = Just i, children = tabIds, title = "W" <> show i }
         tabs = map
           ( \j ->
               let

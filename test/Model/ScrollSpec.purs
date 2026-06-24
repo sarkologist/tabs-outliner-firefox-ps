@@ -10,7 +10,7 @@ import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
 win :: String -> Int -> Array String -> Node
-win id wid children = (defaultNode id KWindow 0.0) { windowId = Just wid, children = children }
+win id wid children = (defaultNode id KGroup 0.0) { windowId = Just wid, children = children }
 
 tab :: String -> Int -> Boolean -> Node
 tab id tid active = (defaultNode id KTab 0.0) { tabId = Just tid, active = active }

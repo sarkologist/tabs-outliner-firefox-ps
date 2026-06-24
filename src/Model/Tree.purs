@@ -9,11 +9,11 @@ import Data.Array as Array
 import Data.Foldable (foldl, foldr)
 import Data.List (List(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.String as String
-import Model.Types (Model, Node, NodeId, Patch, Status(..), displayTitle)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, isLive, isLiveTab)
 
 -- | Apply a patch to a model: upsert nodes, delete removed ones, update roots,
 -- | and keep the live indexes current. Shared by the background (authority) and
@@ -42,10 +42,14 @@ applyPatch p model =
     Just w | isLive n -> Map.insert w n.id m
     _ -> m
 
-isLive :: Node -> Boolean
-isLive n = case n.status of
-  Live -> true
-  Closed -> false
+-- | A container that currently is a live browser window: it directly owns at
+-- | least one live (tab) child. The `windowId` binding is kept equivalent to
+-- | this; this structural test is the source of truth for display and the
+-- | window/group correspondence (a node's owning window is its immediate parent).
+isLiveWindow :: Model -> Node -> Boolean
+isLiveWindow model n = n.kind == KGroup && Array.any childIsLiveTab n.children
+  where
+  childIsLiveTab cid = maybe false isLiveTab (Map.lookup cid model.nodes)
 
 lookupNode :: NodeId -> Model -> Maybe Node
 lookupNode id model = Map.lookup id model.nodes

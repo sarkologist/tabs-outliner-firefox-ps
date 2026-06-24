@@ -42,7 +42,7 @@ import Model.PortableImport (portableToSnapshot)
 import Model.Scroll as Scroll
 import Model.Shortcuts as Sh
 import Model.Tree (applyPatch, searchVisible, visible)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), displayTitle, emptyModel)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, emptyModel, isLive)
 import Web.Event.Event (Event)
 import Web.UIEvent.KeyboardEvent (key)
 
@@ -416,7 +416,7 @@ renderNode dragging editing guide idx depth rowH n =
   HH.div
     [ HP.classes (map ClassName (rowClasses dragging n))
     , HP.attr (AttrName "data-node-id") n.id
-    , HP.attr (AttrName "data-status") (statusClass n.status)
+    , HP.attr (AttrName "data-status") (statusClass n)
     , HP.attr (AttrName "role") "treeitem"
     , HP.style
         ( "position:absolute;left:0;right:0;height:" <> show rowH
@@ -440,8 +440,8 @@ renderNode dragging editing guide idx depth rowH n =
 
 rowClasses :: Boolean -> Node -> Array String
 rowClasses dragging n =
-  [ "row", statusClass n.status, kindClass n.kind ]
-    <> (if n.active && n.status == Live then [ "active" ] else [])
+  [ "row", statusClass n, kindClass n ]
+    <> (if n.active && isLive n then [ "active" ] else [])
     <> (if dragging then [ "dragging" ] else [])
 
 body :: Maybe Editing -> Node -> H.ComponentHTML Action () Aff
@@ -466,7 +466,7 @@ actionsEl n = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons n)
 buttons :: Node -> Array (H.ComponentHTML Action () Aff)
 buttons n =
   [ btn "btn-rename" "Rename" "pencil" (StartRename n.id (displayTitle n)) ]
-    <> (if n.status == Live then [ btn "btn-close" "Close" "close-circle" (CloseClick n.id) ] else [])
+    <> (if isLive n then [ btn "btn-close" "Close" "close-circle" (CloseClick n.id) ] else [])
     <> (if n.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick n.id) ] else [])
     <> [ btn "btn-delete" "Delete" "trash" (DeleteClick n.id) ]
   where
@@ -482,14 +482,17 @@ toggleEl n
       [ HP.class_ (ClassName "toggle"), HE.onClick \_ -> Toggle n.id (not n.collapsed) ]
       [ icon (if n.collapsed then "chevron-right" else "chevron-down") ]
 
-statusClass :: Status -> String
-statusClass Live = "live"
-statusClass Closed = "closed"
+-- | Live (has a browser binding) vs closed (restorable history) — drives the
+-- | greyed-out styling. Derived, since liveness is no longer stored.
+statusClass :: Node -> String
+statusClass n = if isLive n then "live" else "closed"
 
-kindClass :: Kind -> String
-kindClass KWindow = "kind-window"
-kindClass KTab = "kind-tab"
-kindClass KGroup = "kind-group"
+-- | A container reads as a window exactly while it is live (a `KGroup`'s only
+-- | binding is its `windowId`, so `isLive` ⟺ live window); otherwise a folder.
+kindClass :: Node -> String
+kindClass n = case n.kind of
+  KTab -> "kind-tab"
+  KGroup -> if isLive n then "kind-window" else "kind-group"
 
 -- Icons -----------------------------------------------------------------------
 

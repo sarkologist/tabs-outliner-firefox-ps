@@ -20,12 +20,12 @@ import Data.List (List(..))
 import Data.List as List
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
 import Model.Tree (insertAtClamped)
-import Model.Types (Kind(..), Model, Node, NodeId, RuntimeTab, RuntimeWindow, Status(..), defaultNode)
+import Model.Types (Kind(..), Model, Node, NodeId, RuntimeTab, RuntimeWindow, defaultNode, isLiveTab)
 
 type Acc =
   { nodes :: Map NodeId Node
@@ -44,10 +44,10 @@ rematchOnStartup :: Number -> Array RuntimeWindow -> Model -> { model :: Model, 
 rematchOnStartup now current model0 =
   let
     allN = Array.fromFoldable (Map.values model0.nodes)
-    priorTabs = Array.filter (\n -> n.kind == KTab && isLive n) allN
-    priorWindows = Array.filter (\n -> n.kind == KWindow && isLive n) allN
+    priorTabs = Array.filter (\n -> n.kind == KTab && isLiveTab n) allN
+    priorWindows = Array.filter (\n -> n.kind == KGroup && isJust n.windowId) allN
     pool0 = foldl addToPool Map.empty priorTabs
-    urlToWin = foldl (addUrlWindow model0) Map.empty priorTabs
+    urlToWin = foldl addUrlWindow Map.empty priorTabs
 
     acc0 =
       { nodes: model0.nodes
@@ -78,23 +78,18 @@ rematchOnStartup now current model0 =
   in
     { model: model', patch: { upserts, removes: [], roots } }
 
-isLive :: Node -> Boolean
-isLive n = case n.status of
-  Live -> true
-  Closed -> false
-
 addToPool :: Map String (List NodeId) -> Node -> Map String (List NodeId)
 addToPool m n = case n.url of
   Just u -> Map.alter (Just <<< maybe (List.singleton n.id) (Cons n.id)) u m
   Nothing -> m
 
--- url -> the window node that owns a prior-live tab with that url (for window matching)
-addUrlWindow :: Model -> Map String NodeId -> Node -> Map String NodeId
-addUrlWindow model m n = case n.url, n.parent of
-  Just u, Just p | isWindow p -> Map.insert u p m
+-- url -> the container that owns a prior-live tab with that url (its immediate
+-- parent — a node's owning window is its immediate parent), for matching a
+-- reopened browser window to the container it should re-bind.
+addUrlWindow :: Map String NodeId -> Node -> Map String NodeId
+addUrlWindow m n = case n.url, n.parent of
+  Just u, Just p -> Map.insert u p m
   _, _ -> m
-  where
-  isWindow p = maybe false (\pn -> pn.kind == KWindow) (Map.lookup p model.nodes)
 
 mkId :: Int -> NodeId
 mkId i = "n" <> show i
@@ -110,7 +105,7 @@ resolveWindow now urlToWin acc cw = case chooseWindow urlToWin acc cw of
   Just wid -> case Map.lookup wid acc.nodes of
     Just w ->
       Tuple wid acc
-        { nodes = Map.insert wid (w { status = Live, windowId = Just cw.windowId, closedAt = Nothing }) acc.nodes
+        { nodes = Map.insert wid (w { windowId = Just cw.windowId, closedAt = Nothing }) acc.nodes
         , byWindow = Map.insert cw.windowId wid acc.byWindow
         , consumedWindows = Set.insert wid acc.consumedWindows
         , touched = Set.insert wid acc.touched
@@ -122,7 +117,7 @@ freshWindow :: Number -> Acc -> RuntimeWindow -> Tuple NodeId Acc
 freshWindow now acc cw =
   let
     nid = mkId acc.nextId
-    w = (defaultNode nid KWindow now) { windowId = Just cw.windowId, title = "Window" }
+    w = (defaultNode nid KGroup now) { windowId = Just cw.windowId, title = "Window" }
   in
     Tuple nid acc
       { nodes = Map.insert nid w acc.nodes
@@ -159,8 +154,7 @@ matchTab now winId acc ct = case ct.url >>= \u -> popPoolFor winId u acc of
   Nothing -> freshTab now winId acc ct
   where
   rebind n = n
-    { status = Live
-    , tabId = Just ct.tabId
+    { tabId = Just ct.tabId
     , title = ct.title
     , url = ct.url
     , favIconUrl = ct.favIconUrl
@@ -202,7 +196,7 @@ popPoolFor winId u acc = do
 closeInAcc :: Number -> Acc -> NodeId -> Acc
 closeInAcc now acc nid = case Map.lookup nid acc.nodes of
   Just n -> acc
-    { nodes = Map.insert nid (n { status = Closed, tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }) acc.nodes
+    { nodes = Map.insert nid (n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }) acc.nodes
     , touched = Set.insert nid acc.touched
     }
   Nothing -> acc

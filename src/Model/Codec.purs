@@ -1,8 +1,9 @@
 -- | JSON serialization for Node / Patch / snapshot, shared by persistence
 -- | (stringified per record) and the message channel (Json over runtime
--- | messaging). A plain JSON-friendly NodeRec mirror keeps Kind/Status as
--- | strings so argonaut's generic record codec does the work — no hand-written
--- | instances, no structured-cloning of PureScript ADTs.
+-- | messaging). A plain JSON-friendly NodeRec mirror keeps Kind as a string so
+-- | argonaut's generic record codec does the work — no hand-written instances,
+-- | no structured-cloning of PureScript ADTs. Liveness isn't serialized at all:
+-- | it is re-derived from the tabId/windowId bindings the record carries.
 module Model.Codec
   ( encodeNode
   , decodeNode
@@ -24,12 +25,11 @@ import Data.Bifunctor (lmap)
 import Data.Either (Either)
 import Data.Map as Map
 import Data.Maybe (Maybe)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..))
+import Model.Types (Kind(..), Model, Node, NodeId, Patch)
 
 type NodeRec =
   { id :: String
   , kind :: String
-  , status :: String
   , parent :: Maybe String
   , children :: Array String
   , title :: String
@@ -81,7 +81,6 @@ toRec :: Node -> NodeRec
 toRec n =
   { id: n.id
   , kind: kindStr n.kind
-  , status: statusStr n.status
   , parent: n.parent
   , children: n.children
   , title: n.title
@@ -101,7 +100,6 @@ fromRec :: NodeRec -> Node
 fromRec r =
   { id: r.id
   , kind: parseKind r.kind
-  , status: parseStatus r.status
   , parent: r.parent
   , children: r.children
   , title: r.title
@@ -118,19 +116,16 @@ fromRec r =
   }
 
 kindStr :: Kind -> String
-kindStr KWindow = "window"
 kindStr KTab = "tab"
 kindStr KGroup = "group"
 
+-- | MIGRATION (removable once persisted data has been rewritten once): legacy
+-- | records used kind "window" for live/saved browser windows; those are now just
+-- | containers, so map "window" — and any unknown kind — to a group. Legacy
+-- | records also carried a "status" field, which is simply ignored on decode
+-- | (argonaut drops unrecognized object keys). Liveness is re-derived from the
+-- | tabId/windowId bindings the record already has, and re-confirmed by the
+-- | startup re-match against the real browser.
 parseKind :: String -> Kind
 parseKind "tab" = KTab
-parseKind "group" = KGroup
-parseKind _ = KWindow
-
-statusStr :: Status -> String
-statusStr Live = "live"
-statusStr Closed = "closed"
-
-parseStatus :: String -> Status
-parseStatus "closed" = Closed
-parseStatus _ = Live
+parseKind _ = KGroup

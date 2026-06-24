@@ -23,14 +23,14 @@ import Data.Either (hush)
 import Data.Foldable (foldl)
 import Data.Int as Int
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe, fromMaybe, maybe)
 import Data.Nullable (Nullable, toMaybe, toNullable)
 import Data.String as String
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Model.Codec (decodeNode, encodeNode)
-import Model.Types (Model, Node, NodeId, Patch, Status(..), emptyModel)
+import Model.Types (Model, Node, NodeId, Patch, emptyModel)
 
 foreign import data Db :: Type
 
@@ -82,13 +82,12 @@ modelFromLoaded nodes roots =
   in
     withIdx { nextId = maxId + 1 }
   where
+  -- A binding's mere presence means live (a closed node carries neither), so the
+  -- tabId/windowId fields index directly — no status gate.
   addIndex m n = m
-    { byTab = maybe m.byTab (\t -> Map.insert t n.id m.byTab) (liveBound n.tabId n)
-    , byWindow = maybe m.byWindow (\w -> Map.insert w n.id m.byWindow) (liveBound n.windowId n)
+    { byTab = maybe m.byTab (\t -> Map.insert t n.id m.byTab) n.tabId
+    , byWindow = maybe m.byWindow (\w -> Map.insert w n.id m.byWindow) n.windowId
     }
-  liveBound field n = case n.status of
-    Live -> field
-    Closed -> Nothing
 
 idNum :: NodeId -> Int
 idNum id = fromMaybe 0 (Int.fromString =<< String.stripPrefix (String.Pattern "n") id)

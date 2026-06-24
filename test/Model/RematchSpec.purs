@@ -9,7 +9,7 @@ import Model.Command (Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
-import Model.Types (Model, RuntimeTab, RuntimeWindow, Status(..), Kind(..), emptyModel)
+import Model.Types (Model, RuntimeTab, RuntimeWindow, Kind(..), emptyModel, isLive)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -43,15 +43,15 @@ spec = describe "Model.Rematch" do
     (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5)
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
     (_.tabId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 52)
-    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Live
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
     Map.lookup 51 m.byTab `shouldEqual` Just "n2"
     Map.lookup 5 m.byWindow `shouldEqual` Just "n1"
 
   it "a tab that did not reopen closes in place" do
     let m = rematch [ rw 5 [ rt 51 5 0 "A" ] ] prior
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
-    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Live
-    (_.status <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Closed
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
 
   it "a genuinely new tab gets a new node under its window" do
@@ -63,9 +63,9 @@ spec = describe "Model.Rematch" do
 
   it "a window that did not reopen closes as a restorable previous session" do
     let m = rematch [] prior
-    (_.status <$> Map.lookup "n1" m.nodes) `shouldEqual` Just Closed
-    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Closed
-    (_.status <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Closed
+    (isLive <$> Map.lookup "n1" m.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
     m.roots `shouldEqual` [ "n1" ]
 
   it "duplicate urls across windows don't steal each other's nodes" do
@@ -90,5 +90,5 @@ spec = describe "Model.Rematch" do
         (applyCommand 0.0 (NewGroup Nothing 0) prior).model).model -- A under a new group n4
       m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "B" ] ] organized
     (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n4") -- still under the group
-    (_.status <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Live
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)

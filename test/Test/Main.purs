@@ -3,6 +3,7 @@ module Test.Main where
 import Prelude
 
 import Effect (Effect)
+import Test.Model.CodecSpec as CodecSpec
 import Test.Model.CommandSpec as CommandSpec
 import Test.Model.DropSpec as DropSpec
 import Test.Model.GuardSpec as GuardSpec
@@ -24,6 +25,7 @@ main :: Effect Unit
 main = runSpecAndExitProcess [ consoleReporter ] do
   TreeSpec.spec
   ReconcileSpec.spec
+  CodecSpec.spec
   CommandSpec.spec
   DropSpec.spec
   RematchSpec.spec

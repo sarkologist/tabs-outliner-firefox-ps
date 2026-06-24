@@ -16,7 +16,7 @@
 -- |     so they come back unchanged.
 -- |   * Restoring a pre-existing node touches only the fields a user command can
 -- |     change (customTitle, collapsed, parent, children); the node's live state
--- |     (status, tabId, url, …) is kept from the current model, so undoing a
+-- |     (tabId, windowId, url, …) is kept from the current model, so undoing a
 -- |     rename of a since-closed tab doesn't resurrect it as Live.
 -- |   * `roots`/`children` are restored but merged with siblings that appeared
 -- |     since (a window/tab opened between the command and the undo) so undo
@@ -40,8 +40,8 @@ import Data.Array as Array
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Model.Command (BrowserAction(..), Command(..))
-import Model.Tree (applyPatch, isLive)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..))
+import Model.Tree (applyPatch)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, isLive)
 
 -- | The patch that reverts `p`, given the model as it was *before* `p` was
 -- | applied. Nodes `p` overwrote are restored to their prior state; nodes `p`
@@ -65,20 +65,15 @@ inversePatch now before p =
   -- a node the patch created (in upserts, absent before) -> the inverse removes it
   created = Array.filter (\id -> not (Map.member id before.nodes)) (map _.id p.upserts)
 
--- | A removed live tab/window can't be brought back live by undo (its browser
--- | object is gone), so it returns as Closed history. Groups have no browser
--- | object and return unchanged.
+-- | A removed live node can't be brought back live by undo (its browser object is
+-- | gone), so it returns as closed history — its binding dropped. A live tab loses
+-- | its `tabId`; a live-window container loses its `windowId` (back as a saved
+-- | group). A node with no binding (a plain group, an already-closed tab) is
+-- | unchanged.
 downgradeBrowser :: Number -> Node -> Node
-downgradeBrowser now n = case n.kind, n.status of
-  KGroup, _ -> n
-  _, Closed -> n
-  _, Live -> n
-    { status = Closed
-    , tabId = Nothing
-    , windowId = Nothing
-    , active = false
-    , closedAt = Just now
-    }
+downgradeBrowser now n
+  | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }
+  | otherwise = n
 
 -- | Append the "concurrent additions" to a restored sibling list: ids in the
 -- | current list that the entry doesn't `known`-touch (neither restores in place,
@@ -93,7 +88,7 @@ mergeSiblings known snap cur =
 -- | Reconcile a restored node against its current state. A user command only ever
 -- | changes a *pre-existing* node's customTitle/collapsed/parent/children — never
 -- | its browser-owned fields, which only live events touch — so undo restores
--- | exactly those and keeps the current live state (status, tabId, url, …). That
+-- | exactly those and keeps the current live state (tabId, windowId, url, …). That
 -- | way undoing a rename of a since-closed tab won't resurrect it as Live, and a
 -- | restored parent keeps any child opened in it meanwhile. A node that no longer
 -- | exists (an entry re-adding a removed subtree) uses the snapshot as-is (already

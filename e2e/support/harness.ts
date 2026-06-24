@@ -37,6 +37,12 @@ export async function readNodes(page: Page): Promise<any[]> {
   );
 }
 
+// Liveness mirrors the model: a node is live iff it carries a browser binding
+// (a tab's tabId, or a container's windowId). Liveness is no longer persisted as
+// a field — it is exactly the presence of that binding.
+export const isLive = (n?: { tabId?: number | null; windowId?: number | null } | null): boolean =>
+  n != null && (n.tabId != null || n.windowId != null);
+
 // Drive a fake browser event from the test.
 export function fake(page: Page, method: string, ...args: unknown[]): Promise<void> {
   return page.evaluate(

@@ -5,7 +5,7 @@ import Prelude
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Model.Tree (applyPatch, insertAtClamped, moveWithin, searchVisible, subtreeIds, visible)
+import Model.Tree (applyPatch, insertAtClamped, isLiveWindow, moveWithin, searchVisible, subtreeIds, visible)
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -66,6 +66,28 @@ spec = describe "Model.Tree" do
     it "collects the subtree including the root" do
       subtreeIds "C" fixture `shouldEqual` [ "C", "D" ]
       subtreeIds "A" fixture `shouldEqual` [ "A", "B", "C", "D" ]
+
+  describe "isLiveWindow" do
+    -- a container is a window exactly while it directly owns a live tab; the
+    -- owning window of a node is its immediate parent (nesting is allowed, with
+    -- no special "nearest window ancestor" walk)
+    it "is true for a container with a live tab child, false otherwise" do
+      let
+        liveTab = (defaultNode "t" KTab 0.0) { tabId = Just 1 }
+        win = (defaultNode "w" KGroup 0.0) { children = [ "t" ] }
+        empty = (defaultNode "g" KGroup 0.0)
+        closedChild = (defaultNode "c" KTab 0.0)
+        grp = (defaultNode "h" KGroup 0.0) { children = [ "c" ] }
+        m = applyPatch
+          { upserts: [ liveTab, win, empty, closedChild, grp ]
+          , removes: []
+          , roots: Just [ "w", "g", "h" ]
+          }
+          emptyModel
+      (isLiveWindow m <$> Map.lookup "w" m.nodes) `shouldEqual` Just true
+      (isLiveWindow m <$> Map.lookup "g" m.nodes) `shouldEqual` Just false -- empty container
+      (isLiveWindow m <$> Map.lookup "h" m.nodes) `shouldEqual` Just false -- only a closed-tab child
+      (isLiveWindow m <$> Map.lookup "t" m.nodes) `shouldEqual` Just false -- a tab is never a window
 
   describe "array helpers" do
     it "insertAtClamped clamps out-of-range indices" do
