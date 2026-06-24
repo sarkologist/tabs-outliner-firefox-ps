@@ -36,6 +36,27 @@ test.describe("sidebar view", () => {
     await expect(page.locator('[data-status="closed"]').filter({ hasText: "Alpha" })).toBeVisible();
   });
 
+  test("hovering a row draws subtree guide lines, cleared on leave", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    // no guide lines are drawn until the pointer is over a row
+    await expect(page.locator(".guide-line")).toHaveCount(0);
+
+    // hovering a tab traces its connection up to the parent window: a vertical
+    // segment on the tab and on the window, and one horizontal stub into the tab
+    await page.locator(".row").filter({ hasText: "Alpha" }).hover();
+    await expect(page.locator(".guide-vertical").first()).toBeVisible();
+    await expect(page.locator(".guide-horizontal")).toHaveCount(1);
+
+    // hovering the window connects it down to BOTH child tabs (two stubs)
+    await page.locator(".row").filter({ hasText: "Window" }).hover();
+    await expect(page.locator(".guide-horizontal")).toHaveCount(2);
+
+    // leaving the tree clears the guides
+    await page.locator("#search").hover();
+    await expect(page.locator(".guide-line")).toHaveCount(0);
+  });
+
   test("collapse hides descendants (command round-trip, persisted)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();

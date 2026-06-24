@@ -17,6 +17,15 @@ const focusLog = (page: Page) => page.evaluate(() => (globalThis as any).__fake.
 const titles = (page: Page) => page.locator("[role=treeitem] .title").allInnerTexts();
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
 
+// Row actions are revealed on hover (the original's affordance), so hover the row
+// before clicking one — mirrors a real interaction and lets Playwright's pointer
+// hit-test see the button (it is pointer-events:none until :hover).
+const clickAction = async (page: Page, text: string, btn: string) => {
+  const row = rowOf(page, text);
+  await row.hover();
+  await row.locator(btn).click();
+};
+
 test.describe("commands", () => {
   test("clicking a live tab focuses it", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
@@ -26,20 +35,20 @@ test.describe("commands", () => {
 
   test("close keeps the node as greyed-out history", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await rowOf(page, "Beta").locator(".btn-close").click();
+    await clickAction(page, "Beta", ".btn-close");
     await expect(page.locator('.row[data-status="closed"]').filter({ hasText: "Beta" })).toBeVisible();
   });
 
   test("delete removes the node entirely", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await rowOf(page, "Beta").locator(".btn-delete").click();
+    await clickAction(page, "Beta", ".btn-delete");
     await expect(page.getByText("Beta")).toHaveCount(0);
     await expect(page.locator("[role=treeitem]")).toHaveCount(2);
   });
 
   test("rename updates the title", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await rowOf(page, "Alpha").locator(".btn-rename").click();
+    await clickAction(page, "Alpha", ".btn-rename");
     const input = page.locator(".rename-input");
     await input.fill("Renamed");
     await input.press("Enter");
@@ -109,5 +118,49 @@ test.describe("commands", () => {
     expect(await titles(page)).toEqual(["Window", "Alpha", "Beta"]);
     await page.getByText("Beta").dragTo(page.getByText("Alpha"));
     await expect.poll(() => titles(page)).toEqual(["Window", "Beta", "Alpha"]);
+  });
+
+  test("shows a drop preview that tracks the landing spot and clears on drop", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    // nothing until a drag is in progress
+    await expect(page.locator(".drop-indicator")).toHaveCount(0);
+
+    await rowOf(page, "Beta").dispatchEvent("dragstart");
+    // over a tab: lands before it
+    await rowOf(page, "Alpha").dispatchEvent("dragover");
+    await expect(page.locator(".drop-indicator")).toHaveCount(1);
+    const overTab = await page.locator(".drop-indicator").getAttribute("style");
+
+    // over a different row: the preview moves to the new landing spot
+    await rowOf(page, "Window").dispatchEvent("dragover");
+    await expect(page.locator(".drop-indicator")).toHaveCount(1);
+    expect(await page.locator(".drop-indicator").getAttribute("style")).not.toBe(overTab);
+
+    // the dragged row is dimmed while dragging
+    await expect(rowOf(page, "Beta")).toHaveClass(/dragging/);
+
+    await rowOf(page, "Alpha").dispatchEvent("drop");
+    await expect(page.locator(".drop-indicator")).toHaveCount(0);
+  });
+
+  test("dragging a node downward past a sibling lands it before the drop target", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a", title: "A", active: true },
+            { id: 12, url: "http://b", title: "B" },
+            { id: 13, url: "http://c", title: "C" },
+          ],
+        },
+      ],
+    });
+    await expect(page.getByText("C", { exact: true })).toBeVisible();
+    expect(await titles(page)).toEqual(["Window", "A", "B", "C"]);
+    // drag A down onto C: it must land immediately BEFORE C, i.e. [B, A, C]
+    await page.getByText("A", { exact: true }).dragTo(page.getByText("C", { exact: true }));
+    await expect.poll(() => titles(page)).toEqual(["Window", "B", "A", "C"]);
   });
 });

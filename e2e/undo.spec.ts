@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Locator } from "@playwright/test";
 import { bootBackgroundAndSidebar, fake } from "./support/harness";
 
 const seed = {
@@ -15,6 +15,12 @@ const seed = {
 
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
 const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "New group" });
+// Row actions are hover-revealed (pointer-events:none until :hover), so hover the
+// row before clicking one — as a real user does, and as the original's tests do.
+const clickAction = async (row: Locator, btn: string) => {
+  await row.hover();
+  await row.locator(btn).click();
+};
 // land subsequent keystrokes on <body>, not a lingering focused button/input
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
@@ -27,7 +33,7 @@ test.describe("undo / redo", () => {
     await page.locator("#new-group").click();
     await expect(groupRows(page)).toHaveCount(1);
 
-    await groupRows(page).locator(".btn-delete").click();
+    await clickAction(groupRows(page), ".btn-delete");
     await expect(groupRows(page)).toHaveCount(0);
 
     await page.locator("#undo").click();
@@ -41,7 +47,7 @@ test.describe("undo / redo", () => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Beta")).toBeVisible();
 
-    await rowOf(page, "Beta").locator(".btn-delete").click();
+    await clickAction(rowOf(page, "Beta"), ".btn-delete");
     await expect(page.getByText("Beta")).toHaveCount(0);
 
     await blur(page);
@@ -56,7 +62,7 @@ test.describe("undo / redo", () => {
 
   test("Ctrl+Z reverts a rename", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await rowOf(page, "Alpha").locator(".btn-rename").click();
+    await clickAction(rowOf(page, "Alpha"), ".btn-rename");
     const input = page.locator(".rename-input");
     await input.fill("Renamed");
     await input.press("Enter");
@@ -78,7 +84,7 @@ test.describe("undo / redo", () => {
 
     // type into the rename box; the shortcut handler must ignore keystrokes here.
     // locator.press targets the input directly (an editable element).
-    await rowOf(page, "Alpha").locator(".btn-rename").click();
+    await clickAction(rowOf(page, "Alpha"), ".btn-rename");
     await page.locator(".rename-input").press("Control+z");
     await page.waitForTimeout(200); // let any erroneous undo round-trip land
 
@@ -88,7 +94,7 @@ test.describe("undo / redo", () => {
 
   test("undo of a rename does not resurrect a tab closed in the meantime", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await rowOf(page, "Alpha").locator(".btn-rename").click();
+    await clickAction(rowOf(page, "Alpha"), ".btn-rename");
     const input = page.locator(".rename-input");
     await input.fill("Renamed");
     await input.press("Enter");
