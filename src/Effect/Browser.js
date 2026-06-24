@@ -21,6 +21,16 @@ export const getAllWindowsImpl = (api) => () =>
     }))
   );
 
+// The window hosting this sidebar (`windows.getCurrent`). Guarded so a missing
+// API (older test fakes) yields null rather than throwing during boot.
+export const getCurrentWindowIdImpl = (api) => () => {
+  const wins = api && api.windows;
+  if (!wins || typeof wins.getCurrent !== "function") return Promise.resolve(null);
+  return Promise.resolve(wins.getCurrent()).then((w) =>
+    w && typeof w.id === "number" ? w.id : null
+  );
+};
+
 export const subscribeImpl = (api) => (sink) => () => {
   const t = api.tabs;
   const w = api.windows;

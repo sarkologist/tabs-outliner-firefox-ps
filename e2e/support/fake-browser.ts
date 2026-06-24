@@ -114,6 +114,9 @@ export function installFakeBrowser(seed: Seed) {
         );
         return Promise.resolve({ id, tabs: wins.get(id)!.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },
+      // the window hosting the sidebar; defaults to the first seeded window, and
+      // the driver can repoint it to simulate focusing another window
+      getCurrent: () => Promise.resolve({ id: driver.focusedWindowId ?? firstWindowId() }),
       onCreated: ev.winCreated,
       onRemoved: ev.winRemoved,
     },
@@ -182,6 +185,11 @@ export function installFakeBrowser(seed: Seed) {
   const driver: any = {
     focusLog: [] as number[],
     winFocusLog: [] as number[],
+    // which window getCurrent() reports as hosting the sidebar (undefined = first)
+    focusedWindowId: undefined as number | undefined,
+    focusWindow: (id: number) => {
+      driver.focusedWindowId = id;
+    },
     // current shortcut bound to a command, for assertions
     commandShortcut: (name: string) => {
       const c = commandShortcuts.find((x) => x.name === name);

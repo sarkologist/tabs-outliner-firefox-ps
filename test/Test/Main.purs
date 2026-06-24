@@ -10,6 +10,7 @@ import Test.Model.GuideSpec as GuideSpec
 import Test.Model.PortableImportSpec as PortableImportSpec
 import Test.Model.ReconcileSpec as ReconcileSpec
 import Test.Model.RematchSpec as RematchSpec
+import Test.Model.ScrollSpec as ScrollSpec
 import Test.Model.ShortcutsSpec as ShortcutsSpec
 import Test.Model.TreeSpec as TreeSpec
 import Test.Model.UndoSpec as UndoSpec
@@ -29,5 +30,6 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   PortableImportSpec.spec
   GuardSpec.spec
   GuideSpec.spec
+  ScrollSpec.spec
   ShortcutsSpec.spec
   UndoSpec.spec

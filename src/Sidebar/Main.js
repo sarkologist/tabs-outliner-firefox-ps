@@ -54,6 +54,19 @@ export const treeViewportHeight = () => {
   return el ? el.clientHeight : 600;
 };
 
+// Scroll the tree to a computed offset (revealing the active tab). Deferred two
+// frames so it runs after Halogen has applied the new row layout — the
+// virtualized #tree-inner height — otherwise the browser would clamp scrollTop
+// to a stale, smaller scrollHeight and land in the wrong place.
+export const scrollTreeTo = (top) => () => {
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const el = document.getElementById("tree");
+      if (el) el.scrollTop = top;
+    })
+  );
+};
+
 export const onResize = (cb) => () => {
   window.addEventListener("resize", () => cb());
 };

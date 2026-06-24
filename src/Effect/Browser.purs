@@ -5,6 +5,7 @@ module Effect.Browser
   ( BrowserApi
   , getBrowser
   , getAllWindows
+  , getCurrentWindowId
   , subscribe
   , focusTab
   , createTab
@@ -54,6 +55,14 @@ getAllWindows api = map (map cleanWindow) (toAffE (getAllWindowsImpl api))
     , active: t.active
     , favIconUrl: toMaybe t.favIconUrl
     }
+
+foreign import getCurrentWindowIdImpl :: BrowserApi -> Effect (Promise (Nullable Int))
+
+-- | The browser window that hosts this sidebar instance. Firefox shows one
+-- | sidebar per window, so this scopes "scroll to the active tab" to the window
+-- | the user is actually looking at. `Nothing` if the API is unavailable.
+getCurrentWindowId :: BrowserApi -> Aff (Maybe Int)
+getCurrentWindowId api = map toMaybe (toAffE (getCurrentWindowIdImpl api))
 
 type RawOpened =
   { tabId :: Int

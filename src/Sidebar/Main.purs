@@ -21,7 +21,7 @@ import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Aff (Aff, attempt)
-import Effect.Browser (BrowserApi, getBrowser)
+import Effect.Browser (BrowserApi, getBrowser, getCurrentWindowId)
 import Effect.Channel (onBroadcast, request)
 import Effect.Persist as Persist
 import Effect.Settings as Settings
@@ -39,6 +39,7 @@ import Model.Command (Command(..), Request(..), encodeRequest)
 import Model.Drop (dropCommand, dropPlacement)
 import Model.Guide (Guide, buildGuide, emptyGuide, guideBottom, guideTop)
 import Model.PortableImport (portableToSnapshot)
+import Model.Scroll as Scroll
 import Model.Shortcuts as Sh
 import Model.Tree (applyPatch, searchVisible, visible)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), displayTitle, emptyModel)
@@ -52,6 +53,7 @@ foreign import getZoom :: Effect Number
 foreign import setZoom :: Number -> Effect Unit
 foreign import scrollMetrics :: Event -> { top :: Number, height :: Number }
 foreign import treeViewportHeight :: Effect Number
+foreign import scrollTreeTo :: Number -> Effect Unit
 foreign import onResize :: Effect Unit -> Effect Unit
 foreign import focusSearch :: Effect Unit
 foreign import openOptions :: Effect Unit
@@ -90,6 +92,11 @@ type State =
   , scrollTop :: Number
   , viewportH :: Number
   , listener :: Maybe (HS.Listener Action)
+  -- the browser window hosting this sidebar; scopes the scroll-to-active-tab
+  , myWindow :: Maybe Int
+  -- the active-tab node we last scrolled to, so we follow focus changes without
+  -- re-scrolling on every unrelated patch (or fighting the user's own scroll)
+  , focusObserved :: Maybe NodeId
   }
 
 data Action
@@ -127,7 +134,7 @@ data Action
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0, viewportH: 600.0, listener: Nothing }
+      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0, viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
   }
@@ -169,8 +176,14 @@ handleAction = case _ of
     db <- H.liftAff Persist.open
     loaded <- H.liftAff (Persist.load db)
     H.modify_ _ { model = Persist.modelFromLoaded loaded.nodes loaded.roots }
+    -- learn which window this sidebar lives in, then reveal its active tab
+    win <- H.liftAff (getCurrentWindowId api)
+    H.modify_ _ { myWindow = win }
+    revealFocus
 
-  GotPatch p -> H.modify_ \s -> s { model = applyPatch p s.model }
+  GotPatch p -> do
+    H.modify_ \s -> s { model = applyPatch p s.model }
+    revealFocus
   Scrolled m -> H.modify_ _ { scrollTop = m.top, viewportH = m.height }
   Remeasure -> do
     h <- H.liftEffect treeViewportHeight
@@ -264,6 +277,39 @@ sendRequest req = do
   case st.api of
     Just api -> void $ H.liftAff (attempt (request api (encodeRequest req)))
     Nothing -> pure unit
+
+-- | Scroll the tree so this window's active tab is in view, following focus as it
+-- | moves. We act only when the active-tab target *changes* (tracked in
+-- | `focusObserved`), so unrelated patches don't re-scroll and the user's own
+-- | scrolling is left alone. Skipped during search (the rows shown then are the
+-- | search results, and auto-scrolling would fight typing). A target hidden in a
+-- | collapsed group is left untracked, so expanding it later reveals it.
+revealFocus :: forall o. H.HalogenM State Action () o Aff Unit
+revealFocus = do
+  st <- H.get
+  case st.myWindow of
+    Just w | st.query == "" -> case Scroll.activeTabInWindow w st.model of
+      Nothing -> H.modify_ _ { focusObserved = Nothing }
+      Just tid
+        | st.focusObserved == Just tid -> pure unit
+        | otherwise ->
+            let entries = visible st.model
+            in case Array.findIndex (\e -> e.id == tid) entries of
+              Nothing -> pure unit
+              Just idx -> do
+                H.modify_ _ { focusObserved = Just tid }
+                let
+                  rowH = baseRowHeight * st.zoom
+                  geom =
+                    { rowHeight: rowH
+                    , viewportHeight: st.viewportH
+                    , contentHeight: Int.toNumber (Array.length entries) * rowH
+                    , scrollTop: st.scrollTop
+                    }
+                case Scroll.revealScrollTop geom idx of
+                  Just top -> H.liftEffect (scrollTreeTo top)
+                  Nothing -> pure unit
+    _ -> pure unit
 
 -- | Fixed (non-rebindable) editor shortcuts, matched before the configurable
 -- | toolbar ones. Undo/redo need a Ctrl/Cmd modifier and are universal enough not
