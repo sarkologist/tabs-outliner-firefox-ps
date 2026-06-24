@@ -79,8 +79,12 @@ buildGuide entries h = case Array.index entries h of
             -- the previous sibling (now a pass-through) and the gap to here
             Just prev | prev.parent == p ->
               addSeg (fillGap (addSeg acc.verticals prev.idx dd guideFull) (prev.idx + 1) (c - 1) dd) c dd guideTop
-            -- first child of this parent: open the line at the parent's bottom
-            _ -> addSeg (addSeg acc.verticals p dd guideBottom) c dd guideTop
+            -- first connector at this (parent, depth): open the line at the
+            -- parent's bottom and fill the span down to this row. For a genuine
+            -- first child that span is empty (it immediately follows its parent);
+            -- it is non-empty only for the hovered row itself when it isn't its
+            -- parent's first child, where the preceding siblings sit on the spine.
+            _ -> addSeg (fillGap (addSeg acc.verticals p dd guideBottom) (p + 1) (c - 1) dd) c dd guideTop
           _ -> acc.verticals
         conn' = Map.insert dd { idx: c, parent: fromMaybe (-1) parent } acc.conn
       in

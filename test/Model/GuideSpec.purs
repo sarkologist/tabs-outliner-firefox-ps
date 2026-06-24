@@ -35,11 +35,24 @@ spec = describe "Model.Guide" do
         , horizontals: horiz [ Tuple 1 1, Tuple 2 1 ]
         }
 
-    it "traces a hovered leaf up to its parent only" do
+    it "traces a hovered first child up to its parent only" do
       let entries = [ e "w" 0, e "a" 1, e "b" 1 ]
       buildGuide entries 1 `shouldEqual`
         { verticals: vert [ Tuple 0 [ Tuple 1 guideBottom ], Tuple 1 [ Tuple 1 guideTop ] ]
         , horizontals: horiz [ Tuple 1 1 ]
+        }
+
+    it "spines through preceding siblings when the hovered row isn't the first child" do
+      -- hover b (the 2nd child): the vertical must run w -> a -> b continuously,
+      -- so a's row (between parent and b) is FULL, not empty
+      let entries = [ e "w" 0, e "a" 1, e "b" 1 ]
+      buildGuide entries 2 `shouldEqual`
+        { verticals: vert
+            [ Tuple 0 [ Tuple 1 guideBottom ]
+            , Tuple 1 [ Tuple 1 guideFull ]
+            , Tuple 2 [ Tuple 1 guideTop ]
+            ]
+        , horizontals: horiz [ Tuple 2 1 ]
         }
 
     it "fills the gap created by a nested subtree between two siblings" do
