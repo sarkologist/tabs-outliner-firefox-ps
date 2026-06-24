@@ -119,15 +119,10 @@ kindStr :: Kind -> String
 kindStr KTab = "tab"
 kindStr KGroup = "group"
 
--- | MIGRATION (removable once persisted data has been rewritten once): legacy
--- | records used kind "window" for live/saved browser windows; those are now just
--- | containers, so map "window" — and any unknown kind — to a group. Legacy
--- | records also carried a "status" field, which is simply ignored on decode
--- | (argonaut drops unrecognized object keys). Liveness is re-derived from the
--- | tabId/windowId bindings the record already has, and re-confirmed by the
--- | startup re-match against the real browser.
+-- | A node is a tab or a container; every non-"tab" kind decodes to a container.
+-- | (Old records that predate the window/group unification used "tab", "group",
+-- | and "window" — the last just falls into the container default, so they still
+-- | load. A decode never fails on the kind, so a record is never dropped.)
 parseKind :: String -> Kind
 parseKind "tab" = KTab
-parseKind "group" = KGroup
-parseKind "window" = KGroup -- legacy: a browser window is now just a container
-parseKind _ = KGroup -- unknown kind: keep the node (as a container) rather than drop it
+parseKind _ = KGroup
