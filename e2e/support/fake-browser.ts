@@ -108,10 +108,16 @@ export function installFakeBrowser(seed: Seed) {
         const id = ++winSeq;
         wins.set(id, { id, tabIds: [] });
         ev.winCreated._emit({ id });
-        const urls = Array.isArray(props.url) ? props.url : props.url != null ? [props.url] : [];
-        urls.forEach((u: string, i: number) =>
-          driver.openTab({ id: ++tabSeq, windowId: id, url: u, title: u, active: i === 0 })
-        );
+        if (props.tabId != null) {
+          // create a window holding an existing tab: onCreated (above) then the
+          // tab's onAttached into it — the order the background relies on
+          driver.attachTab(props.tabId, id, 0);
+        } else {
+          const urls = Array.isArray(props.url) ? props.url : props.url != null ? [props.url] : [];
+          urls.forEach((u: string, i: number) =>
+            driver.openTab({ id: ++tabSeq, windowId: id, url: u, title: u, active: i === 0 })
+          );
+        }
         return Promise.resolve({ id, tabs: wins.get(id)!.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },
       // the window hosting the sidebar; defaults to the first seeded window, and
@@ -138,6 +144,22 @@ export function installFakeBrowser(seed: Seed) {
       remove: (id: number) => {
         driver.closeTab(id);
         return Promise.resolve();
+      },
+      // Move a tab: to another window (fires onAttached) or within its window
+      // (fires onMoved). index -1/absent means append.
+      move: (id: number, props: any = {}) => {
+        const t = tabs.get(id);
+        if (!t) return Promise.resolve([]);
+        if (props.windowId != null && props.windowId !== t.windowId) {
+          const w = wins.get(props.windowId);
+          const pos = props.index == null || props.index < 0 ? (w ? w.tabIds.length : 0) : props.index;
+          driver.attachTab(id, props.windowId, pos);
+        } else {
+          const w = wins.get(t.windowId)!;
+          const pos = props.index == null || props.index < 0 ? w.tabIds.length - 1 : props.index;
+          driver.moveTab(id, pos);
+        }
+        return Promise.resolve(tabInfo(tabs.get(id)));
       },
       onCreated: ev.tabCreated,
       onRemoved: ev.tabRemoved,
@@ -270,6 +292,11 @@ export function installFakeBrowser(seed: Seed) {
       t.windowId = newWindowId;
       reindex(newWindowId);
       ev.tabAttached._emit(id, { newWindowId, newPosition });
+      // Firefox closes a window when its last tab moves out.
+      if (old && old.id !== newWindowId && old.tabIds.length === 0) {
+        wins.delete(old.id);
+        ev.winRemoved._emit(old.id);
+      }
     },
   };
 

@@ -8,6 +8,7 @@ import Data.Maybe (Maybe(..))
 import Model.Command (BrowserAction(..), Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
+import Model.Tree (applyPatch)
 import Model.Types (Kind(..), Model, defaultNode, emptyModel, isLive)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -22,6 +23,10 @@ runEvents = foldl (\m e -> (applyBrowser 0.0 e m).model) emptyModel
 -- window n1 with live tabs n2 (tab 11, "A") and n3 (tab 12, "B")
 base :: Model
 base = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false ]
+
+-- base plus a second window n4 (id 2) holding a live tab n5 (tab 21, "C")
+base2 :: Model
+base2 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false, openTab 21 2 0 "C" true ]
 
 run :: Command -> Model -> Model
 run c m = (applyCommand 0.0 c m).model
@@ -46,21 +51,23 @@ spec = describe "Model.Command" do
     (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n3" ]
     r.actions `shouldEqual` [ RemoveTab 11 ]
 
-  it "move re-parents a node to the root" do
-    let m = run (Move "n3" Nothing 0) base
-    (_.parent <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Nothing
-    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
-    m.roots `shouldEqual` [ "n3", "n1" ]
+  it "move re-parents a (non-live) node to the root" do
+    let
+      m0 = run (NewGroup (Just "n1") 0) base -- group n4 as n1's first child
+      m = run (Move "n4" Nothing 0) m0
+    (_.parent <$> Map.lookup "n4" m.nodes) `shouldEqual` Just Nothing
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
+    m.roots `shouldEqual` [ "n4", "n1" ]
 
   it "new group then flatten promotes children and removes the group" do
     let
       m1 = run (NewGroup Nothing 0) base -- group n4 at roots[0]
-      m2 = run (Move "n2" (Just "n4") 0) m1 -- A under the group
+      m2 = run (Move "n1" (Just "n4") 0) m1 -- window n1 under the group (a non-live move)
       m3 = run (Flatten "n4") m2
     (_.kind <$> Map.lookup "n4" m1.nodes) `shouldEqual` Just KGroup
     Map.lookup "n4" m3.nodes `shouldEqual` Nothing
-    m3.roots `shouldEqual` [ "n2", "n1" ]
-    (_.parent <$> Map.lookup "n2" m3.nodes) `shouldEqual` Just Nothing
+    m3.roots `shouldEqual` [ "n1" ]
+    (_.parent <$> Map.lookup "n1" m3.nodes) `shouldEqual` Just Nothing
 
   it "move into one's own descendant is rejected (no cycle)" do
     let m = run (Move "n1" (Just "n2") 0) base -- n2 is a child of n1
@@ -71,11 +78,29 @@ spec = describe "Model.Command" do
     (_.kind <$> Map.lookup "n2" m.nodes) `shouldEqual` Just KTab
     Map.size m.nodes `shouldEqual` Map.size base.nodes
 
-  it "flatten leaves a live window intact (PR1 gate: would orphan its live tabs)" do
-    let m = run (Flatten "n1") base -- n1 is the live window (windowId 1)
-    (_.kind <$> Map.lookup "n1" m.nodes) `shouldEqual` Just KGroup
-    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
-    Map.size m.nodes `shouldEqual` Map.size base.nodes
+  it "flatten of a live window detaches its tabs into a new window and dissolves it" do
+    let r = applyCommand 0.0 (Flatten "n1") base -- n1 is the live window (windowId 1) at root
+    Map.lookup "n1" r.model.nodes `shouldEqual` Nothing -- the window node is gone...
+    r.actions `shouldEqual` [ NewWindowWithTabs [ 11, 12 ] ] -- ...its tabs re-homed into one fresh window
+
+  it "flatten of a nested live window merges its tabs into the parent window" do
+    let
+      -- outer window P (id 2) holding its own tab pp and a nested window W (id 1)
+      m = applyPatch
+        { upserts:
+            [ (defaultNode "P" KGroup 0.0) { windowId = Just 2, title = "Outer", children = [ "pp", "W" ] }
+            , (defaultNode "pp" KTab 0.0) { parent = Just "P", tabId = Just 20, url = Just "http://p", title = "P0" }
+            , (defaultNode "W" KGroup 0.0) { windowId = Just 1, parent = Just "P", title = "Inner", children = [ "t1", "t2" ] }
+            , (defaultNode "t1" KTab 0.0) { parent = Just "W", tabId = Just 11, url = Just "http://a", title = "A" }
+            , (defaultNode "t2" KTab 0.0) { parent = Just "W", tabId = Just 12, url = Just "http://b", title = "B" }
+            ]
+        , removes: []
+        , roots: Just [ "P" ]
+        }
+        emptyModel
+      r = applyCommand 0.0 (Flatten "W") m
+    Map.lookup "W" r.model.nodes `shouldEqual` Nothing -- inner window dissolved
+    r.actions `shouldEqual` [ MoveTabToWindow 11 2 (-1), MoveTabToWindow 12 2 (-1) ] -- merged (appended) into the outer window
 
   it "closing a window drops its window binding but leaves nested groups untouched" do
     let
@@ -174,3 +199,31 @@ spec = describe "Model.Command" do
     (isLive <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just true
     (_.parent <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just "n4")
     reopened.roots `shouldEqual` [ "n1", "n4" ]
+
+  -- Dragging a LIVE tab to a new owning container drives the real browser tab; the
+  -- tree is left untouched and re-settles from the resulting onAttached/onCreated.
+  describe "live-tab moves drive the browser" do
+    it "into another live window: moves the real tab there at the dropped index" do
+      let r = applyCommand 0.0 (Move "n2" (Just "n4") 1) base2 -- n2 (tab 11) -> window n4 (id 2), index 1
+      r.actions `shouldEqual` [ MoveTabToWindow 11 2 1 ]
+      (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1") -- unchanged until events
+      r.model.pendingRestoreWindows `shouldEqual` []
+
+    it "into a saved group: the group goes live as a new window (queued to rebind)" do
+      let
+        withGroup = (applyCommand 0.0 (NewGroup Nothing 0) base2).model -- group n6 at root
+        r = applyCommand 0.0 (Move "n2" (Just "n6") 0) withGroup
+      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+      r.model.pendingRestoreWindows `shouldEqual` [ "n6" ] -- n6 binds when its window opens
+      (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
+
+    it "out to the root: detaches into a brand-new window" do
+      let r = applyCommand 0.0 (Move "n2" Nothing 0) base2
+      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+      r.model.pendingRestoreWindows `shouldEqual` [] -- a fresh window node appears via onCreated
+      (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
+
+    it "within its own window: stays a tree-only reorder (no browser action)" do
+      let r = applyCommand 0.0 (Move "n3" (Just "n1") 0) base2
+      r.actions `shouldEqual` []
+      (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n3", "n2" ]
