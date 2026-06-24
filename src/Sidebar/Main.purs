@@ -467,7 +467,9 @@ buttons :: Node -> Array (H.ComponentHTML Action () Aff)
 buttons n =
   [ btn "btn-rename" "Rename" "pencil" (StartRename n.id (displayTitle n)) ]
     <> (if isLive n then [ btn "btn-close" "Close" "close-circle" (CloseClick n.id) ] else [])
-    <> (if n.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick n.id) ] else [])
+    -- Flatten dissolves a container; hidden on a live window (windowId-bound) in
+    -- PR1, where it can't yet re-home the window's live tabs (see Command.flatten).
+    <> (if n.kind == KGroup && not (isLive n) then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick n.id) ] else [])
     <> [ btn "btn-delete" "Delete" "trash" (DeleteClick n.id) ]
   where
   btn cls label name act =

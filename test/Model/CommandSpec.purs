@@ -71,6 +71,12 @@ spec = describe "Model.Command" do
     (_.kind <$> Map.lookup "n2" m.nodes) `shouldEqual` Just KTab
     Map.size m.nodes `shouldEqual` Map.size base.nodes
 
+  it "flatten leaves a live window intact (PR1 gate: would orphan its live tabs)" do
+    let m = run (Flatten "n1") base -- n1 is the live window (windowId 1)
+    (_.kind <$> Map.lookup "n1" m.nodes) `shouldEqual` Just KGroup
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
+    Map.size m.nodes `shouldEqual` Map.size base.nodes
+
   it "closing a window drops its window binding but leaves nested groups untouched" do
     let
       withGroup = run (NewGroup (Just "n1") 0) base -- group n4 under window n1

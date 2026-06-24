@@ -19,7 +19,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, subtreeIds)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, defaultNode, emptyPatch, isLiveTab)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, defaultNode, emptyPatch, isLive, isLiveTab)
 
 data Command
   = Collapse NodeId Boolean
@@ -242,6 +242,11 @@ applyCommand now cmd model = case cmd of
     Nothing -> noChange
     Just node
       | node.kind /= KGroup -> noChange -- only dissolve containers (groups/windows), never tabs
+      -- PR1 gate (removed in PR2): don't dissolve a LIVE window (windowId-bound).
+      -- Flattening it would strand the window binding on a deleted node and orphan
+      -- its live tabs to the root with no browser move yet. PR2 moves the tabs /
+      -- wraps the orphans into new windows, then this guard goes.
+      | isLive node -> noChange
       | otherwise ->
           let
             kids = node.children
