@@ -14,6 +14,7 @@ import Data.Array as Array
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
+import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
@@ -176,11 +177,12 @@ applyCommand now cmd model = case cmd of
     Nothing -> []
 
   -- restore: re-open every closed tab in the subtree, re-binding to existing
-  -- nodes via pendingRestore (keyed by url) when each onCreated arrives. Each
-  -- tab is routed by its immediate parent: a parent already live as a window
-  -- reopens the tab back into it; a saved-group parent has all its tabs grouped
-  -- into one new browser window (whose node rebinds via pendingRestoreWindows)
-  -- and goes live in place; a tab with no parent reopens in the current window.
+  -- nodes via pendingRestore (keyed by the window each tab is recreated in) when
+  -- each onCreated arrives. Each tab is routed by its immediate parent: a parent
+  -- already live as a window reopens the tab back into it; a saved-group parent
+  -- has all its tabs grouped into one new browser window (whose node rebinds via
+  -- pendingRestoreWindows) and goes live in place; a tab with no parent reopens in
+  -- the current window.
   restore :: NodeId -> CmdResult
   restore nid =
     let
@@ -204,7 +206,14 @@ applyCommand now cmd model = case cmd of
         IntoCurrent -> Just (CreateTab Nothing (Just x.url))
         IntoNewWindow _ -> Nothing) tagged
 
-      pending' = foldl (\m x -> Map.insert x.url x.id m) model.pendingRestore tagged
+      -- queue each IntoWindow tab under its target window — a FIFO consumed as the
+      -- recreated tabs' onCreated events arrive (in this same order). IntoNewWindow
+      -- tabs are queued when their window opens (Model.Reconcile); IntoCurrent tabs
+      -- can't be pre-keyed by a window, so they just reopen as fresh nodes.
+      queueIntoWindow m x = case x.target of
+        IntoWindow wid -> Map.alter (\ml -> Just (maybe (List.singleton x.id) (\l -> List.snoc l x.id) ml)) wid m
+        _ -> m
+      pending' = foldl queueIntoWindow model.pendingRestore tagged
     in
       { model: model
           { pendingRestore = pending'

@@ -143,6 +143,20 @@ spec = describe "Model.Command" do
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
     Map.size reopened.nodes `shouldEqual` 2
 
+  it "restoring rebinds the clicked node even when the recreated tab reports a different url" do
+    let
+      closed = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
+      activated = applyCommand 0.0 (Activate "n2") closed
+      -- the browser recreates the tab, but onCreated reports a normalized/redirected
+      -- url ("http://A/" with a trailing slash, not the stored "http://A")
+      reopened = (applyBrowser 0.0
+        (TabOpened { tabId: 99, windowId: 1, index: 0, url: Just "http://A/", title: "A", active: true, favIconUrl: Nothing })
+        activated.model).model
+    -- the SAME node n2 is rebound — no duplicate fresh node
+    (isLive <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just true
+    (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
+    Map.size reopened.nodes `shouldEqual` 2
+
   it "restoring a closed window opens a new window (not the active one)" do
     let
       closedWin = (applyBrowser 0.0 (WindowClosed { windowId: 1 }) base).model

@@ -5,6 +5,7 @@ module Model.Types where
 
 import Prelude
 
+import Data.List (List)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
@@ -68,7 +69,10 @@ type Node =
 
 -- | The authoritative state. `byTab`/`byWindow` are derived indexes giving
 -- | O(1) event handling; `pendingRestore` re-binds a restored closed tab to its
--- | existing node instead of spawning a duplicate; `pendingRestoreWindows` is the
+-- | existing node instead of spawning a duplicate — keyed by the window the tab
+-- | is being recreated in (a FIFO consumed in creation order), since the url the
+-- | browser reports for the new tab can differ from the saved one (trailing slash,
+-- | redirect, about:blank while loading); `pendingRestoreWindows` is the
 -- | FIFO of container nodes awaiting a newly-opened browser window to bind to —
 -- | either a closed window being restored, or a saved/plain container a live tab
 -- | was just dragged into (so it goes live in place rather than a fresh window
@@ -78,7 +82,7 @@ type Model =
   , nodes :: Map NodeId Node
   , byTab :: Map Int NodeId
   , byWindow :: Map Int NodeId
-  , pendingRestore :: Map String NodeId
+  , pendingRestore :: Map Int (List NodeId)
   , pendingRestoreWindows :: Array NodeId
   , nextId :: Int
   }
