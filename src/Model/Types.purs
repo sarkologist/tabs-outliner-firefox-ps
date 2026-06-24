@@ -69,9 +69,10 @@ type Node =
 -- | The authoritative state. `byTab`/`byWindow` are derived indexes giving
 -- | O(1) event handling; `pendingRestore` re-binds a restored closed tab to its
 -- | existing node instead of spawning a duplicate; `pendingRestoreWindows` is the
--- | FIFO of closed window nodes awaiting the new browser window a restore opened
--- | for them (so the node rebinds rather than a fresh one appearing); `nextId`
--- | allocates NodeIds.
+-- | FIFO of container nodes awaiting a newly-opened browser window to bind to —
+-- | either a closed window being restored, or a saved/plain container a live tab
+-- | was just dragged into (so it goes live in place rather than a fresh window
+-- | node appearing); `nextId` allocates NodeIds.
 type Model =
   { roots :: Array NodeId
   , nodes :: Map NodeId Node

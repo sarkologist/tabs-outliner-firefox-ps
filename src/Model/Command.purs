@@ -35,11 +35,17 @@ data Command
 -- | Browser-side effects a command implies (interpreted by the background).
 -- | `CreateWindow` opens one new browser window populated with the given urls
 -- | (so restoring a closed window re-creates it as its own window, not as tabs
--- | dumped into whatever window is currently focused).
+-- | dumped into whatever window is currently focused). `MoveTabToWindow` and
+-- | `NewWindowWithTab` carry a live-tab reorganization through to the real
+-- | browser: when the user drags a live tab to a new owning container, the actual
+-- | tab moves (into that container's window, or a fresh one), and the tree
+-- | re-settles from the resulting onAttached/onCreated events.
 data BrowserAction
   = FocusTab Int
   | CreateTab (Maybe Int) (Maybe String)
   | CreateWindow (Array String)
+  | MoveTabToWindow Int Int -- tabId, destination (live) windowId
+  | NewWindowWithTab Int -- tabId; detach it into a brand-new window
   | RemoveTab Int
 
 derive instance eqBrowserAction :: Eq BrowserAction
@@ -47,6 +53,8 @@ instance showBrowserAction :: Show BrowserAction where
   show (FocusTab t) = "FocusTab " <> show t
   show (CreateTab w u) = "CreateTab " <> show w <> " " <> show u
   show (CreateWindow us) = "CreateWindow " <> show us
+  show (MoveTabToWindow t w) = "MoveTabToWindow " <> show t <> " " <> show w
+  show (NewWindowWithTab t) = "NewWindowWithTab " <> show t
   show (RemoveTab t) = "RemoveTab " <> show t
 
 -- | Where a restored tab should reopen, decided by its IMMEDIATE PARENT — the
@@ -211,10 +219,14 @@ applyCommand now cmd model = case cmd of
   move :: NodeId -> Maybe NodeId -> Int -> CmdResult
   move nid mParent index = case Map.lookup nid model.nodes of
     Nothing -> noChange
-    Just node ->
+    Just node
       -- reject a move into the node's own subtree (O(depth) upward walk)
-      if mParent == Just nid || maybe false (\p -> isAncestorOrSelf nid p model) mParent then noChange
-      else
+      | mParent == Just nid || maybe false (\p -> isAncestorOrSelf nid p model) mParent -> noChange
+      -- a live tab changing its owning window (its immediate parent): drive the
+      -- real browser tab instead of editing the tree; the tree re-settles from the
+      -- resulting onAttached/onCreated events, so this emits no patch.
+      | isLiveTab node && mParent /= node.parent -> moveLiveTab node mParent
+      | otherwise ->
           let
             detached = detachUpserts node
             rootsDetached = Array.delete nid model.roots
@@ -236,6 +248,26 @@ applyCommand now cmd model = case cmd of
                     patch = { upserts, removes: [], roots: rootsM }
                   in
                     { model: applyPatch patch model, patch, actions: [] }
+
+  -- A live tab dragged to a different owning container: move the REAL browser tab,
+  -- not the tree node. Into an already-live window -> append the tab there; into a
+  -- saved/plain container -> it "goes live" as a new window (queued to rebind on
+  -- the window's onCreated, exactly like a restore); out to the root -> a fresh
+  -- window for the tab. In every case the tree re-settles from the browser events.
+  moveLiveTab :: Node -> Maybe NodeId -> CmdResult
+  moveLiveTab node mParent = case node.tabId of
+    Nothing -> noChange -- unreachable under the isLiveTab guard; keeps this total
+    Just t -> case mParent of
+      Nothing -> actionsOnly [ NewWindowWithTab t ]
+      Just pid -> case Map.lookup pid model.nodes of
+        Nothing -> noChange
+        Just p -> case p.windowId of
+          Just w -> actionsOnly [ MoveTabToWindow t w ]
+          Nothing ->
+            { model: model { pendingRestoreWindows = Array.snoc model.pendingRestoreWindows pid }
+            , patch: emptyPatch
+            , actions: [ NewWindowWithTab t ]
+            }
 
   flatten :: NodeId -> CmdResult
   flatten nid = case Map.lookup nid model.nodes of

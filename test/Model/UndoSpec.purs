@@ -97,14 +97,15 @@ spec = describe "Model.Undo" do
 
   it "redo re-applies exactly what undo reverted" do
     let
-      r = applyCommand 0.0 (Move "n3" Nothing 0) base
-      undoStep = applyEntry 0.0 (inversePatch 0.0 base r.patch) r.model
+      m0 = (applyCommand 0.0 (NewGroup (Just "n1") 0) base).model -- group n4 under n1
+      r = applyCommand 0.0 (Move "n4" Nothing 0) m0 -- move the group out to the root
+      undoStep = applyEntry 0.0 (inversePatch 0.0 m0 r.patch) r.model
       redoStep = applyEntry 0.0 undoStep.inverse undoStep.model
-    -- undo put n3 back under n1...
-    (_.parent <$> Map.lookup "n3" undoStep.model.nodes) `shouldEqual` Just (Just "n1")
+    -- undo put n4 back under n1...
+    (_.parent <$> Map.lookup "n4" undoStep.model.nodes) `shouldEqual` Just (Just "n1")
     -- ...and redo moves it back to the root, matching the original command
-    (_.parent <$> Map.lookup "n3" redoStep.model.nodes) `shouldEqual` Just Nothing
-    redoStep.model.roots `shouldEqual` [ "n3", "n1" ]
+    (_.parent <$> Map.lookup "n4" redoStep.model.nodes) `shouldEqual` Just Nothing
+    redoStep.model.roots `shouldEqual` [ "n4", "n1" ]
 
   it "undo does not drop a window that opened since the command" do
     let
@@ -134,14 +135,15 @@ spec = describe "Model.Undo" do
 
   it "undo of a move keeps a tab opened in the parent meanwhile (no orphan)" do
     let
-      moved = applyCommand 0.0 (Move "n3" Nothing 0) base -- n3 out of window n1
-      entry = inversePatch 0.0 base moved.patch
-      -- a new tab (n4, tab 13) opens in window 1 after the move, before the undo
+      m0 = (applyCommand 0.0 (NewGroup (Just "n1") 0) base).model -- group n4 first under n1: [n4, n2, n3]
+      moved = applyCommand 0.0 (Move "n4" Nothing 0) m0 -- n4 out of window n1 to the root
+      entry = inversePatch 0.0 m0 moved.patch
+      -- a new tab (n5, tab 13) opens in window 1 after the move, before the undo
       withTab = (applyBrowser 0.0 (openTab 13 1 1 "C" false) moved.model).model
       back = (applyEntry 0.0 entry withTab).model
-    -- n3 returns under n1 AND the newly-opened tab survives, in order
-    (_.parent <$> Map.lookup "n3" back.nodes) `shouldEqual` Just (Just "n1")
-    (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n2", "n3", "n4" ]
+    -- n4 returns under n1 AND the newly-opened tab survives, in order
+    (_.parent <$> Map.lookup "n4" back.nodes) `shouldEqual` Just (Just "n1")
+    (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n4", "n2", "n3", "n5" ]
 
   it "undo/redo that removes a live tab closes the real browser tab" do
     let

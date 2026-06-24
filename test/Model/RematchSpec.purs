@@ -5,11 +5,11 @@ import Prelude
 import Data.Foldable (foldl)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Model.Command (Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
-import Model.Types (Model, RuntimeTab, RuntimeWindow, Kind(..), emptyModel, isLive)
+import Model.Tree (applyPatch)
+import Model.Types (Model, RuntimeTab, RuntimeWindow, Kind(..), defaultNode, emptyModel, isLive)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -84,11 +84,24 @@ spec = describe "Model.Rematch" do
     (_.tabId <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just 53) -- window 1's S stays in window 1
     (_.tabId <$> Map.lookup "n8" m.nodes) `shouldEqual` Just (Just 63) -- window 2's S stays in window 2
 
-  it "preserves user organization: a reopened tab stays where it was moved" do
+  it "preserves user organization: a reopened window stays nested where the user put it" do
     let
-      organized = (applyCommand 0.0 (Move "n2" (Just "n4") 0)
-        (applyCommand 0.0 (NewGroup Nothing 0) prior).model).model -- A under a new group n4
-      m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "B" ] ] organized
-    (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n4") -- still under the group
+      -- the user nested the window (g, id 1) inside a folder; its tab is n2. Nesting
+      -- a window is a pure tree move; nesting a LIVE tab now drives the browser, so
+      -- we build the organized tree directly here.
+      organized = applyPatch
+        { upserts:
+            [ (defaultNode "folder" KGroup 0.0) { title = "Folder", children = [ "g" ] }
+            , (defaultNode "g" KGroup 0.0) { windowId = Just 1, parent = Just "folder", title = "Window", children = [ "n2" ] }
+            , (defaultNode "n2" KTab 0.0) { parent = Just "g", url = Just "http://A", title = "A", tabId = Just 11 }
+            ]
+        , removes: []
+        , roots: Just [ "folder" ]
+        }
+        emptyModel
+      m = rematch [ rw 5 [ rt 51 5 0 "A" ] ] organized
+    (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "g") -- still under its window
+    (_.parent <$> Map.lookup "g" m.nodes) `shouldEqual` Just (Just "folder") -- folder nesting preserved
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
+    (_.windowId <$> Map.lookup "g" m.nodes) `shouldEqual` Just (Just 5)
