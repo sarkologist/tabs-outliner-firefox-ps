@@ -17,6 +17,15 @@ const focusLog = (page: Page) => page.evaluate(() => (globalThis as any).__fake.
 const titles = (page: Page) => page.locator("[role=treeitem] .title").allInnerTexts();
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
 
+// Row actions are revealed on hover (the original's affordance), so hover the row
+// before clicking one — mirrors a real interaction and lets Playwright's pointer
+// hit-test see the button (it is pointer-events:none until :hover).
+const clickAction = async (page: Page, text: string, btn: string) => {
+  const row = rowOf(page, text);
+  await row.hover();
+  await row.locator(btn).click();
+};
+
 test.describe("commands", () => {
   test("clicking a live tab focuses it", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
@@ -26,20 +35,20 @@ test.describe("commands", () => {
 
   test("close keeps the node as greyed-out history", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await rowOf(page, "Beta").locator(".btn-close").click();
+    await clickAction(page, "Beta", ".btn-close");
     await expect(page.locator('.row[data-status="closed"]').filter({ hasText: "Beta" })).toBeVisible();
   });
 
   test("delete removes the node entirely", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await rowOf(page, "Beta").locator(".btn-delete").click();
+    await clickAction(page, "Beta", ".btn-delete");
     await expect(page.getByText("Beta")).toHaveCount(0);
     await expect(page.locator("[role=treeitem]")).toHaveCount(2);
   });
 
   test("rename updates the title", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await rowOf(page, "Alpha").locator(".btn-rename").click();
+    await clickAction(page, "Alpha", ".btn-rename");
     const input = page.locator(".rename-input");
     await input.fill("Renamed");
     await input.press("Enter");

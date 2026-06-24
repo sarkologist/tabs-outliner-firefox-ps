@@ -11,6 +11,8 @@ that still delivers the essential product.
 - Click a live tab to focus it; click a closed one to restore it (re-binding the same
   node — no duplicate).
 - Close, delete, rename, collapse/expand, flatten, drag-reorder, and group nodes.
+- Hovering a row draws faint **guide lines** tracing that node's subtree — its attachment to its
+  parent and the connectors down to every visible descendant — so structure is legible at a glance.
 - **Undo/redo** of outline edits — rename, move, group, flatten, delete, import — with
   `Ctrl+Z` / `Ctrl+Shift+Z` (`⌘Z` / `⇧⌘Z` on macOS) or the toolbar's ↶ ↷. Undoing a delete
   brings the subtree back as restorable history (its live tabs were already closed).
@@ -23,6 +25,15 @@ that still delivers the essential product.
   options page (via the `commands` API) or in Firefox's *Manage Extension Shortcuts*.
 - Persists locally; on restart, **re-binds reopened tabs to their existing nodes by URL**,
   so your organization (tree position, custom titles, collapse) survives a restart.
+
+## Reference: the original extension
+
+The extension this is modeled on lives locally at `~/code/tabs-outliner`. It's kept purely as
+a **reference for user-facing behavior** — what the product does, how it looks, how it feels —
+**not** as a source of implementation. The goal here is to be functionally equivalent to it
+(mostly; see [Scope](#scope)), reproducing its features and styling afresh while leaving behind
+the accidental complexity its internals accreted. When in doubt about how a feature should
+behave or look, that tree is the spec.
 
 ## Design (why it's small)
 

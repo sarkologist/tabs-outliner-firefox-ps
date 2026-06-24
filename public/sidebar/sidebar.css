@@ -1,11 +1,42 @@
+/* Styling ported from the original extension (~/code/tabs-outliner): system
+   colors so the sidebar tracks the OS light/dark theme, a compact indented
+   outline, hover-revealed row actions, and faint subtree guide lines on hover.
+   Class/id names are the rewrite's own; the look is the original's. */
+
 :root {
-  --indent: 14px;
-  --fg: #1a1a1a;
-  --muted: #9aa0a6;
-  --bg: #ffffff;
-  --hover: #f3eefe;
-  --accent: #7c3aed;
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+
+  /* zoom: the sidebar sets --font-scale on #app; row height is sized to match
+     in Sidebar.Main (baseRowHeight). Indentation stays fixed, as in the original. */
   --font-scale: 1;
+
+  --node-icon-size: 16px;
+  --node-indent: 11px;
+  --node-row-padding-x: 4px;
+  --node-label-padding-x: 3px;
+  --node-row-gap: 1px;
+  --node-border-width: 3px;
+
+  --guide-line-color: color-mix(in srgb, CanvasText 28%, transparent);
+  --active-window-border-color: color-mix(in srgb, Highlight 78%, CanvasText 10%);
+  --active-window-background: color-mix(in srgb, Highlight 12%, transparent);
+  --active-window-title-color: color-mix(in srgb, Highlight 68%, CanvasText 32%);
+  --active-tab-border-color: color-mix(in srgb, Highlight 64%, CanvasText 12%);
+  --active-tab-background: color-mix(in srgb, Highlight 8%, transparent);
+  --active-tab-title-color: color-mix(in srgb, Highlight 72%, CanvasText 28%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --active-window-border-color: color-mix(in srgb, Highlight 86%, CanvasText 14%);
+    --active-window-background: color-mix(in srgb, Highlight 18%, transparent);
+    --active-window-title-color: color-mix(in srgb, Highlight 78%, CanvasText 22%);
+    --active-tab-border-color: color-mix(in srgb, Highlight 96%, CanvasText 18%);
+    --active-tab-background: color-mix(in srgb, Highlight 28%, transparent);
+    --active-tab-title-color: color-mix(in srgb, Highlight 88%, CanvasText 12%);
+  }
 }
 
 html,
@@ -13,9 +44,17 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--bg);
-  color: var(--fg);
+  color: CanvasText;
+  background: Canvas;
   font: calc(13px * var(--font-scale)) / 1.4 system-ui, -apple-system, sans-serif;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.icon-sprite {
+  display: none;
 }
 
 #app {
@@ -25,101 +64,306 @@ body {
   box-sizing: border-box;
 }
 
-/* the virtualized scroll container: fixed (flex) height, scrolls its tall inner */
-#tree {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  position: relative;
-}
+/* Toolbar ------------------------------------------------------------------ */
 
 #toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border-bottom: 1px solid #eee;
-}
-
-#toolbar button {
-  font: inherit;
-  cursor: pointer;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  background: Canvas;
 }
 
 #search {
-  flex: 1 1 80px;
+  box-sizing: border-box;
+  flex: 1 1 100px;
   min-width: 60px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+  border-radius: 4px;
+  color: inherit;
+  background: Canvas;
   font: inherit;
-  padding: 1px 4px;
 }
+
+#search:focus {
+  border-color: Highlight;
+  outline: 1px solid color-mix(in srgb, Highlight 72%, transparent);
+  outline-offset: 0;
+}
+
+#toolbar button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#toolbar button:hover {
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+/* Notice banner (import errors) ------------------------------------------- */
 
 #notice {
   flex: none;
-  margin: 4px 8px;
-  padding: 4px 8px;
+  margin: 6px 10px;
+  padding: 6px 10px;
   border-radius: 4px;
-  background: #fde2e1;
-  color: #8a1c1c;
-  cursor: pointer;
+  color: color-mix(in srgb, #c92525 86%, CanvasText 14%);
+  background: color-mix(in srgb, #c92525 12%, Canvas);
+  border: 1px solid color-mix(in srgb, #c92525 40%, transparent);
   font-size: 12px;
+  cursor: pointer;
+}
+
+/* Tree --------------------------------------------------------------------- */
+
+#tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  font-size: calc(13px * var(--font-scale));
 }
 
 .row {
-  display: flex;
+  /* position/left/right/height/top and --depth are set inline (virtualization) */
+  display: grid;
+  grid-template-columns: var(--node-icon-size) minmax(0, 1fr);
+  gap: var(--node-row-gap);
   align-items: center;
-  gap: 3px;
   box-sizing: border-box;
-  white-space: nowrap;
+  padding: 0 var(--node-row-padding-x) 0
+    calc(var(--node-row-padding-x) + var(--depth, 0) * var(--node-indent));
+  border-left: var(--node-border-width) solid transparent;
+  line-height: 1.15;
+  overflow: hidden;
 }
 
 .row:hover {
-  background: var(--hover);
+  background: color-mix(in srgb, Highlight 16%, transparent);
 }
+
+/* Subtree guide lines (shown only on hover; emitted by Sidebar.Main) -------- */
+
+.guide-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.guide-line {
+  position: absolute;
+  background: var(--guide-line-color);
+}
+
+.guide-vertical {
+  left: calc(
+    var(--node-row-padding-x) + var(--guide-depth) * var(--node-indent) - var(--node-indent) +
+      var(--node-icon-size) / 2
+  );
+  width: 1px;
+}
+
+.guide-horizontal {
+  top: calc(50% - 0.5px);
+  left: calc(
+    var(--node-row-padding-x) + var(--guide-depth) * var(--node-indent) - var(--node-indent) +
+      var(--node-icon-size) / 2
+  );
+  width: var(--node-indent);
+  height: 1px;
+}
+
+/* keep the row content painted above the guide layer (which is z-index:0).
+   Scoped to the in-flow content only — NOT .node-actions, which must keep its
+   own position:absolute (a broad `.row > :not(.guide-layer)` would outrank it). */
+.toggle,
+.spacer,
+.title,
+.rename-input {
+  position: relative;
+  z-index: 1;
+}
+
+/* Active live window / tab ------------------------------------------------- */
+
+.row.kind-window.active {
+  border-left-color: var(--active-window-border-color);
+  background: var(--active-window-background);
+}
+
+.row.kind-tab.active {
+  border-left-color: var(--active-tab-border-color);
+  background: var(--active-tab-background);
+}
+
+.row.kind-window.active .title {
+  color: var(--active-window-title-color);
+  font-weight: 700;
+}
+
+.row.kind-tab.active .title {
+  color: var(--active-tab-title-color);
+  font-weight: 700;
+}
+
+@media (forced-colors: active) {
+  .row.active {
+    border-left-color: Highlight;
+  }
+}
+
+/* Closed (history) rows --------------------------------------------------- */
+
+.row.closed {
+  color: color-mix(in srgb, CanvasText 58%, transparent);
+  border-left-color: color-mix(in srgb, CanvasText 22%, transparent);
+}
+
+/* Toggle (twisty) + leaf spacer ------------------------------------------- */
 
 .toggle,
 .spacer {
-  display: inline-block;
-  width: 14px;
-  text-align: center;
-  color: var(--muted);
-  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--node-icon-size);
+  height: var(--node-icon-size);
+  color: color-mix(in srgb, CanvasText 62%, transparent);
+  border-radius: 3px;
   user-select: none;
   flex: none;
 }
 
-.title {
+.toggle {
   cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1 1 auto;
 }
 
-.row.closed .title {
-  color: var(--muted);
-  font-style: italic;
+.toggle:hover {
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+/* Title + rename input ---------------------------------------------------- */
+
+.title {
+  display: block;
+  min-width: 0;
+  padding: 0 var(--node-label-padding-x);
+  overflow: hidden;
+  font-weight: 600;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 .rename-input {
-  flex: 1 1 auto;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 0 var(--node-label-padding-x);
+  border: 1px solid Highlight;
+  border-radius: 3px;
+  color: inherit;
+  background: Canvas;
   font: inherit;
+  font-weight: 600;
+  line-height: 1.15;
 }
 
-.row button {
+.rename-input:focus {
+  outline: 1px solid color-mix(in srgb, Highlight 72%, transparent);
+  outline-offset: 0;
+}
+
+/* Hover-revealed action cluster ------------------------------------------- */
+
+.node-actions {
+  position: absolute;
+  top: 50%;
+  right: var(--node-row-padding-x);
+  z-index: 2;
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: var(--node-row-gap);
+  align-items: center;
+  max-width: calc(100% - var(--node-row-padding-x) * 2);
+  padding-left: 6px;
+  border-radius: 3px;
+  background: Canvas;
+  box-shadow: -8px 0 8px Canvas;
   opacity: 0;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 0 2px;
-  font-size: 11px;
-  flex: none;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: opacity 80ms ease;
 }
 
-.row:hover button {
+.row:hover .node-actions,
+.row:focus-within .node-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
-.row button:hover {
-  color: var(--accent);
+.row .node-actions button {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 var(--node-icon-size);
+  width: var(--node-icon-size);
+  height: var(--node-icon-size);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: color-mix(in srgb, CanvasText 70%, transparent);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.row .node-actions button:hover {
+  color: CanvasText;
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+/* Icons ------------------------------------------------------------------- */
+
+.button-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+.toolbar-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.toggle .button-icon,
+.node-actions .button-icon {
+  width: 13px;
+  height: 13px;
 }
