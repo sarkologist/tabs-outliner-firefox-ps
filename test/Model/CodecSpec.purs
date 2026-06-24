@@ -43,7 +43,7 @@ project n = { kind: n.kind, tabId: n.tabId, windowId: n.windowId, live: isLive n
 
 spec :: Spec Unit
 spec = describe "Model.Codec" do
-  describe "legacy migration (decode tolerates the dropped status field)" do
+  describe "decoding tolerates legacy records (old \"window\" kind, dropped status field)" do
     it "a legacy live window decodes to a live container (kind window -> group)" do
       (project <$> decodeNode (legacyJson { kind: "window", status: "live", tabId: Nothing, windowId: Just 7, url: Nothing }))
         `shouldEqual` Right { kind: KGroup, tabId: Nothing, windowId: Just 7, live: true }
