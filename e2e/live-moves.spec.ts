@@ -81,4 +81,23 @@ test.describe("live-tab moves drive the browser", () => {
       return { count: ws.length, hasOld: ws.some((w) => w.id === 1), urls: ws.flatMap((w) => w.tabs.map((t) => t.url)).sort() };
     }).toEqual({ count: 1, hasOld: false, urls: ["http://a", "http://b"] });
   });
+
+  test("moving a window's only tab away prunes the emptied window", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        { id: 1, tabs: [{ id: 11, url: "http://solo", title: "Solo", active: true }] },
+        { id: 2, tabs: [{ id: 21, url: "http://other", title: "Other", active: true }] },
+      ],
+    });
+    await expect(page.getByText("Other")).toBeVisible();
+
+    // drag Solo (window 1's only tab) into window 2
+    await page.getByText("Solo").dragTo(page.getByText("Other"));
+
+    // window 1 emptied, so it's gone: one browser window, and no window-1 node left
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(1);
+    const nodes = await readNodes(page);
+    expect(nodes.some((n) => n.windowId === 1)).toBe(false);
+    expect(nodes.find((n) => n.title === "Solo").parent).toBe(nodes.find((n) => n.windowId === 2).id);
+  });
 });

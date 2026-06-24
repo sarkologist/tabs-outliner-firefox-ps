@@ -227,3 +227,34 @@ spec = describe "Model.Command" do
       let r = applyCommand 0.0 (Move "n3" (Just "n1") 0) base2
       r.actions `shouldEqual` []
       (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n3", "n2" ]
+
+  -- An emptied container is clutter, so it's pruned — unless the user renamed it,
+  -- which marks it as a deliberate label worth keeping.
+  describe "pruning emptied groups" do
+    -- group n4 at root containing a child group n5 (base.nextId is 4)
+    let nested = run (NewGroup (Just "n4") 0) (run (NewGroup Nothing 0) base)
+
+    it "moving a group's last child out prunes the now-empty group" do
+      let m = run (Move "n5" Nothing 0) nested
+      Map.lookup "n4" m.nodes `shouldEqual` Nothing
+      (_.parent <$> Map.lookup "n5" m.nodes) `shouldEqual` Just Nothing
+      m.roots `shouldEqual` [ "n5", "n1" ]
+
+    it "deleting a group's last child prunes the now-empty group" do
+      let m = run (Delete "n5") nested
+      Map.lookup "n5" m.nodes `shouldEqual` Nothing
+      Map.lookup "n4" m.nodes `shouldEqual` Nothing
+
+    it "a renamed group emptied of children is kept" do
+      let m = run (Move "n5" Nothing 0) (run (Rename "n4" "Keep") nested)
+      (_.customTitle <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just "Keep")
+      (_.children <$> Map.lookup "n4" m.nodes) `shouldEqual` Just []
+
+    it "pruning cascades up, stopping at a renamed ancestor" do
+      let
+        deep = run (NewGroup (Just "n5") 0) nested -- group n6 inside n5 inside n4
+        renamed = run (Rename "n4" "Keep") deep -- keep the outer group
+        m = run (Move "n6" Nothing 0) renamed -- empty n5 -> prune n5 -> n4 empty but kept
+      Map.lookup "n5" m.nodes `shouldEqual` Nothing
+      (_.customTitle <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just "Keep")
+      (_.children <$> Map.lookup "n4" m.nodes) `shouldEqual` Just []
