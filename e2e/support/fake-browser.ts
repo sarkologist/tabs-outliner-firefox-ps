@@ -12,6 +12,10 @@ export type Seed = {
     id: number;
     tabs: Array<{ id: number; url?: string; title?: string; active?: boolean; favIconUrl?: string }>;
   }>;
+  // when true, a tab created via tabs.create reports a slightly different url in
+  // its onCreated than was requested (as Firefox does — normalization/redirect),
+  // so restore must rebind by window, not by exact url
+  redirectCreatedTabs?: boolean;
 };
 
 export function installFakeBrowser(seed: Seed) {
@@ -138,7 +142,8 @@ export function installFakeBrowser(seed: Seed) {
       },
       create: (props: any) => {
         const id = ++tabSeq;
-        driver.openTab({ id, windowId: props.windowId ?? firstWindowId(), url: props.url, title: props.url ?? "", active: true });
+        const reportedUrl = seed?.redirectCreatedTabs && props.url ? props.url + "?redirected" : props.url;
+        driver.openTab({ id, windowId: props.windowId ?? firstWindowId(), url: reportedUrl, title: props.url ?? "", active: true });
         return Promise.resolve(tabInfo(tabs.get(id)));
       },
       remove: (id: number) => {

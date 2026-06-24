@@ -75,6 +75,17 @@ test.describe("commands", () => {
     await expect(page.locator("[role=treeitem]")).toHaveCount(3);
   });
 
+  test("restore rebinds the node even when the recreated tab's url differs (redirect)", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, { ...seed, redirectCreatedTabs: true });
+    await fake(page, "closeTab", 11); // close Alpha -> closed history
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(1);
+    // restore it; the recreated tab's onCreated reports a different url than stored
+    await rowOf(page, "Alpha").locator(".title").click();
+    // the SAME node is rebound (matched by window, not url): no closed row, no dup
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    await expect(page.locator("[role=treeitem]")).toHaveCount(3);
+  });
+
   test("restoring a closed window re-opens it as a new browser window", async ({ page }) => {
     // two windows: window 1 (the one that stays open) and window 2 (to be closed)
     await bootBackgroundAndSidebar(page, {
