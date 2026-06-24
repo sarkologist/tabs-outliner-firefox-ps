@@ -10,6 +10,9 @@ that still delivers the essential product.
 - Keeps recently-closed tabs/windows in the outline as greyed-out, **restorable** history.
 - Click a live tab to focus it; click a closed one to restore it (re-binding the same
   node — no duplicate).
+- On open, and as you switch tabs, the sidebar **scrolls to the active tab** of its own
+  window (Firefox shows one sidebar per window) — centering it when it's off-screen, and
+  leaving the view alone when it's already visible or you're searching.
 - Close, delete, rename, collapse/expand, flatten, drag-reorder, and group nodes.
 - Hovering a row draws faint **guide lines** tracing that node's subtree — its attachment to its
   parent and the connectors down to every visible descendant — so structure is legible at a glance.

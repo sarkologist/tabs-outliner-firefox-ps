@@ -57,6 +57,47 @@ test.describe("sidebar view", () => {
     await expect(page.locator(".guide-line")).toHaveCount(0);
   });
 
+  // A window whose active tab sits far below the fold, to exercise auto-scroll.
+  const tallSeed = (activeIndex: number) => ({
+    windows: [
+      {
+        id: 1,
+        tabs: Array.from({ length: 80 }, (_, i) => ({
+          id: 200 + i,
+          url: `http://t${i}`,
+          title: `Tab ${i}`,
+          active: i === activeIndex,
+        })),
+      },
+    ],
+  });
+
+  const treeScrollTop = (page: import("@playwright/test").Page) =>
+    page.locator("#tree").evaluate((el) => (el as HTMLElement).scrollTop);
+
+  test("on open, scrolls to this window's active tab when it's below the fold", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, tallSeed(70));
+    // the active tab gets scrolled into view (and is the only .active row)
+    await expect(page.locator(".row.active")).toHaveText("Tab 70");
+    await expect.poll(() => treeScrollTop(page)).toBeGreaterThan(0);
+  });
+
+  test("on open, leaves the scroll alone when the active tab is already visible", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, tallSeed(0));
+    await expect(page.getByText("Tab 0", { exact: true })).toBeVisible();
+    // active tab is near the top, already in view — no scroll
+    await expect.poll(() => treeScrollTop(page)).toBe(0);
+  });
+
+  test("follows focus: scrolls when a far-down tab becomes active", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, tallSeed(0));
+    await expect.poll(() => treeScrollTop(page)).toBe(0);
+    // activate a tab well below the fold; the sidebar should reveal it
+    await fake(page, "activateTab", 270);
+    await expect(page.locator(".row.active")).toHaveText("Tab 70");
+    await expect.poll(() => treeScrollTop(page)).toBeGreaterThan(0);
+  });
+
   test("collapse hides descendants (command round-trip, persisted)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
