@@ -105,3 +105,20 @@ spec = describe "Model.Rematch" do
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
     (_.windowId <$> Map.lookup "g" m.nodes) `shouldEqual` Just (Just 5)
+
+  it "consolidates one live window whose tabs came from different prior windows" do
+    let
+      -- last session: window n1 (id 1) had "alpha"; window n3 (id 2) had "gamma"
+      prior2 = runEvents [ openTab 11 1 0 "alpha" true, openTab 21 2 0 "gamma" true ]
+      -- this session: a single browser window (id 5) holds BOTH alpha and gamma
+      m = rematch [ rw 5 [ rt 51 5 0 "alpha", rt 52 5 1 "gamma" ] ] prior2
+    -- the chosen window node (n1) is the one live window, holding both tabs in order
+    (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5)
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n4" ]
+    (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n1") -- alpha
+    (_.parent <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just "n1") -- gamma moved in
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
+    (isLive <$> Map.lookup "n4" m.nodes) `shouldEqual` Just true
+    -- the other prior window is closed and emptied (no live tab orphaned under it)
+    (_.windowId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just Nothing
+    (_.children <$> Map.lookup "n3" m.nodes) `shouldEqual` Just []

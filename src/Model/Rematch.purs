@@ -139,20 +139,41 @@ chooseWindow urlToWin acc cw =
   in
     map fst (Array.head ranked)
 
--- Re-bind a reopened tab to its existing node IN PLACE, or create a new node.
+-- Re-bind a reopened tab to its existing node, or create a new one. A tab matched
+-- to a node already under the chosen window stays in place (preserving the user's
+-- organization); a tab matched to a node from ANOTHER (now-closing) prior window is
+-- moved into this window — otherwise one live window's tabs would stay scattered
+-- across the separate prior windows they happened to come from.
 matchTab :: Number -> NodeId -> Acc -> RuntimeTab -> Acc
 matchTab now winId acc ct = case ct.url >>= \u -> popPoolFor winId u acc of
   Just (Tuple nid pool') -> case Map.lookup nid acc.nodes of
-    Just n -> acc
-      { nodes = Map.insert nid (rebind n) acc.nodes
-      , byTab = Map.insert ct.tabId nid acc.byTab
-      , pool = pool'
-      , consumedTabs = Set.insert nid acc.consumedTabs
-      , touched = Set.insert nid acc.touched
-      }
+    Just n
+      | n.parent == Just winId -> consume nid (Map.insert nid (rebind n) acc.nodes) acc.roots pool' acc.touched
+      | otherwise ->
+          let
+            nodes1 = Map.insert nid ((rebind n) { parent = Just winId }) acc.nodes
+            -- detach from its old parent's child list (or the roots)
+            nodes2 = case n.parent >>= (\pid -> Map.lookup pid nodes1) of
+              Just p -> Map.insert p.id (p { children = Array.delete nid p.children }) nodes1
+              Nothing -> nodes1
+            -- attach into the chosen window at the browser position
+            nodes3 = case Map.lookup winId nodes2 of
+              Just w -> Map.insert winId (w { children = insertAtClamped ct.index nid (Array.delete nid w.children) }) nodes2
+              Nothing -> nodes2
+            touched' = Set.insert winId (maybe acc.touched (\pid -> Set.insert pid acc.touched) n.parent)
+          in
+            consume nid nodes3 (Array.delete nid acc.roots) pool' touched'
     Nothing -> freshTab now winId acc ct
   Nothing -> freshTab now winId acc ct
   where
+  consume nid nodes roots pool' touched = acc
+    { nodes = nodes
+    , roots = roots
+    , byTab = Map.insert ct.tabId nid acc.byTab
+    , pool = pool'
+    , consumedTabs = Set.insert nid acc.consumedTabs
+    , touched = Set.insert nid touched
+    }
   rebind n = n
     { tabId = Just ct.tabId
     , title = ct.title
