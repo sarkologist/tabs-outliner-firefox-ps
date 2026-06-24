@@ -60,6 +60,7 @@ export function installFakeBrowser(seed: Seed) {
     tabActivated: listener(),
     tabMoved: listener(),
     tabAttached: listener(),
+    tabDetached: listener(),
     winCreated: listener(),
     winRemoved: listener(),
   };
@@ -172,6 +173,7 @@ export function installFakeBrowser(seed: Seed) {
       onActivated: ev.tabActivated,
       onMoved: ev.tabMoved,
       onAttached: ev.tabAttached,
+      onDetached: ev.tabDetached,
     },
     sessions: { restore: () => Promise.resolve({}) },
     runtime: {
@@ -301,6 +303,30 @@ export function installFakeBrowser(seed: Seed) {
       if (old && old.id !== newWindowId && old.tabIds.length === 0) {
         wins.delete(old.id);
         ev.winRemoved._emit(old.id);
+      }
+    },
+    // The user drags a real tab OUT to a brand-new window (tab tear-off). Firefox
+    // births the new window already holding the tab, so — unlike attachTab — it
+    // fires NEITHER windows.onCreated NOR tabs.onCreated NOR tabs.onAttached; the
+    // only signal is tabs.onDetached from the source window. The tab is fully
+    // moved (gettable in the new window) by the time the event is observed.
+    tearOffTabToNewWindow: (id: number) => {
+      const t = tabs.get(id);
+      if (!t) return;
+      const oldWindowId = t.windowId;
+      const oldPosition = t.index;
+      const old = wins.get(oldWindowId);
+      if (old) old.tabIds = old.tabIds.filter((x) => x !== id);
+      const newWindowId = ++winSeq;
+      wins.set(newWindowId, { id: newWindowId, tabIds: [id] });
+      t.windowId = newWindowId;
+      if (old) reindex(oldWindowId);
+      reindex(newWindowId);
+      ev.tabDetached._emit(id, { oldWindowId, oldPosition });
+      // Firefox closes the source window if that emptied it.
+      if (old && old.tabIds.length === 0) {
+        wins.delete(oldWindowId);
+        ev.winRemoved._emit(oldWindowId);
       }
     },
   };
