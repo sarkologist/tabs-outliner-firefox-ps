@@ -4,6 +4,7 @@ import Prelude
 
 import Effect (Effect)
 import Test.Model.CommandSpec as CommandSpec
+import Test.Model.DropSpec as DropSpec
 import Test.Model.GuardSpec as GuardSpec
 import Test.Model.GuideSpec as GuideSpec
 import Test.Model.PortableImportSpec as PortableImportSpec
@@ -23,6 +24,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   TreeSpec.spec
   ReconcileSpec.spec
   CommandSpec.spec
+  DropSpec.spec
   RematchSpec.spec
   PortableImportSpec.spec
   GuardSpec.spec

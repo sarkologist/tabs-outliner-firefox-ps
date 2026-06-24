@@ -36,6 +36,7 @@ import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Model.Codec (Snapshot, decodePatch, decodeSnapshot, encodeSnapshot)
 import Model.Command (Command(..), Request(..), encodeRequest)
+import Model.Drop (dropPlacement)
 import Model.Guide (Guide, buildGuide, emptyGuide, guideBottom, guideTop)
 import Model.PortableImport (portableToSnapshot)
 import Model.Shortcuts as Sh
@@ -81,6 +82,7 @@ type State =
   , model :: Model
   , editing :: Maybe Editing
   , dragId :: Maybe NodeId
+  , dropTarget :: Maybe NodeId
   , hover :: Maybe NodeId
   , query :: String
   , zoom :: Number
@@ -107,6 +109,7 @@ data Action
   | CommitRename
   | CancelRename
   | DragStart NodeId
+  | DragOver NodeId
   | DropOn NodeId
   | DragEnd
   | SetHover (Maybe NodeId)
@@ -124,7 +127,7 @@ data Action
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0, viewportH: 600.0, listener: Nothing }
+      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0, viewportH: 600.0, listener: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
   }
@@ -193,8 +196,13 @@ handleAction = case _ of
     H.modify_ _ { editing = Nothing }
   CancelRename -> H.modify_ _ { editing = Nothing }
 
-  DragStart nid -> H.modify_ _ { dragId = Just nid, hover = Nothing }
-  DragEnd -> H.modify_ _ { dragId = Nothing }
+  DragStart nid -> H.modify_ _ { dragId = Just nid, dropTarget = Nothing, hover = Nothing }
+  -- Track the row under the cursor to drive the drop preview. dragover fires
+  -- continuously, so only update (and re-render) when the target row changes.
+  DragOver nid -> do
+    st <- H.get
+    when (st.dropTarget /= Just nid) (H.modify_ _ { dropTarget = Just nid })
+  DragEnd -> H.modify_ _ { dragId = Nothing, dropTarget = Nothing }
   -- Track the hovered row to drive the subtree guide lines. Ignore while
   -- renaming so a stray pointer move can't re-render the focused input out from
   -- under the user; while dragging there is no guide (dragId set, hover cleared).
@@ -208,7 +216,7 @@ handleAction = case _ of
         Just target -> sendCommand (dropCommand dragId target st.model)
         Nothing -> pure unit
       _ -> pure unit
-    H.modify_ _ { dragId = Nothing }
+    H.modify_ _ { dragId = Nothing, dropTarget = Nothing }
 
   SetQuery q -> H.modify_ _ { query = q }
   Zoom factor -> do
@@ -320,7 +328,7 @@ render st =
               ]
               [ HK.div
                   [ HP.id "tree-inner", HP.style ("position:relative;height:" <> show totalH <> "px") ]
-                  (Array.mapWithIndex slot slice)
+                  (Array.mapWithIndex slot slice <> dropSlots)
               ]
           ]
     )
@@ -342,7 +350,21 @@ render st =
     _, _ -> emptyGuide
   slot i entry = Tuple entry.id $ case Map.lookup entry.id st.model.nodes of
     Nothing -> HH.text ""
-    Just node -> renderNode st.editing guide (firstIdx + i) entry.depth rowH node
+    Just node -> renderNode (st.dragId == Just node.id) st.editing guide (firstIdx + i) entry.depth rowH node
+  -- a single guide-styled insertion line marking where a drop would land
+  dropSlots = case st.dragId, st.dropTarget of
+    Just dragId, Just targetId -> case dropPlacement st.model entries dragId targetId of
+      Just dp ->
+        [ Tuple "drop-indicator"
+            ( HH.div
+                [ HP.class_ (ClassName "drop-indicator")
+                , HP.style ("top:" <> show (Int.toNumber dp.atIndex * rowH) <> "px;--depth:" <> show dp.depth)
+                ]
+                []
+            )
+        ]
+      Nothing -> []
+    _, _ -> []
   iconBtn i label name act =
     HH.button
       [ HP.id i, HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ]
@@ -355,10 +377,10 @@ noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-renderNode :: Maybe Editing -> Guide -> Int -> Int -> Number -> Node -> H.ComponentHTML Action () Aff
-renderNode editing guide idx depth rowH n =
+renderNode :: Boolean -> Maybe Editing -> Guide -> Int -> Int -> Number -> Node -> H.ComponentHTML Action () Aff
+renderNode dragging editing guide idx depth rowH n =
   HH.div
-    [ HP.classes (map ClassName (rowClasses n))
+    [ HP.classes (map ClassName (rowClasses dragging n))
     , HP.attr (AttrName "data-node-id") n.id
     , HP.attr (AttrName "data-status") (statusClass n.status)
     , HP.attr (AttrName "role") "treeitem"
@@ -370,6 +392,7 @@ renderNode editing guide idx depth rowH n =
     , HP.draggable true
     , HE.onMouseEnter \_ -> SetHover (Just n.id)
     , HE.onDragStart \_ -> DragStart n.id
+    , HE.onDragOver \_ -> DragOver n.id
     , HE.onDrop \_ -> DropOn n.id
     , HE.onDragEnd \_ -> DragEnd
     ]
@@ -381,10 +404,11 @@ renderNode editing guide idx depth rowH n =
     -- It paints behind the content via z-index, not DOM order.
     [ toggleEl n, body editing n, actionsEl n, guideLayer guide idx ]
 
-rowClasses :: Node -> Array String
-rowClasses n =
+rowClasses :: Boolean -> Node -> Array String
+rowClasses dragging n =
   [ "row", statusClass n.status, kindClass n.kind ]
     <> (if n.active && n.status == Live then [ "active" ] else [])
+    <> (if dragging then [ "dragging" ] else [])
 
 body :: Maybe Editing -> Node -> H.ComponentHTML Action () Aff
 body editing n = case editing of

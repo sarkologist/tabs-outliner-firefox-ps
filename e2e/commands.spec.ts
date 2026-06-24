@@ -119,4 +119,28 @@ test.describe("commands", () => {
     await page.getByText("Beta").dragTo(page.getByText("Alpha"));
     await expect.poll(() => titles(page)).toEqual(["Window", "Beta", "Alpha"]);
   });
+
+  test("shows a drop preview that tracks the landing spot and clears on drop", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    // nothing until a drag is in progress
+    await expect(page.locator(".drop-indicator")).toHaveCount(0);
+
+    await rowOf(page, "Beta").dispatchEvent("dragstart");
+    // over a tab: lands before it
+    await rowOf(page, "Alpha").dispatchEvent("dragover");
+    await expect(page.locator(".drop-indicator")).toHaveCount(1);
+    const overTab = await page.locator(".drop-indicator").getAttribute("style");
+
+    // over a different row: the preview moves to the new landing spot
+    await rowOf(page, "Window").dispatchEvent("dragover");
+    await expect(page.locator(".drop-indicator")).toHaveCount(1);
+    expect(await page.locator(".drop-indicator").getAttribute("style")).not.toBe(overTab);
+
+    // the dragged row is dimmed while dragging
+    await expect(rowOf(page, "Beta")).toHaveClass(/dragging/);
+
+    await rowOf(page, "Alpha").dispatchEvent("drop");
+    await expect(page.locator(".drop-indicator")).toHaveCount(0);
+  });
 });

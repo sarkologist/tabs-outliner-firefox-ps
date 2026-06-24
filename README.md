@@ -13,6 +13,8 @@ that still delivers the essential product.
 - Close, delete, rename, collapse/expand, flatten, drag-reorder, and group nodes.
 - Hovering a row draws faint **guide lines** tracing that node's subtree — its attachment to its
   parent and the connectors down to every visible descendant — so structure is legible at a glance.
+- Dragging a node shows a **live drop preview** — a guide-styled insertion line marking exactly
+  where it will land (before a sibling, or as a group's last child) — and the dragged row dims.
 - **Undo/redo** of outline edits — rename, move, group, flatten, delete, import — with
   `Ctrl+Z` / `Ctrl+Shift+Z` (`⌘Z` / `⇧⌘Z` on macOS) or the toolbar's ↶ ↷. Undoing a delete
   brings the subtree back as restorable history (its live tabs were already closed).
