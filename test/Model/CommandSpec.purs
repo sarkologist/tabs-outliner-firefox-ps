@@ -17,6 +17,12 @@ openTab :: Int -> Int -> Int -> String -> Boolean -> BrowserEvent
 openTab tabId windowId index title active =
   TabOpened { tabId, windowId, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
 
+-- a TabOpened with an explicit url, to model the browser reporting a different url
+-- for a recreated tab than the one stored
+openTabU :: Int -> Int -> Int -> String -> String -> BrowserEvent
+openTabU tabId windowId index url title =
+  TabOpened { tabId, windowId, index, url: Just url, title, active: false, favIconUrl: Nothing }
+
 runEvents :: Array BrowserEvent -> Model
 runEvents = foldl (\m e -> (applyBrowser 0.0 e m).model) emptyModel
 
@@ -191,6 +197,38 @@ spec = describe "Model.Command" do
   -- The unification: a saved GROUP (never a browser window) restores exactly like
   -- a saved window — its owning container goes live in place. A node's owning
   -- window is its immediate parent, so restoring the tab lights up that parent.
+  it "restoring a closed window with a nested group binds each tab to its own node" do
+    let
+      -- closed window n1 = [ A(n2), group n3 = [ B(n4) ], C(n5) ] — all closed, with urls
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "n1" KGroup 0.0) { title = "W", children = [ "n2", "n3", "n5" ] }
+            , (defaultNode "n2" KTab 0.0) { parent = Just "n1", url = Just "http://a", title = "A" }
+            , (defaultNode "n3" KGroup 0.0) { parent = Just "n1", title = "G", children = [ "n4" ] }
+            , (defaultNode "n4" KTab 0.0) { parent = Just "n3", url = Just "http://b", title = "B" }
+            , (defaultNode "n5" KTab 0.0) { parent = Just "n1", url = Just "http://c", title = "C" }
+            ]
+        , removes: []
+        , roots: Just [ "n1" ]
+        }
+        emptyModel
+      activated = applyCommand 0.0 (Activate "n1") m0
+      -- window 5 reopens n1's own tabs (A, C); window 6 reopens the group's tab (B).
+      -- the recreated tabs report redirected urls, so only window+order matching works.
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ WindowOpened { windowId: 5 }
+        , openTabU 51 5 0 "http://a?x" "A"
+        , openTabU 52 5 1 "http://c?x" "C"
+        , WindowOpened { windowId: 6 }
+        , openTabU 61 6 0 "http://b?x" "B"
+        ]
+    -- each closed node rebinds to its OWN recreated tab — C is not crossed with B
+    (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 51) -- A
+    (_.tabId <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just 52) -- C
+    (_.tabId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 61) -- B, in the group's window
+    (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 5)
+    (_.windowId <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just (Just 6)
+
   it "restoring a saved group lights it up as a new window in place (group goes live)" do
     let
       grp = (defaultNode "g1" KGroup 0.0) { title = "Saved", children = [ "t1" ] }

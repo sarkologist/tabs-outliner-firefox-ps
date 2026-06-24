@@ -163,11 +163,16 @@ popPendingRestore windowId model = do
       else Map.insert windowId tail model.pendingRestore
   pure { node: head, model: model { pendingRestore = pr } }
 
--- | The closed, restorable tab nodes in a window's subtree, in preorder — the
--- | order their tabs are recreated, so the rebind queue lines up with onCreated.
+-- | The window's own restorable tabs — its DIRECT closed tab children with a url,
+-- | in child order. Only these are recreated in this window (`Command.restore`
+-- | groups tabs by their immediate parent, so a nested group's tabs open in their
+-- | own new window), so the rebind queue lines up with the onCreated events.
 restorableTabs :: NodeId -> Model -> List NodeId
-restorableTabs root model = List.fromFoldable (Array.filter isRestorable (subtreeIds root model))
+restorableTabs root model = List.fromFoldable (Array.filter isRestorable kids)
   where
+  kids = case Map.lookup root model.nodes of
+    Just wn -> wn.children
+    Nothing -> []
   isRestorable nid = case Map.lookup nid model.nodes of
     Just n -> n.kind == KTab && isNothing n.tabId && isJust n.url
     Nothing -> false
