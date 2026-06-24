@@ -98,22 +98,21 @@ applyCommand now cmd model = case cmd of
 
   Move nid mParent index -> move nid mParent index
 
-  -- Pull a nested node out to the top level, landing it just after the root it
-  -- currently belongs to (matching the original). A live tab is left alone:
-  -- yanking one out to the root is the deliberately-dropped move-to-new-window,
-  -- so these reorganize only saved/structural nodes (purely in the tree).
+  -- "Move to top level" pulls a nested node out to the root, landing it just after
+  -- the root it currently belongs to (matching the original). Works on any kind: a
+  -- live tab can't sit bare at the root, so — exactly like dragging one there — it's
+  -- promoted into its own new window (the `move` path turns that into a browser
+  -- action); non-live nodes just move within the tree.
   MoveTopLevel nid -> withNode nid \n -> case n.parent of
     Nothing -> noChange -- already top level
-    Just _
-      | isLiveTab n -> noChange
-      | otherwise -> case Array.elemIndex (rootAncestor nid model) model.roots of
-          Just ri -> move nid Nothing (ri + 1)
-          Nothing -> noChange
+    Just _ -> case Array.elemIndex (rootAncestor nid model) model.roots of
+      Just ri -> move nid Nothing (ri + 1)
+      Nothing -> noChange
 
-  -- Pull a node out to the very bottom of the root list (a no-op if it's already
-  -- the last root). Same live-tab carve-out as MoveTopLevel.
-  MoveBottom nid -> withNode nid \n ->
-    if isLiveTab n || Array.last model.roots == Just nid then noChange
+  -- "Move to bottom" sends a node to the very end of the root list (a no-op if it's
+  -- already the last root). Same per-kind handling as MoveTopLevel.
+  MoveBottom nid -> withNode nid \_ ->
+    if Array.last model.roots == Just nid then noChange
     else move nid Nothing (Array.length model.roots)
 
   Flatten nid -> flatten nid

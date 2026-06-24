@@ -176,9 +176,9 @@ test.describe("commands", () => {
   });
 });
 
-// "Move to top level" / "Move to bottom" pull a nested node out to the root. They
-// reorganize the saved outline only (no browser side effects), so they are offered
-// on nested, non-live nodes — the closed-history tabs left by closing a window.
+// "Move to top level" / "Move to bottom" pull a node out to the root. They are
+// offered on every kind: a non-live node moves purely in the tree, while a live tab
+// (which can't sit bare at the root) is promoted into its own new window.
 test.describe("move to top level / bottom", () => {
   // window 1 (Alpha, Beta) is closed to leave its tabs as nested history; window 2
   // (Keep) stays live as the last top-level node, so "after the window" (top level)
@@ -202,11 +202,24 @@ test.describe("move to top level / bottom", () => {
     return nodes.find((n) => n.title === title)?.parent ?? null;
   };
 
-  test("the move buttons are hidden on a live tab", async ({ page }) => {
-    await bootBackgroundAndSidebar(page, seed);
+  test("the move buttons are offered on a live tab (promotes it into a new window)", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed); // one live window: Alpha (active), Beta
     await rowOf(page, "Alpha").hover();
-    await expect(rowOf(page, "Alpha").locator(".btn-to-top-level")).toHaveCount(0);
-    await expect(rowOf(page, "Alpha").locator(".btn-to-bottom")).toHaveCount(0);
+    await expect(rowOf(page, "Alpha").locator(".btn-to-top-level")).toHaveCount(1);
+    await expect(rowOf(page, "Alpha").locator(".btn-to-bottom")).toHaveCount(1);
+
+    await clickAction(page, "Alpha", ".btn-to-top-level");
+
+    // the real tab is promoted into its own brand-new browser window; window 1 keeps Beta
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          ((globalThis as any).__fake.listWindows() as Array<{ tabs: Array<{ url: string }> }>)
+            .map((w) => w.tabs.map((t) => t.url).sort())
+            .sort()
+        )
+      )
+      .toEqual([["http://a"], ["http://b"]]);
   });
 
   test("move to top level pulls a nested node out, just after its window", async ({ page }) => {

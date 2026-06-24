@@ -42,7 +42,7 @@ import Model.PortableImport (portableToSnapshot)
 import Model.Scroll as Scroll
 import Model.Shortcuts as Sh
 import Model.Tree (applyPatch, searchVisible, visible)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, emptyModel, isLive, isLiveTab)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, emptyModel, isLive)
 import Web.Event.Event (Event)
 import Web.UIEvent.KeyboardEvent (key)
 
@@ -475,12 +475,12 @@ buttons isLastRoot n =
   [ btn "btn-rename" "Rename" "pencil" (StartRename n.id (displayTitle n)) ]
     <> (if isLive n then [ btn "btn-close" "Close" "close-circle" (CloseClick n.id) ] else [])
     <> (if n.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick n.id) ] else [])
-    -- "To top level" only makes sense for a NESTED node; "to bottom" applies to any
-    -- node that isn't already the last root (so it also reorders top-level rows). A
-    -- live tab is excluded from both — pulling one out to the root is the dropped
-    -- move-to-new-window.
-    <> (if isJust n.parent && not (isLiveTab n) then [ btn "btn-to-top-level" "Move to top level" "to-top-level" (MoveTopLevelClick n.id) ] else [])
-    <> (if not (isLiveTab n) && not isLastRoot then [ btn "btn-to-bottom" "Move to bottom" "to-bottom" (MoveBottomClick n.id) ] else [])
+    -- "To top level" applies to any NESTED node (a top-level node has nowhere up to
+    -- go); "to bottom" applies to any node that isn't already the last root. Both are
+    -- offered on every kind, including live tabs (which get promoted into their own
+    -- new window, like a drag to the root).
+    <> (if isJust n.parent then [ btn "btn-to-top-level" "Move to top level" "to-top-level" (MoveTopLevelClick n.id) ] else [])
+    <> (if not isLastRoot then [ btn "btn-to-bottom" "Move to bottom" "to-bottom" (MoveBottomClick n.id) ] else [])
     <> [ btn "btn-delete" "Delete" "trash" (DeleteClick n.id) ]
   where
   btn cls label name act =

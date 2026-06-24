@@ -281,8 +281,8 @@ spec = describe "Model.Command" do
       (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n3", "n2" ]
 
   -- "Move to top level" pulls a nested node out to the root just after the root it
-  -- belongs to; "Move to bottom" sends it to the very end. Both reorganize the tree
-  -- only (no browser actions) and leave a live tab alone.
+  -- belongs to; "Move to bottom" sends it to the very end. A non-live node moves
+  -- purely in the tree; a live tab is promoted into its own new window.
   describe "move to top level / bottom" do
     -- two saved top-level groups: R1 = [ A, G=[B] ] and R2 = [ C ] — all closed
     let
@@ -327,17 +327,18 @@ spec = describe "Model.Command" do
     it "move to bottom is a no-op on the last top-level node" do
       (run (MoveBottom "R2") closed).roots `shouldEqual` [ "R1", "R2" ]
 
-    it "move to top level leaves a live tab alone (no detach, no new window)" do
-      let r = applyCommand 0.0 (MoveTopLevel "n2") base -- n2 is a live tab in window n1
-      (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
-      r.model.roots `shouldEqual` [ "n1" ]
-      r.actions `shouldEqual` []
+    -- A live tab can't sit bare at the root, so promoting one detaches the REAL tab
+    -- into its own new window (exactly like dragging it to the root); the tree is
+    -- left untouched until the resulting browser events arrive.
+    it "move to top level on a live tab promotes it into its own new window" do
+      let r = applyCommand 0.0 (MoveTopLevel "n2") base -- n2 is a live tab (tab 11) in window n1
+      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+      (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1") -- unchanged until events
 
-    it "move to bottom leaves a live tab alone (no detach, no new window)" do
+    it "move to bottom on a live tab promotes it into its own new window" do
       let r = applyCommand 0.0 (MoveBottom "n2") base
+      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
-      r.model.roots `shouldEqual` [ "n1" ]
-      r.actions `shouldEqual` []
 
   -- An emptied container is clutter, so it's pruned — unless the user renamed it,
   -- which marks it as a deliberate label worth keeping.
