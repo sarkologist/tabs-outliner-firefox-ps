@@ -291,13 +291,18 @@ export function installFakeBrowser(seed: Seed) {
     attachTab: (id: number, newWindowId: number, newPosition: number) => {
       const t = tabs.get(id);
       if (!t) return;
-      const old = wins.get(t.windowId);
+      const oldWindowId = t.windowId;
+      const oldPosition = t.index;
+      const old = wins.get(oldWindowId);
       if (old) old.tabIds = old.tabIds.filter((x) => x !== id);
       if (!wins.has(newWindowId)) driver.openWindow(newWindowId);
       const nw = wins.get(newWindowId)!;
       nw.tabIds.splice(newPosition, 0, id);
       t.windowId = newWindowId;
+      if (old) reindex(oldWindowId);
       reindex(newWindowId);
+      // A cross-window move fires onDetached THEN onAttached, as real Firefox does.
+      if (oldWindowId !== newWindowId) ev.tabDetached._emit(id, { oldWindowId, oldPosition });
       ev.tabAttached._emit(id, { newWindowId, newPosition });
       // Firefox closes a window when its last tab moves out.
       if (old && old.id !== newWindowId && old.tabIds.length === 0) {
@@ -309,25 +314,23 @@ export function installFakeBrowser(seed: Seed) {
     // births the new window already holding the tab, so — unlike attachTab — it
     // fires NEITHER windows.onCreated NOR tabs.onCreated NOR tabs.onAttached; the
     // only signal is tabs.onDetached from the source window. The tab is fully
-    // moved (gettable in the new window) by the time the event is observed.
+    // moved (gettable in the new window) by the time the event is observed. You
+    // cannot tear off a window's ONLY tab (there must be tabs left behind), so a
+    // tear-off never empties — and never closes — the source window.
     tearOffTabToNewWindow: (id: number) => {
       const t = tabs.get(id);
       if (!t) return;
       const oldWindowId = t.windowId;
       const oldPosition = t.index;
       const old = wins.get(oldWindowId);
-      if (old) old.tabIds = old.tabIds.filter((x) => x !== id);
+      if (!old || old.tabIds.length < 2) return; // can't tear off the sole tab
+      old.tabIds = old.tabIds.filter((x) => x !== id);
       const newWindowId = ++winSeq;
       wins.set(newWindowId, { id: newWindowId, tabIds: [id] });
       t.windowId = newWindowId;
-      if (old) reindex(oldWindowId);
+      reindex(oldWindowId);
       reindex(newWindowId);
       ev.tabDetached._emit(id, { oldWindowId, oldPosition });
-      // Firefox closes the source window if that emptied it.
-      if (old && old.tabIds.length === 0) {
-        wins.delete(oldWindowId);
-        ev.winRemoved._emit(oldWindowId);
-      }
     },
   };
 

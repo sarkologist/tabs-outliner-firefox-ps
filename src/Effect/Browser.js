@@ -73,11 +73,12 @@ export const subscribeImpl = (api) => (sink) => () => {
   // harmless idempotent re-home; a tab that vanished (detach then close) get()s
   // nothing, so we leave it for onRemoved.
   t.onDetached?.addListener((tabId) =>
-    Promise.resolve(api.tabs.get(tabId))
-      .then((tab) => {
-        if (tab) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
-      })
-      .catch(() => {})
+    // Two-arg then: swallow only a tabs.get rejection (the tab was closed right
+    // after detaching — onRemoved handles it), not a throw from the handler, which
+    // should surface like every other listener's does.
+    Promise.resolve(api.tabs.get(tabId)).then((tab) => {
+      if (tab) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
+    }, () => {})
   );
   w.onCreated.addListener((win) => sink.windowOpened(win.id)());
   w.onRemoved.addListener((winId) => sink.windowClosed(winId)());
