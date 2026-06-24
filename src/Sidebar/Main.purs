@@ -110,6 +110,8 @@ data Action
   | ImportLoaded String
   | ClearNotice
   | OpenOptions
+  | RunUndo
+  | RunRedo
   | RunShortcut Sh.Cmd
 
 component :: forall q i o. H.Component q i o Aff
@@ -137,13 +139,17 @@ handleAction = case _ of
     -- Global keyboard shortcuts: on each keydown read the (possibly user-edited)
     -- bindings and dispatch the matching command. Reading per-press keeps the
     -- sidebar in sync with the options page with no reload.
-    H.liftEffect $ Settings.onShortcut \combo -> do
-      overrides <- Settings.getShortcuts
-      case Sh.cmdForCombo overrides combo of
-        Just cmd -> do
-          HS.notify listener (RunShortcut cmd)
-          pure true
-        Nothing -> pure false
+    H.liftEffect $ Settings.onShortcut \combo -> case editorShortcut combo of
+      Just act -> do
+        HS.notify listener act
+        pure true
+      Nothing -> do
+        overrides <- Settings.getShortcuts
+        case Sh.cmdForCombo overrides combo of
+          Just cmd -> do
+            HS.notify listener (RunShortcut cmd)
+            pure true
+          Nothing -> pure false
     handleAction Remeasure
     -- Load the initial model straight from IndexedDB (same extension origin as
     -- the background, which is its only writer). This skips an O(total) snapshot
@@ -213,6 +219,8 @@ handleAction = case _ of
     Left msg -> H.modify_ _ { notice = Just msg }
   ClearNotice -> H.modify_ _ { notice = Nothing }
   OpenOptions -> H.liftEffect openOptions
+  RunUndo -> sendRequest Undo
+  RunRedo -> sendRequest Redo
   RunShortcut cmd -> case cmd of
     Sh.NewGroup -> handleAction NewGroupTop
     Sh.FocusSearch -> H.liftEffect focusSearch
@@ -237,11 +245,31 @@ indexOf tid mParent model = fromMaybe 0 (Array.elemIndex tid siblings)
     Nothing -> model.roots
 
 sendCommand :: forall o. Command -> H.HalogenM State Action () o Aff Unit
-sendCommand c = do
+sendCommand = sendRequest <<< RunCommand
+
+-- | Fire a request at the background and forget the reply: the model updates
+-- | when the resulting patch broadcasts back, exactly as for a command.
+sendRequest :: forall o. Request -> H.HalogenM State Action () o Aff Unit
+sendRequest req = do
   st <- H.get
   case st.api of
-    Just api -> void $ H.liftAff (attempt (request api (encodeRequest (RunCommand c))))
+    Just api -> void $ H.liftAff (attempt (request api (encodeRequest req)))
     Nothing -> pure unit
+
+-- | Fixed (non-rebindable) editor shortcuts, matched before the configurable
+-- | toolbar ones. Undo/redo need a Ctrl/Cmd modifier and are universal enough not
+-- | to belong on the options page. Combos are the canonical strings Effect.Settings
+-- | builds (modifier order Ctrl, Alt, Shift, Meta), so Cmd+Shift+Z is "Shift+Meta+z".
+-- | We accept Ctrl and Meta (mac), plus Ctrl/Cmd+Y as the common Windows redo.
+editorShortcut :: String -> Maybe Action
+editorShortcut = case _ of
+  "Ctrl+z" -> Just RunUndo
+  "Meta+z" -> Just RunUndo
+  "Ctrl+Shift+z" -> Just RunRedo
+  "Shift+Meta+z" -> Just RunRedo
+  "Ctrl+y" -> Just RunRedo
+  "Meta+y" -> Just RunRedo
+  _ -> Nothing
 
 -- Accept our own flat export OR the original's nested portable-tree export.
 parseImport :: String -> Either String Snapshot
@@ -259,6 +287,8 @@ render st =
     ( [ HH.div [ HP.id "toolbar" ]
           [ HH.input
               [ HP.id "search", HP.placeholder "Search", HP.value st.query, HE.onValueInput SetQuery ]
+          , HH.button [ HP.id "undo", HP.title "Undo (Ctrl+Z)", HE.onClick \_ -> RunUndo ] [ HH.text "↶" ]
+          , HH.button [ HP.id "redo", HP.title "Redo (Ctrl+Shift+Z)", HE.onClick \_ -> RunRedo ] [ HH.text "↷" ]
           , tbtn "zoom-out" "A-" (Zoom (1.0 / 1.1))
           , tbtn "zoom-in" "A+" (Zoom 1.1)
           , tbtn "new-group" "New group" NewGroupTop

@@ -288,11 +288,13 @@ windowAncestor model start = go (parentOf start)
 
 -- Request protocol -----------------------------------------------------------
 
-data Request = GetSnapshot | RunCommand Command
+data Request = GetSnapshot | RunCommand Command | Undo | Redo
 
 encodeRequest :: Request -> Json
 encodeRequest GetSnapshot = encodeJson { tag: "getSnapshot" }
 encodeRequest (RunCommand c) = encodeJson { tag: "command", body: encodeCommand c }
+encodeRequest Undo = encodeJson { tag: "undo" }
+encodeRequest Redo = encodeJson { tag: "redo" }
 
 decodeRequest :: Json -> Either String Request
 decodeRequest json = do
@@ -302,6 +304,8 @@ decodeRequest json = do
     "command" -> do
       { body } <- dec json :: Either String { body :: Json }
       RunCommand <$> decodeCommand body
+    "undo" -> Right Undo
+    "redo" -> Right Redo
     other -> Left ("unknown request: " <> other)
 
 encodeCommand :: Command -> Json
