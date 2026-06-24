@@ -49,11 +49,12 @@ instance showBrowserAction :: Show BrowserAction where
   show (CreateWindow us) = "CreateWindow " <> show us
   show (RemoveTab t) = "RemoveTab " <> show t
 
--- | Where a restored tab should reopen, decided by its nearest window ancestor.
+-- | Where a restored tab should reopen, decided by its IMMEDIATE PARENT — the
+-- | container that owns it (a node's owning window is its immediate parent).
 data RestoreTarget
-  = IntoWindow Int -- a still-live browser window (reopen the tab back into it)
-  | IntoNewWindow NodeId -- a closed window node (group its tabs into one new window)
-  | IntoCurrent -- no window ancestor (reopen in the current window)
+  = IntoWindow Int -- parent already live as a window (reopen the tab back into it)
+  | IntoNewWindow NodeId -- saved-container parent (its tabs open one new window it goes live as)
+  | IntoCurrent -- no parent container (reopen in the current window)
 
 derive instance eqRestoreTarget :: Eq RestoreTarget
 
@@ -157,10 +158,10 @@ applyCommand now cmd model = case cmd of
 
   -- restore: re-open every closed tab in the subtree, re-binding to existing
   -- nodes via pendingRestore (keyed by url) when each onCreated arrives. Each
-  -- tab is routed by its nearest window ancestor: a still-live window reopens
-  -- the tab back into itself; a closed window has all its tabs grouped into one
-  -- new browser window (whose node rebinds via pendingRestoreWindows); a tab
-  -- with no window ancestor reopens in the current window.
+  -- tab is routed by its immediate parent: a parent already live as a window
+  -- reopens the tab back into it; a saved-group parent has all its tabs grouped
+  -- into one new browser window (whose node rebinds via pendingRestoreWindows)
+  -- and goes live in place; a tab with no parent reopens in the current window.
   restore :: NodeId -> CmdResult
   restore nid =
     let

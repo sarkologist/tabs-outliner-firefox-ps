@@ -128,4 +128,6 @@ kindStr KGroup = "group"
 -- | startup re-match against the real browser.
 parseKind :: String -> Kind
 parseKind "tab" = KTab
-parseKind _ = KGroup
+parseKind "group" = KGroup
+parseKind "window" = KGroup -- legacy: a browser window is now just a container
+parseKind _ = KGroup -- unknown kind: keep the node (as a container) rather than drop it

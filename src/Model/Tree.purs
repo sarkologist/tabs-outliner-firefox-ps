@@ -42,9 +42,11 @@ applyPatch p model =
     Just w | isLive n -> Map.insert w n.id m
     _ -> m
 
--- | A container that currently is a live browser window: it directly owns at
--- | least one live (tab) child. The `windowId` binding is kept equivalent to
--- | this; this structural test is the source of truth for display and the
+-- | The STRUCTURAL test for "this container is a live window": it directly owns
+-- | at least one live tab. At runtime the operative marker is the container's
+-- | `windowId` binding (O(1), and what display and the indexes key off); the two
+-- | are kept loosely in step — e.g. a freshly-opened window is windowId-bound for
+-- | a moment before its first tab node lands. Used to state and verify the
 -- | window/group correspondence (a node's owning window is its immediate parent).
 isLiveWindow :: Model -> Node -> Boolean
 isLiveWindow model n = n.kind == KGroup && Array.any childIsLiveTab n.children
