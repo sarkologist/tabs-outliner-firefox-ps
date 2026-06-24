@@ -19,7 +19,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, subtreeIds)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, defaultNode, emptyPatch, isLive, isLiveTab)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, defaultNode, emptyPatch, isLiveTab)
 
 data Command
   = Collapse NodeId Boolean
@@ -36,16 +36,17 @@ data Command
 -- | `CreateWindow` opens one new browser window populated with the given urls
 -- | (so restoring a closed window re-creates it as its own window, not as tabs
 -- | dumped into whatever window is currently focused). `MoveTabToWindow` and
--- | `NewWindowWithTab` carry a live-tab reorganization through to the real
--- | browser: when the user drags a live tab to a new owning container, the actual
--- | tab moves (into that container's window, or a fresh one), and the tree
--- | re-settles from the resulting onAttached/onCreated events.
+-- | `NewWindowWithTabs` carry a live-tab reorganization through to the real
+-- | browser: when the user drags a live tab (or flattens a live window) to a new
+-- | owning container, the actual tab(s) move — into that container's window, or a
+-- | fresh one holding them all — and the tree re-settles from the resulting
+-- | onAttached/onCreated events.
 data BrowserAction
   = FocusTab Int
   | CreateTab (Maybe Int) (Maybe String)
   | CreateWindow (Array String)
   | MoveTabToWindow Int Int -- tabId, destination (live) windowId
-  | NewWindowWithTab Int -- tabId; detach it into a brand-new window
+  | NewWindowWithTabs (Array Int) -- detach these tabs into one brand-new window
   | RemoveTab Int
 
 derive instance eqBrowserAction :: Eq BrowserAction
@@ -54,7 +55,7 @@ instance showBrowserAction :: Show BrowserAction where
   show (CreateTab w u) = "CreateTab " <> show w <> " " <> show u
   show (CreateWindow us) = "CreateWindow " <> show us
   show (MoveTabToWindow t w) = "MoveTabToWindow " <> show t <> " " <> show w
-  show (NewWindowWithTab t) = "NewWindowWithTab " <> show t
+  show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
   show (RemoveTab t) = "RemoveTab " <> show t
 
 -- | Where a restored tab should reopen, decided by its IMMEDIATE PARENT — the
@@ -250,54 +251,51 @@ applyCommand now cmd model = case cmd of
                     { model: applyPatch patch model, patch, actions: [] }
 
   -- A live tab dragged to a different owning container: move the REAL browser tab,
-  -- not the tree node. Into an already-live window -> append the tab there; into a
-  -- saved/plain container -> it "goes live" as a new window (queued to rebind on
-  -- the window's onCreated, exactly like a restore); out to the root -> a fresh
-  -- window for the tab. In every case the tree re-settles from the browser events.
+  -- not the tree node. The tree re-settles from the resulting browser events.
   moveLiveTab :: Node -> Maybe NodeId -> CmdResult
   moveLiveTab node mParent = case node.tabId of
     Nothing -> noChange -- unreachable under the isLiveTab guard; keeps this total
-    Just t -> case mParent of
-      Nothing -> actionsOnly [ NewWindowWithTab t ]
-      Just pid -> case Map.lookup pid model.nodes of
-        Nothing -> noChange
-        Just p -> case p.windowId of
-          Just w -> actionsOnly [ MoveTabToWindow t w ]
-          Nothing ->
-            { model: model { pendingRestoreWindows = Array.snoc model.pendingRestoreWindows pid }
-            , patch: emptyPatch
-            , actions: [ NewWindowWithTab t ]
-            }
+    Just t -> let r = rehome model mParent [ t ] in { model: r.model, patch: emptyPatch, actions: r.actions }
+
+  -- Browser action(s) to re-home live `tabIds` to container `mParent` (their new
+  -- owning window): into an already-live window -> move each there; into a
+  -- not-yet-live container -> queue it to bind one new window holding them all
+  -- (it "goes live", rebinding on onCreated like a restore); to the root -> a
+  -- fresh window holding them all.
+  rehome :: Model -> Maybe NodeId -> Array Int -> { model :: Model, actions :: Array BrowserAction }
+  rehome m mParent tabIds
+    | Array.null tabIds = { model: m, actions: [] }
+    | otherwise = case mParent of
+        Nothing -> { model: m, actions: [ NewWindowWithTabs tabIds ] }
+        Just pid -> case Map.lookup pid m.nodes of
+          Just p | Just w <- p.windowId -> { model: m, actions: map (\t -> MoveTabToWindow t w) tabIds }
+          Just _ -> { model: m { pendingRestoreWindows = Array.snoc m.pendingRestoreWindows pid }, actions: [ NewWindowWithTabs tabIds ] }
+          Nothing -> { model: m, actions: [] }
 
   flatten :: NodeId -> CmdResult
   flatten nid = case Map.lookup nid model.nodes of
     Nothing -> noChange
     Just node
       | node.kind /= KGroup -> noChange -- only dissolve containers (groups/windows), never tabs
-      -- PR1 gate (removed in PR2): don't dissolve a LIVE window (windowId-bound).
-      -- Flattening it would strand the window binding on a deleted node and orphan
-      -- its live tabs to the root with no browser move yet. PR2 moves the tabs /
-      -- wraps the orphans into new windows, then this guard goes.
-      | isLive node -> noChange
       | otherwise ->
           let
             kids = node.children
+            -- live tabs being promoted change their owning window from `node` to
+            -- its parent, so the real browser tabs move there too: flattening a
+            -- live window re-homes its tabs (a plain group has none to move).
+            kidTabIds = Array.mapMaybe (\cid -> Map.lookup cid model.nodes >>= _.tabId) kids
             promote parentRef = Array.mapMaybe
               (\cid -> (\c -> c { parent = parentRef }) <$> Map.lookup cid model.nodes)
               kids
+            withBrowser patch =
+              let br = rehome (applyPatch patch model) node.parent kidTabIds
+              in { model: br.model, patch, actions: br.actions }
           in
             case node.parent of
               Just pid -> case Map.lookup pid model.nodes of
                 Nothing -> noChange
-                Just p ->
-                  let
-                    p' = p { children = spliceReplace nid kids p.children }
-                    patch = { upserts: [ p' ] <> promote (Just pid), removes: [ nid ], roots: Nothing }
-                  in
-                    { model: applyPatch patch model, patch, actions: [] }
-              Nothing ->
-                let patch = { upserts: promote Nothing, removes: [ nid ], roots: Just (spliceReplace nid kids model.roots) }
-                in { model: applyPatch patch model, patch, actions: [] }
+                Just p -> withBrowser { upserts: [ p { children = spliceReplace nid kids p.children } ] <> promote (Just pid), removes: [ nid ], roots: Nothing }
+              Nothing -> withBrowser { upserts: promote Nothing, removes: [ nid ], roots: Just (spliceReplace nid kids model.roots) }
 
 spliceReplace :: NodeId -> Array NodeId -> Array NodeId -> Array NodeId
 spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])

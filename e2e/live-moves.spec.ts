@@ -54,4 +54,22 @@ test.describe("live-tab moves drive the browser", () => {
     const beta = nodes.find((n) => n.title === "Beta");
     expect(beta.parent).toBe(grp.id);
   });
+
+  test("flattening a live window re-homes its tabs into a fresh window", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, {
+      windows: [{ id: 1, tabs: [{ id: 11, url: "http://a", title: "Alpha", active: true }, { id: 12, url: "http://b", title: "Beta" }] }],
+    });
+    await expect(page.getByText("Alpha")).toBeVisible();
+
+    // flatten the window row (its action is revealed on hover)
+    const win = page.locator(".row").filter({ hasText: "Window" });
+    await win.hover();
+    await win.locator(".btn-flatten").click();
+
+    // both tabs land in ONE fresh browser window; the old (now empty) window closed
+    await expect.poll(async () => {
+      const ws: Array<{ id: number; tabs: Array<{ url: string }> }> = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+      return { count: ws.length, hasOld: ws.some((w) => w.id === 1), urls: ws.flatMap((w) => w.tabs.map((t) => t.url)).sort() };
+    }).toEqual({ count: 1, hasOld: false, urls: ["http://a", "http://b"] });
+  });
 });

@@ -88,10 +88,15 @@ export const createWindowImpl = (api) => (urls) => () =>
 export const moveTabToWindowImpl = (api) => (tabId) => (windowId) => () =>
   Promise.resolve(api.tabs.move(tabId, { windowId, index: -1 }));
 
-// Create a new window holding an existing tab. Fires windows.onCreated, then the
-// tab's tabs.onAttached into it.
-export const newWindowWithTabImpl = (api) => (tabId) => () =>
-  Promise.resolve(api.windows.create({ tabId }));
+// Create a new window holding existing tabs: the first tab opens the window
+// (windows.onCreated, then its tabs.onAttached), and the rest move in after.
+export const newWindowWithTabsImpl = (api) => (tabIds) => () => {
+  if (tabIds.length === 0) return Promise.resolve();
+  const [first, ...rest] = tabIds;
+  return Promise.resolve(api.windows.create({ tabId: first })).then((w) =>
+    Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 })))
+  );
+};
 
 export const removeTabImpl = (api) => (tabId) => () =>
   Promise.resolve(api.tabs.remove(tabId));

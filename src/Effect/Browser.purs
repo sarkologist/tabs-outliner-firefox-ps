@@ -11,7 +11,7 @@ module Effect.Browser
   , createTab
   , createWindow
   , moveTabToWindow
-  , newWindowWithTab
+  , newWindowWithTabs
   , removeTab
   ) where
 
@@ -124,7 +124,7 @@ foreign import focusTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 foreign import createTabImpl :: BrowserApi -> Nullable Int -> Nullable String -> Effect (Promise Unit)
 foreign import createWindowImpl :: BrowserApi -> Array String -> Effect (Promise Unit)
 foreign import moveTabToWindowImpl :: BrowserApi -> Int -> Int -> Effect (Promise Unit)
-foreign import newWindowWithTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
+foreign import newWindowWithTabsImpl :: BrowserApi -> Array Int -> Effect (Promise Unit)
 foreign import removeTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 
 -- | Activate a tab and focus its window (the FFI resolves the window from the tab).
@@ -143,10 +143,11 @@ createWindow api urls = toAffE (createWindowImpl api urls)
 moveTabToWindow :: BrowserApi -> Int -> Int -> Aff Unit
 moveTabToWindow api tabId windowId = toAffE (moveTabToWindowImpl api tabId windowId)
 
--- | Detach a live tab into a brand-new browser window. Used when a live tab is
--- | reorganized under a saved/plain container (it "goes live") or out to the root.
-newWindowWithTab :: BrowserApi -> Int -> Aff Unit
-newWindowWithTab api tabId = toAffE (newWindowWithTabImpl api tabId)
+-- | Detach tabs into one brand-new browser window (the first creates it, the rest
+-- | move in). Used when live tabs are reorganized under a saved/plain container
+-- | (it "goes live") or out to the root.
+newWindowWithTabs :: BrowserApi -> Array Int -> Aff Unit
+newWindowWithTabs api tabIds = toAffE (newWindowWithTabsImpl api tabIds)
 
 removeTab :: BrowserApi -> Int -> Aff Unit
 removeTab api tabId = toAffE (removeTabImpl api tabId)

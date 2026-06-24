@@ -292,6 +292,11 @@ export function installFakeBrowser(seed: Seed) {
       t.windowId = newWindowId;
       reindex(newWindowId);
       ev.tabAttached._emit(id, { newWindowId, newPosition });
+      // Firefox closes a window when its last tab moves out.
+      if (old && old.id !== newWindowId && old.tabIds.length === 0) {
+        wins.delete(old.id);
+        ev.winRemoved._emit(old.id);
+      }
     },
   };
 

@@ -8,6 +8,7 @@ import Data.Maybe (Maybe(..))
 import Model.Command (BrowserAction(..), Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
+import Model.Tree (applyPatch)
 import Model.Types (Kind(..), Model, defaultNode, emptyModel, isLive)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -77,11 +78,29 @@ spec = describe "Model.Command" do
     (_.kind <$> Map.lookup "n2" m.nodes) `shouldEqual` Just KTab
     Map.size m.nodes `shouldEqual` Map.size base.nodes
 
-  it "flatten leaves a live window intact (PR1 gate: would orphan its live tabs)" do
-    let m = run (Flatten "n1") base -- n1 is the live window (windowId 1)
-    (_.kind <$> Map.lookup "n1" m.nodes) `shouldEqual` Just KGroup
-    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
-    Map.size m.nodes `shouldEqual` Map.size base.nodes
+  it "flatten of a live window detaches its tabs into a new window and dissolves it" do
+    let r = applyCommand 0.0 (Flatten "n1") base -- n1 is the live window (windowId 1) at root
+    Map.lookup "n1" r.model.nodes `shouldEqual` Nothing -- the window node is gone...
+    r.actions `shouldEqual` [ NewWindowWithTabs [ 11, 12 ] ] -- ...its tabs re-homed into one fresh window
+
+  it "flatten of a nested live window merges its tabs into the parent window" do
+    let
+      -- outer window P (id 2) holding its own tab pp and a nested window W (id 1)
+      m = applyPatch
+        { upserts:
+            [ (defaultNode "P" KGroup 0.0) { windowId = Just 2, title = "Outer", children = [ "pp", "W" ] }
+            , (defaultNode "pp" KTab 0.0) { parent = Just "P", tabId = Just 20, url = Just "http://p", title = "P0" }
+            , (defaultNode "W" KGroup 0.0) { windowId = Just 1, parent = Just "P", title = "Inner", children = [ "t1", "t2" ] }
+            , (defaultNode "t1" KTab 0.0) { parent = Just "W", tabId = Just 11, url = Just "http://a", title = "A" }
+            , (defaultNode "t2" KTab 0.0) { parent = Just "W", tabId = Just 12, url = Just "http://b", title = "B" }
+            ]
+        , removes: []
+        , roots: Just [ "P" ]
+        }
+        emptyModel
+      r = applyCommand 0.0 (Flatten "W") m
+    Map.lookup "W" r.model.nodes `shouldEqual` Nothing -- inner window dissolved
+    r.actions `shouldEqual` [ MoveTabToWindow 11 2, MoveTabToWindow 12 2 ] -- tabs merged into the outer window
 
   it "closing a window drops its window binding but leaves nested groups untouched" do
     let
@@ -194,13 +213,13 @@ spec = describe "Model.Command" do
       let
         withGroup = (applyCommand 0.0 (NewGroup Nothing 0) base2).model -- group n6 at root
         r = applyCommand 0.0 (Move "n2" (Just "n6") 0) withGroup
-      r.actions `shouldEqual` [ NewWindowWithTab 11 ]
+      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
       r.model.pendingRestoreWindows `shouldEqual` [ "n6" ] -- n6 binds when its window opens
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
 
     it "out to the root: detaches into a brand-new window" do
       let r = applyCommand 0.0 (Move "n2" Nothing 0) base2
-      r.actions `shouldEqual` [ NewWindowWithTab 11 ]
+      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
       r.model.pendingRestoreWindows `shouldEqual` [] -- a fresh window node appears via onCreated
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
 

@@ -144,5 +144,5 @@ runAction api = case _ of
   CreateTab w u -> Browser.createTab api w u
   CreateWindow us -> Browser.createWindow api us
   MoveTabToWindow t w -> Browser.moveTabToWindow api t w
-  NewWindowWithTab t -> Browser.newWindowWithTab api t
+  NewWindowWithTabs ts -> Browser.newWindowWithTabs api ts
   RemoveTab t -> Browser.removeTab api t
