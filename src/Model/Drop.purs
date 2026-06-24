@@ -9,10 +9,11 @@ import Prelude
 
 import Data.Array as Array
 import Data.Map as Map
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Model.Command (Command(..))
 import Model.Guide (subtreeEnd)
 import Model.Tree (Entry, isAncestorOrSelf)
-import Model.Types (Kind(..), Model, NodeId)
+import Model.Types (Kind(..), Model, Node, NodeId)
 
 -- A horizontal insertion line at the top edge of visible row `atIndex`, indented
 -- to `depth` (the depth the dropped node's icon will sit at).
@@ -37,3 +38,26 @@ dropPlacement model entries dragId targetId
             Just case target.kind of
               KGroup -> { atIndex: subtreeEnd entries td (Array.length entries) (ti + 1), depth: td + 1 }
               _ -> { atIndex: ti, depth: td }
+
+-- | The move a drop performs — the behavioural counterpart of `dropPlacement`,
+-- | kept beside it so the preview and the action can't drift. Onto a group:
+-- | append as its last child. Onto anything else: place immediately before the
+-- | target as a sibling. `move` deletes the dragged node before inserting, so the
+-- | index is the target's position in the sibling list with the node removed —
+-- | which is what makes a same-parent downward drag land before the target, not
+-- | after it.
+dropCommand :: NodeId -> Node -> Model -> Command
+dropCommand dragId target model = case target.kind of
+  KGroup -> Move dragId (Just target.id) (Array.length target.children)
+  _ -> Move dragId target.parent (beforeIndex dragId target.id target.parent model)
+
+-- index at which inserting lands the dragged node immediately before `targetId`,
+-- accounting for the node's own removal from the list
+beforeIndex :: NodeId -> NodeId -> Maybe NodeId -> Model -> Int
+beforeIndex dragId targetId mParent model =
+  fromMaybe (Array.length shrunk) (Array.elemIndex targetId shrunk)
+  where
+  siblings = case mParent of
+    Just pid -> fromMaybe [] (_.children <$> Map.lookup pid model.nodes)
+    Nothing -> model.roots
+  shrunk = Array.delete dragId siblings

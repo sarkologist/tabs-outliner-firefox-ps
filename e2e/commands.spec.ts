@@ -143,4 +143,24 @@ test.describe("commands", () => {
     await rowOf(page, "Alpha").dispatchEvent("drop");
     await expect(page.locator(".drop-indicator")).toHaveCount(0);
   });
+
+  test("dragging a node downward past a sibling lands it before the drop target", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a", title: "A", active: true },
+            { id: 12, url: "http://b", title: "B" },
+            { id: 13, url: "http://c", title: "C" },
+          ],
+        },
+      ],
+    });
+    await expect(page.getByText("C", { exact: true })).toBeVisible();
+    expect(await titles(page)).toEqual(["Window", "A", "B", "C"]);
+    // drag A down onto C: it must land immediately BEFORE C, i.e. [B, A, C]
+    await page.getByText("A", { exact: true }).dragTo(page.getByText("C", { exact: true }));
+    await expect.poll(() => titles(page)).toEqual(["Window", "B", "A", "C"]);
+  });
 });

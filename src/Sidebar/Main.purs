@@ -36,7 +36,7 @@ import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Model.Codec (Snapshot, decodePatch, decodeSnapshot, encodeSnapshot)
 import Model.Command (Command(..), Request(..), encodeRequest)
-import Model.Drop (dropPlacement)
+import Model.Drop (dropCommand, dropPlacement)
 import Model.Guide (Guide, buildGuide, emptyGuide, guideBottom, guideTop)
 import Model.PortableImport (portableToSnapshot)
 import Model.Shortcuts as Sh
@@ -252,18 +252,6 @@ handleAction = case _ of
       H.liftEffect (setZoom 1.0)
     Sh.Export -> handleAction ExportClick
     Sh.Import -> handleAction ImportClick
-
-dropCommand :: NodeId -> Node -> Model -> Command
-dropCommand dragId target model = case target.kind of
-  KGroup -> Move dragId (Just target.id) (Array.length target.children)
-  _ -> Move dragId target.parent (indexOf target.id target.parent model)
-
-indexOf :: NodeId -> Maybe NodeId -> Model -> Int
-indexOf tid mParent model = fromMaybe 0 (Array.elemIndex tid siblings)
-  where
-  siblings = case mParent of
-    Just pid -> fromMaybe [] (_.children <$> Map.lookup pid model.nodes)
-    Nothing -> model.roots
 
 sendCommand :: forall o. Command -> H.HalogenM State Action () o Aff Unit
 sendCommand = sendRequest <<< RunCommand
