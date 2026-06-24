@@ -234,4 +234,17 @@ test.describe("move to top level / bottom", () => {
     await expect.poll(() => parentOf(page, "Beta")).toBeNull();
     expect((await titles(page)).at(-1)).toBe("Beta");
   });
+
+  test("move to bottom is offered on a non-last top-level node (top level is not)", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, twoWindows);
+    await fake(page, "closeWindow", 1); // closed window is now a non-last top-level node
+    const closedWindow = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
+    await closedWindow.hover();
+    await expect(closedWindow.locator(".btn-to-bottom")).toHaveCount(1);
+    await expect(closedWindow.locator(".btn-to-top-level")).toHaveCount(0); // already top-level
+
+    await closedWindow.locator(".btn-to-bottom").click();
+    // it moved below the live "Keep" window, taking its Alpha/Beta subtree with it
+    await expect.poll(() => titles(page)).toEqual(["Window", "Keep", "Window", "Alpha", "Beta"]);
+  });
 });

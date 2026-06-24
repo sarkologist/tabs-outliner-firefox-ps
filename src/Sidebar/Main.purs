@@ -386,9 +386,10 @@ render st =
       Just hi -> buildGuide entries hi
       Nothing -> emptyGuide
     _, _ -> emptyGuide
+  lastRoot = Array.last st.model.roots
   slot i entry = Tuple entry.id $ case Map.lookup entry.id st.model.nodes of
     Nothing -> HH.text ""
-    Just node -> renderNode (st.dragId == Just node.id) st.editing guide (firstIdx + i) entry.depth rowH node
+    Just node -> renderNode (st.dragId == Just node.id) st.editing guide (firstIdx + i) entry.depth rowH (Just node.id == lastRoot) node
   -- a single guide-styled insertion line marking where a drop would land
   dropSlots = case st.dragId, st.dropTarget of
     Just dragId, Just targetId -> case dropPlacement st.model entries dragId targetId of
@@ -415,8 +416,8 @@ noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-renderNode :: Boolean -> Maybe Editing -> Guide -> Int -> Int -> Number -> Node -> H.ComponentHTML Action () Aff
-renderNode dragging editing guide idx depth rowH n =
+renderNode :: Boolean -> Maybe Editing -> Guide -> Int -> Int -> Number -> Boolean -> Node -> H.ComponentHTML Action () Aff
+renderNode dragging editing guide idx depth rowH isLastRoot n =
   HH.div
     [ HP.classes (map ClassName (rowClasses dragging n))
     , HP.attr (AttrName "data-node-id") n.id
@@ -440,7 +441,7 @@ renderNode dragging editing guide idx depth rowH n =
     -- never inserts/removes a sibling of the toggle/title/actions. Otherwise the
     -- DOM mutation races a pointer hit-test on the hover-revealed action buttons.
     -- It paints behind the content via z-index, not DOM order.
-    [ toggleEl n, body editing n, actionsEl n, guideLayer guide idx ]
+    [ toggleEl n, body editing n, actionsEl isLastRoot n, guideLayer guide idx ]
 
 rowClasses :: Boolean -> Node -> Array String
 rowClasses dragging n =
@@ -464,26 +465,24 @@ body editing n = case editing of
       [ HH.text (displayTitle n) ]
 
 -- Hover-revealed action cluster (rename / close / flatten / move-to-top-level /
--- move-to-bottom / delete).
-actionsEl :: Node -> H.ComponentHTML Action () Aff
-actionsEl n = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons n)
+-- move-to-bottom / delete). `isLastRoot` gates "move to bottom": there is nowhere
+-- below the last top-level node to send it.
+actionsEl :: Boolean -> Node -> H.ComponentHTML Action () Aff
+actionsEl isLastRoot n = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons isLastRoot n)
 
-buttons :: Node -> Array (H.ComponentHTML Action () Aff)
-buttons n =
+buttons :: Boolean -> Node -> Array (H.ComponentHTML Action () Aff)
+buttons isLastRoot n =
   [ btn "btn-rename" "Rename" "pencil" (StartRename n.id (displayTitle n)) ]
     <> (if isLive n then [ btn "btn-close" "Close" "close-circle" (CloseClick n.id) ] else [])
     <> (if n.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick n.id) ] else [])
-    -- Relocation to the top level only makes sense for a nested node; a live tab
-    -- is excluded (pulling one out to the root is the dropped move-to-new-window).
-    <> ( if relocatable then
-           [ btn "btn-to-top-level" "Move to top level" "to-top-level" (MoveTopLevelClick n.id)
-           , btn "btn-to-bottom" "Move to bottom" "to-bottom" (MoveBottomClick n.id)
-           ]
-         else []
-       )
+    -- "To top level" only makes sense for a NESTED node; "to bottom" applies to any
+    -- node that isn't already the last root (so it also reorders top-level rows). A
+    -- live tab is excluded from both — pulling one out to the root is the dropped
+    -- move-to-new-window.
+    <> (if isJust n.parent && not (isLiveTab n) then [ btn "btn-to-top-level" "Move to top level" "to-top-level" (MoveTopLevelClick n.id) ] else [])
+    <> (if not (isLiveTab n) && not isLastRoot then [ btn "btn-to-bottom" "Move to bottom" "to-bottom" (MoveBottomClick n.id) ] else [])
     <> [ btn "btn-delete" "Delete" "trash" (DeleteClick n.id) ]
   where
-  relocatable = isJust n.parent && not (isLiveTab n)
   btn cls label name act =
     HH.button
       [ HP.class_ (ClassName cls), HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ]

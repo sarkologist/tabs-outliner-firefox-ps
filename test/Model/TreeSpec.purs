@@ -87,6 +87,19 @@ spec = describe "Model.Tree" do
       rootAncestor "B" linked `shouldEqual` "A" -- B -> A
     it "is the node itself when it has no parent" do
       rootAncestor "A" linked `shouldEqual` "A"
+    it "stops on a parent cycle instead of looping forever (corruption backstop)" do
+      let
+        cyclic = applyPatch
+          { upserts:
+              [ (defaultNode "X" KGroup 0.0) { parent = Just "Y" }
+              , (defaultNode "Y" KGroup 0.0) { parent = Just "X" }
+              ]
+          , removes: []
+          , roots: Just []
+          }
+          emptyModel
+      -- terminates at the first re-seen node rather than recursing forever
+      rootAncestor "X" cyclic `shouldEqual` "X"
 
   describe "isLiveWindow" do
     -- a container is a window exactly while it directly owns a live tab; the
