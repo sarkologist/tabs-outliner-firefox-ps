@@ -67,9 +67,10 @@ mergePatch a b =
 -- | Prune `nid` if it is now a childless, un-renamed group, then walk up doing the
 -- | same to its parent. Emptying a container (by deleting or moving away its last
 -- | child) thus removes it and any ancestors it leaves empty — but a renamed group
--- | is a deliberate label and is kept. O(depth up the pruned chain). Returns the
--- | new model and the patch of what it pruned, to fold (via `mergePatch`) into the
--- | triggering edit's own patch.
+-- | is a deliberate label and is kept. Cost is O(pruned-chain depth, plus each
+-- | pruned node's parent/root sibling list) — never O(total). Returns the new model
+-- | and the patch of what it pruned, to fold (via `mergePatch`) into the triggering
+-- | edit's own patch.
 pruneFrom :: NodeId -> Model -> { model :: Model, patch :: Patch }
 pruneFrom nid model = case Map.lookup nid model.nodes of
   Just n | n.kind == KGroup && Array.null n.children && isNothing n.customTitle ->
