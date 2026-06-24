@@ -13,10 +13,8 @@ import Data.Argonaut.Core (stringify)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
-import Data.Foldable (foldl)
 import Data.Int as Int
-import Data.Int.Bits (and, or)
-import Data.Map (Map)
+import Data.Int.Bits (and)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.Common (joinWith)
@@ -38,9 +36,10 @@ import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Model.Codec (Snapshot, decodePatch, decodeSnapshot, encodeSnapshot)
 import Model.Command (Command(..), Request(..), encodeRequest)
+import Model.Guide (Guide, buildGuide, emptyGuide, guideBottom, guideTop)
 import Model.PortableImport (portableToSnapshot)
 import Model.Shortcuts as Sh
-import Model.Tree (Entry, applyPatch, searchVisible, visible)
+import Model.Tree (applyPatch, searchVisible, visible)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Status(..), displayTitle, emptyModel)
 import Web.Event.Event (Event)
 import Web.UIEvent.KeyboardEvent (key)
@@ -456,93 +455,7 @@ icon = iconWith [ "button-icon" ]
 toolbarIcon :: forall w i. String -> HH.HTML w i
 toolbarIcon = iconWith [ "button-icon", "toolbar-icon" ]
 
--- Subtree guide geometry ------------------------------------------------------
-
--- | Per-row guide overlay: vertical line segments (depth → segment-flag bitset)
--- | and an optional horizontal connector depth, both keyed by a row's flat
--- | preorder index.
-type Guide = { verticals :: Map Int (Map Int Int), horizontals :: Map Int Int }
-
-emptyGuide :: Guide
-emptyGuide = { verticals: Map.empty, horizontals: Map.empty }
-
--- which half (or both) of a row a vertical line spans
-guideTop :: Int
-guideTop = 1
-
-guideBottom :: Int
-guideBottom = 2
-
-guideFull :: Int
-guideFull = 3
-
--- Cap the subtree size we draw guides for, so hovering a huge expanded group
--- doesn't spray thousands of line elements (mirrors the original's guard).
-maxGuideRows :: Int
-maxGuideRows = 1000
-
--- | Build the guide for the row hovered at flat preorder index `h`: a vertical
--- | line connecting the node up to its parent, vertical connectors threading
--- | down each level of its subtree, and a horizontal stub into every visible
--- | descendant. Pure over the `entries` list; O(subtree) (skipped past the cap).
-buildGuide :: Array Entry -> Int -> Guide
-buildGuide entries h = case Array.index entries h of
-  Nothing -> emptyGuide
-  Just target ->
-    let
-      end = subtreeEnd entries target.depth (h + 1)
-    in
-      if end - h > maxGuideRows then emptyGuide
-      else
-        let
-          hParent = parentOf entries h target.depth
-          acc = foldl (step hParent) { open: Map.empty, verticals: Map.empty, horizontals: Map.empty }
-            (Array.range h (end - 1))
-        in
-          { verticals: acc.verticals, horizontals: acc.horizontals }
-  where
-  step hParent acc c = case Array.index entries c of
-    Nothing -> acc
-    Just e ->
-      let
-        parent = if c == h then hParent else Map.lookup (e.depth - 1) acc.open
-        open' = Map.insert e.depth c acc.open
-        horizontals' = if e.depth > 0 then Map.insert c e.depth acc.horizontals else acc.horizontals
-        verticals' = case parent of
-          Just p | e.depth > 0 ->
-            let
-              v1 = addSeg acc.verticals p e.depth guideBottom
-              v2 = addSeg v1 c e.depth guideTop
-            in
-              if c - p >= 2 then foldl (\a m -> addSeg a m e.depth guideFull) v2 (Array.range (p + 1) (c - 1))
-              else v2
-          _ -> acc.verticals
-      in
-        { open: open', verticals: verticals', horizontals: horizontals' }
-
--- exclusive end of the subtree whose root has depth `d`, scanning from `i`
-subtreeEnd :: Array Entry -> Int -> Int -> Int
-subtreeEnd entries d i = case Array.index entries i of
-  Just e | e.depth > d -> subtreeEnd entries d (i + 1)
-  _ -> i
-
--- index of the parent row (nearest earlier row one level shallower), if any
-parentOf :: Array Entry -> Int -> Int -> Maybe Int
-parentOf entries h d
-  | d <= 0 = Nothing
-  | otherwise = go (h - 1)
-      where
-      go i
-        | i < 0 = Nothing
-        | otherwise = case Array.index entries i of
-            Just e | e.depth < d -> Just i
-            Just _ -> go (i - 1)
-            Nothing -> Nothing
-
--- OR a vertical segment flag into (row → depth → flags)
-addSeg :: Map Int (Map Int Int) -> Int -> Int -> Int -> Map Int (Map Int Int)
-addSeg acc row depth seg =
-  Map.insertWith (Map.unionWith or) row (Map.singleton depth seg) acc
+-- Subtree guide overlay (pure geometry lives in Model.Guide) ------------------
 
 -- The always-present absolute overlay for one row; its children (the lines) are
 -- empty unless this row participates in the hovered subtree's guide.
