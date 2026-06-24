@@ -14,8 +14,10 @@ import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Int as Int
+import Data.Int.Bits (and)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Aff (Aff, attempt)
@@ -26,7 +28,7 @@ import Effect.Settings as Settings
 import Halogen as H
 import Halogen.Aff as HA
 import Halogen.HTML as HH
-import Halogen.HTML.Core (AttrName(..), ClassName(..))
+import Halogen.HTML.Core (AttrName(..), ClassName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Elements.Keyed as HK
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
@@ -34,6 +36,8 @@ import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
 import Model.Codec (Snapshot, decodePatch, decodeSnapshot, encodeSnapshot)
 import Model.Command (Command(..), Request(..), encodeRequest)
+import Model.Drop (dropCommand, dropPlacement)
+import Model.Guide (Guide, buildGuide, emptyGuide, guideBottom, guideTop)
 import Model.PortableImport (portableToSnapshot)
 import Model.Shortcuts as Sh
 import Model.Tree (applyPatch, searchVisible, visible)
@@ -52,9 +56,11 @@ foreign import onResize :: Effect Unit -> Effect Unit
 foreign import focusSearch :: Effect Unit
 foreign import openOptions :: Effect Unit
 
--- height of one row in px at zoom 1; must match `.row` height in the CSS
+-- height of one row in px at zoom 1. Set as each row's inline `height`, so this
+-- is the source of truth for row height (the CSS centers content within it).
+-- Matches the original's compact `--node-row-height: 18px`.
 baseRowHeight :: Number
-baseRowHeight = 22.0
+baseRowHeight = 18.0
 
 -- extra rows rendered above/below the viewport for smooth scrolling
 overscan :: Int
@@ -76,6 +82,8 @@ type State =
   , model :: Model
   , editing :: Maybe Editing
   , dragId :: Maybe NodeId
+  , dropTarget :: Maybe NodeId
+  , hover :: Maybe NodeId
   , query :: String
   , zoom :: Number
   , notice :: Maybe String
@@ -101,8 +109,10 @@ data Action
   | CommitRename
   | CancelRename
   | DragStart NodeId
+  | DragOver NodeId
   | DropOn NodeId
   | DragEnd
+  | SetHover (Maybe NodeId)
   | SetQuery String
   | Zoom Number
   | ExportClick
@@ -117,7 +127,7 @@ data Action
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0, viewportH: 600.0, listener: Nothing }
+      { api: Nothing, model: emptyModel, editing: Nothing, dragId: Nothing, dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0, viewportH: 600.0, listener: Nothing }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
   }
@@ -172,7 +182,7 @@ handleAction = case _ of
   FlattenClick nid -> sendCommand (Flatten nid)
   NewGroupTop -> sendCommand (NewGroup Nothing 0)
 
-  StartRename nid text -> H.modify_ _ { editing = Just { id: nid, text } }
+  StartRename nid text -> H.modify_ _ { editing = Just { id: nid, text }, hover = Nothing }
   EditInput text -> H.modify_ \s -> s { editing = map (_ { text = text }) s.editing }
   EditKey k
     | k == "Enter" -> handleAction CommitRename
@@ -186,8 +196,19 @@ handleAction = case _ of
     H.modify_ _ { editing = Nothing }
   CancelRename -> H.modify_ _ { editing = Nothing }
 
-  DragStart nid -> H.modify_ _ { dragId = Just nid }
-  DragEnd -> H.modify_ _ { dragId = Nothing }
+  DragStart nid -> H.modify_ _ { dragId = Just nid, dropTarget = Nothing, hover = Nothing }
+  -- Track the row under the cursor to drive the drop preview. dragover fires
+  -- continuously, so only update (and re-render) when the target row changes.
+  DragOver nid -> do
+    st <- H.get
+    when (st.dropTarget /= Just nid) (H.modify_ _ { dropTarget = Just nid })
+  DragEnd -> H.modify_ _ { dragId = Nothing, dropTarget = Nothing }
+  -- Track the hovered row to drive the subtree guide lines. Ignore while
+  -- renaming so a stray pointer move can't re-render the focused input out from
+  -- under the user; while dragging there is no guide (dragId set, hover cleared).
+  SetHover mh -> H.modify_ \s -> case s.editing of
+    Just _ -> s
+    Nothing -> s { hover = mh }
   DropOn targetId -> do
     st <- H.get
     case st.dragId of
@@ -195,7 +216,7 @@ handleAction = case _ of
         Just target -> sendCommand (dropCommand dragId target st.model)
         Nothing -> pure unit
       _ -> pure unit
-    H.modify_ _ { dragId = Nothing }
+    H.modify_ _ { dragId = Nothing, dropTarget = Nothing }
 
   SetQuery q -> H.modify_ _ { query = q }
   Zoom factor -> do
@@ -231,18 +252,6 @@ handleAction = case _ of
       H.liftEffect (setZoom 1.0)
     Sh.Export -> handleAction ExportClick
     Sh.Import -> handleAction ImportClick
-
-dropCommand :: NodeId -> Node -> Model -> Command
-dropCommand dragId target model = case target.kind of
-  KGroup -> Move dragId (Just target.id) (Array.length target.children)
-  _ -> Move dragId target.parent (indexOf target.id target.parent model)
-
-indexOf :: NodeId -> Maybe NodeId -> Model -> Int
-indexOf tid mParent model = fromMaybe 0 (Array.elemIndex tid siblings)
-  where
-  siblings = case mParent of
-    Just pid -> fromMaybe [] (_.children <$> Map.lookup pid model.nodes)
-    Nothing -> model.roots
 
 sendCommand :: forall o. Command -> H.HalogenM State Action () o Aff Unit
 sendCommand = sendRequest <<< RunCommand
@@ -287,23 +296,27 @@ render st =
     ( [ HH.div [ HP.id "toolbar" ]
           [ HH.input
               [ HP.id "search", HP.placeholder "Search", HP.value st.query, HE.onValueInput SetQuery ]
-          , HH.button [ HP.id "undo", HP.title "Undo (Ctrl+Z)", HE.onClick \_ -> RunUndo ] [ HH.text "↶" ]
-          , HH.button [ HP.id "redo", HP.title "Redo (Ctrl+Shift+Z)", HE.onClick \_ -> RunRedo ] [ HH.text "↷" ]
-          , tbtn "zoom-out" "A-" (Zoom (1.0 / 1.1))
-          , tbtn "zoom-in" "A+" (Zoom 1.1)
-          , tbtn "new-group" "New group" NewGroupTop
-          , tbtn "export" "Export" ExportClick
-          , tbtn "import" "Import" ImportClick
-          , tbtn "options" "⚙" OpenOptions
+          , iconBtn "undo" "Undo (Ctrl+Z)" "undo" RunUndo
+          , iconBtn "redo" "Redo (Ctrl+Shift+Z)" "redo" RunRedo
+          , textBtn "zoom-out" "Zoom out" "A−" (Zoom (1.0 / 1.1))
+          , textBtn "zoom-in" "Zoom in" "A+" (Zoom 1.1)
+          , iconBtn "new-group" "New group" "group" NewGroupTop
+          , iconBtn "export" "Export" "export" ExportClick
+          , iconBtn "import" "Import" "import" ImportClick
+          , iconBtn "options" "Options" "gear" OpenOptions
           ]
       ]
         <> noticeBanner st.notice
         <>
           [ HH.div
-              [ HP.id "tree", HP.attr (AttrName "role") "tree", HE.onScroll (Scrolled <<< scrollMetrics) ]
+              [ HP.id "tree"
+              , HP.attr (AttrName "role") "tree"
+              , HE.onScroll (Scrolled <<< scrollMetrics)
+              , HE.onMouseLeave \_ -> SetHover Nothing
+              ]
               [ HK.div
                   [ HP.id "tree-inner", HP.style ("position:relative;height:" <> show totalH <> "px") ]
-                  (Array.mapWithIndex slot slice)
+                  (Array.mapWithIndex slot slice <> dropSlots)
               ]
           ]
     )
@@ -317,37 +330,76 @@ render st =
   -- rather than going blank until the browser fires a corrective scroll
   firstIdx = clamp 0 (max 0 (n - count)) (Int.floor (st.scrollTop / rowH) - overscan)
   slice = Array.slice firstIdx (firstIdx + count) entries
+  -- subtree guide lines for the hovered row (empty when not hovering / renaming)
+  guide = case st.hover, st.editing of
+    Just h, Nothing -> case Array.findIndex (\e -> e.id == h) entries of
+      Just hi -> buildGuide entries hi
+      Nothing -> emptyGuide
+    _, _ -> emptyGuide
   slot i entry = Tuple entry.id $ case Map.lookup entry.id st.model.nodes of
     Nothing -> HH.text ""
-    Just node -> renderNode st (firstIdx + i) entry.depth rowH node
-  tbtn i label act = HH.button [ HP.id i, HE.onClick \_ -> act ] [ HH.text label ]
+    Just node -> renderNode (st.dragId == Just node.id) st.editing guide (firstIdx + i) entry.depth rowH node
+  -- a single guide-styled insertion line marking where a drop would land
+  dropSlots = case st.dragId, st.dropTarget of
+    Just dragId, Just targetId -> case dropPlacement st.model entries dragId targetId of
+      Just dp ->
+        [ Tuple "drop-indicator"
+            ( HH.div
+                [ HP.class_ (ClassName "drop-indicator")
+                , HP.style ("top:" <> show (Int.toNumber dp.atIndex * rowH) <> "px;--depth:" <> show dp.depth)
+                ]
+                []
+            )
+        ]
+      Nothing -> []
+    _, _ -> []
+  iconBtn i label name act =
+    HH.button
+      [ HP.id i, HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ]
+      [ toolbarIcon name ]
+  textBtn i label glyph act =
+    HH.button [ HP.id i, HP.title label, HE.onClick \_ -> act ] [ HH.text glyph ]
 
 noticeBanner :: Maybe String -> Array (H.ComponentHTML Action () Aff)
 noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-renderNode :: State -> Int -> Int -> Number -> Node -> H.ComponentHTML Action () Aff
-renderNode st idx depth rowH n =
+renderNode :: Boolean -> Maybe Editing -> Guide -> Int -> Int -> Number -> Node -> H.ComponentHTML Action () Aff
+renderNode dragging editing guide idx depth rowH n =
   HH.div
-    [ HP.classes (map ClassName [ "row", statusClass n.status ])
+    [ HP.classes (map ClassName (rowClasses dragging n))
     , HP.attr (AttrName "data-node-id") n.id
     , HP.attr (AttrName "data-status") (statusClass n.status)
     , HP.attr (AttrName "role") "treeitem"
     , HP.style
         ( "position:absolute;left:0;right:0;height:" <> show rowH
             <> "px;top:" <> show (Int.toNumber idx * rowH)
-            <> "px;padding-left:" <> show (4 + depth * 14) <> "px"
+            <> "px;--depth:" <> show depth
         )
     , HP.draggable true
+    , HE.onMouseEnter \_ -> SetHover (Just n.id)
     , HE.onDragStart \_ -> DragStart n.id
+    , HE.onDragOver \_ -> DragOver n.id
     , HE.onDrop \_ -> DropOn n.id
     , HE.onDragEnd \_ -> DragEnd
     ]
-    ([ toggleEl n, body st n ] <> buttons n)
+    -- The guide layer is ALWAYS present (just empty when this row has no guide)
+    -- and last. That keeps every row's child list structurally identical across
+    -- hovers: hovering only mutates the guide layer's own children (the lines),
+    -- never inserts/removes a sibling of the toggle/title/actions. Otherwise the
+    -- DOM mutation races a pointer hit-test on the hover-revealed action buttons.
+    -- It paints behind the content via z-index, not DOM order.
+    [ toggleEl n, body editing n, actionsEl n, guideLayer guide idx ]
 
-body :: State -> Node -> H.ComponentHTML Action () Aff
-body st n = case st.editing of
+rowClasses :: Boolean -> Node -> Array String
+rowClasses dragging n =
+  [ "row", statusClass n.status, kindClass n.kind ]
+    <> (if n.active && n.status == Live then [ "active" ] else [])
+    <> (if dragging then [ "dragging" ] else [])
+
+body :: Maybe Editing -> Node -> H.ComponentHTML Action () Aff
+body editing n = case editing of
   Just e | e.id == n.id ->
     HH.input
       [ HP.class_ (ClassName "rename-input")
@@ -361,22 +413,88 @@ body st n = case st.editing of
       [ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow n.id ]
       [ HH.text (displayTitle n) ]
 
+-- Hover-revealed action cluster (rename / close / flatten / delete).
+actionsEl :: Node -> H.ComponentHTML Action () Aff
+actionsEl n = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons n)
+
 buttons :: Node -> Array (H.ComponentHTML Action () Aff)
 buttons n =
-  [ btn "btn-rename" "✎" (StartRename n.id (displayTitle n)) ]
-    <> (if n.status == Live then [ btn "btn-close" "⊗" (CloseClick n.id) ] else [])
-    <> (if n.kind == KGroup then [ btn "btn-flatten" "⇲" (FlattenClick n.id) ] else [])
-    <> [ btn "btn-delete" "✕" (DeleteClick n.id) ]
+  [ btn "btn-rename" "Rename" "pencil" (StartRename n.id (displayTitle n)) ]
+    <> (if n.status == Live then [ btn "btn-close" "Close" "close-circle" (CloseClick n.id) ] else [])
+    <> (if n.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick n.id) ] else [])
+    <> [ btn "btn-delete" "Delete" "trash" (DeleteClick n.id) ]
   where
-  btn cls label act = HH.button [ HP.class_ (ClassName cls), HE.onClick \_ -> act ] [ HH.text label ]
+  btn cls label name act =
+    HH.button
+      [ HP.class_ (ClassName cls), HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ]
+      [ icon name ]
 
 toggleEl :: Node -> H.ComponentHTML Action () Aff
 toggleEl n
-  | Array.null n.children = HH.span [ HP.class_ (ClassName "spacer") ] [ HH.text "" ]
+  | Array.null n.children = HH.span [ HP.class_ (ClassName "spacer") ] []
   | otherwise = HH.span
       [ HP.class_ (ClassName "toggle"), HE.onClick \_ -> Toggle n.id (not n.collapsed) ]
-      [ HH.text (if n.collapsed then "▸" else "▾") ]
+      [ icon (if n.collapsed then "chevron-right" else "chevron-down") ]
 
 statusClass :: Status -> String
 statusClass Live = "live"
 statusClass Closed = "closed"
+
+kindClass :: Kind -> String
+kindClass KWindow = "kind-window"
+kindClass KTab = "kind-tab"
+kindClass KGroup = "kind-group"
+
+-- Icons -----------------------------------------------------------------------
+
+svgNS :: Namespace
+svgNS = Namespace "http://www.w3.org/2000/svg"
+
+-- An icon from the sprite in sidebar.html: <svg class=…><use href="#icon-NAME"/></svg>.
+-- The class is set with setAttribute (HP.attr), not HP.classes: Halogen's
+-- HP.classes writes the `className` *property*, which is a read-only
+-- SVGAnimatedString on SVG elements, so it silently no-ops (leaving the icon
+-- unstyled at its default 300×150 size). aria-hidden/href are attributes too.
+iconWith :: forall w i. Array String -> String -> HH.HTML w i
+iconWith classes name =
+  HH.elementNS svgNS (ElemName "svg")
+    [ HP.attr (AttrName "class") (joinWith " " classes), HP.attr (AttrName "aria-hidden") "true" ]
+    [ HH.elementNS svgNS (ElemName "use") [ HP.attr (AttrName "href") ("#icon-" <> name) ] [] ]
+
+icon :: forall w i. String -> HH.HTML w i
+icon = iconWith [ "button-icon" ]
+
+toolbarIcon :: forall w i. String -> HH.HTML w i
+toolbarIcon = iconWith [ "button-icon", "toolbar-icon" ]
+
+-- Subtree guide overlay (pure geometry lives in Model.Guide) ------------------
+
+-- The always-present absolute overlay for one row; its children (the lines) are
+-- empty unless this row participates in the hovered subtree's guide.
+guideLayer :: Guide -> Int -> H.ComponentHTML Action () Aff
+guideLayer guide idx =
+  HH.span [ HP.class_ (ClassName "guide-layer"), HP.attr (AttrName "aria-hidden") "true" ]
+    (map vline verts <> horizLine horiz)
+  where
+  verts = fromMaybe [] (Map.toUnfoldable <$> Map.lookup idx guide.verticals) :: Array (Tuple Int Int)
+  horiz = Map.lookup idx guide.horizontals
+  vline (Tuple depth flags) =
+    HH.span
+      [ HP.classes (map ClassName [ "guide-line", "guide-vertical" ])
+      , HP.style
+          ( "--guide-depth:" <> show depth
+              <> ";top:" <> half (flags `and` guideTop)
+              <> ";bottom:" <> half (flags `and` guideBottom)
+          )
+      ]
+      []
+  half bit = if bit /= 0 then "0" else "50%"
+  horizLine = case _ of
+    Nothing -> []
+    Just depth ->
+      [ HH.span
+          [ HP.classes (map ClassName [ "guide-line", "guide-horizontal" ])
+          , HP.style ("--guide-depth:" <> show depth)
+          ]
+          []
+      ]
