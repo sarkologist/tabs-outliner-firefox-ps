@@ -24,6 +24,9 @@ for (const t of targets) {
       loader: "js",
     },
     bundle: true,
+    // minify: the bundle is eagerly parsed + evaluated at page load, so its size
+    // is a direct cost of opening the sidebar (the profiler's boot.bootstrap).
+    minify: true,
     format: "iife",
     platform: "browser",
     target: "es2020",

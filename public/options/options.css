@@ -38,14 +38,16 @@ h1 {
 }
 
 table#shortcuts,
-table#toggle {
+table#toggle,
+table#profile {
   width: 100%;
   border-collapse: collapse;
   margin: 12px 0;
 }
 
 #shortcuts th,
-#toggle th {
+#toggle th,
+#profile th {
   text-align: left;
   font-size: 12px;
   color: var(--muted);
@@ -54,10 +56,23 @@ table#toggle {
 }
 
 #shortcuts td,
-#toggle td {
+#toggle td,
+#profile td {
   padding: 6px 4px;
   border-bottom: 1px solid #f3f3f3;
   vertical-align: middle;
+}
+
+#profile td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
 }
 
 h2 {

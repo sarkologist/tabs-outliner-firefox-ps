@@ -34,6 +34,7 @@ data Command
   | Flatten NodeId -- dissolve a group, promoting its children
   | NewGroup (Maybe NodeId) Int -- new folder under parent at index
   | Import Snapshot -- add an exported outline as inert, restorable top-level nodes
+  | Drop NodeId NodeId -- drag dragId onto targetId; resolved here to a Move
 
 -- | Browser-side effects a command implies (interpreted by the background).
 -- | `CreateWindow` opens one new browser window populated with the given urls
@@ -157,6 +158,27 @@ applyCommand now cmd model = case cmd of
       model' = (applyPatch patch model) { nextId = model.nextId + count }
     in
       { model: model', patch, actions: [] }
+
+  -- A drop onto a group lands as its last child; onto anything else, immediately
+  -- before the target as a sibling (the index accounts for the dragged node's own
+  -- removal, so a same-parent downward drag lands before the target). `move` does
+  -- the cycle guard, live-tab routing, and prune. The sidebar's drop preview
+  -- (Model.Drop.dropPlacement) is the visual twin of this.
+  Drop dragId targetId
+    | dragId == targetId -> noChange
+    | otherwise -> case Map.lookup targetId model.nodes of
+      Nothing -> noChange
+      Just target
+        | target.kind == KGroup -> move dragId (Just target.id) (Array.length target.children)
+        | otherwise ->
+            let
+              siblings = case target.parent of
+                Just pid -> fromMaybe [] (_.children <$> Map.lookup pid model.nodes)
+                Nothing -> model.roots
+              shrunk = Array.delete dragId siblings
+              idx = fromMaybe (Array.length shrunk) (Array.elemIndex targetId shrunk)
+            in
+              move dragId target.parent idx
   where
   noChange :: CmdResult
   noChange = { model, patch: emptyPatch, actions: [] }
@@ -365,24 +387,33 @@ restoreTargetOf model nid = case parentNode nid of
 
 -- Request protocol -----------------------------------------------------------
 
-data Request = GetSnapshot | RunCommand Command | Undo | Redo
+-- A window of the visible order: rows [start, start+count) of the order for
+-- `query`, with the active tab's index in `myWindow` when `wantFocus`. With
+-- `tail`, `start` is ignored and the *last* window is returned (the open default,
+-- since new windows land at the bottom — that's where the live nodes are).
+type ViewReq = { start :: Int, count :: Int, query :: String, myWindow :: Maybe Int, wantFocus :: Boolean, tail :: Boolean }
+
+data Request = GetView ViewReq | RunCommand Command | Undo | Redo | Export
 
 encodeRequest :: Request -> Json
-encodeRequest GetSnapshot = encodeJson { tag: "getSnapshot" }
+encodeRequest (GetView r) = encodeJson
+  { tag: "getView", start: r.start, count: r.count, query: r.query, myWindow: r.myWindow, wantFocus: r.wantFocus, tail: r.tail }
 encodeRequest (RunCommand c) = encodeJson { tag: "command", body: encodeCommand c }
 encodeRequest Undo = encodeJson { tag: "undo" }
 encodeRequest Redo = encodeJson { tag: "redo" }
+encodeRequest Export = encodeJson { tag: "export" }
 
 decodeRequest :: Json -> Either String Request
 decodeRequest json = do
   { tag } <- dec json :: Either String { tag :: String }
   case tag of
-    "getSnapshot" -> Right GetSnapshot
+    "getView" -> GetView <$> (dec json :: Either String ViewReq)
     "command" -> do
       { body } <- dec json :: Either String { body :: Json }
       RunCommand <$> decodeCommand body
     "undo" -> Right Undo
     "redo" -> Right Redo
+    "export" -> Right Export
     other -> Left ("unknown request: " <> other)
 
 encodeCommand :: Command -> Json
@@ -398,6 +429,7 @@ encodeCommand = case _ of
   Flatten nid -> encodeJson { tag: "flatten", id: nid }
   NewGroup parent index -> encodeJson { tag: "newGroup", parent, index }
   Import snap -> encodeJson { tag: "import", body: encodeSnapshotData snap }
+  Drop drag target -> encodeJson { tag: "drop", drag, target }
 
 decodeCommand :: Json -> Either String Command
 decodeCommand json = do
@@ -416,6 +448,7 @@ decodeCommand json = do
     "import" -> do
       { body } <- dec json :: Either String { body :: Json }
       Import <$> decodeSnapshot body
+    "drop" -> (\r -> Drop r.drag r.target) <$> (dec json :: Either String { drag :: NodeId, target :: NodeId })
     other -> Left ("unknown command: " <> other)
 
 dec :: forall a. DecodeJson a => Json -> Either String a
