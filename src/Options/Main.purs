@@ -9,13 +9,16 @@ module Options.Main where
 
 import Prelude
 
+import Data.Argonaut.Decode (decodeJson)
+import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Either (Either(..), hush)
 import Data.Maybe (Maybe(..))
 import Data.String.Common (joinWith)
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Commands as Commands
+import Effect.Profile as Profile
 import Effect.Settings as Settings
 import Foreign.Object (Object)
 import Foreign.Object as Object
@@ -34,6 +37,9 @@ main = HA.runHalogenAff do
   body <- HA.awaitBody
   void $ runUI component unit body
 
+type ProfileEntry = { name :: String, ms :: Number }
+type ProfileRec = { label :: String, at :: String, entries :: Array ProfileEntry }
+
 type State =
   { overrides :: Object String
   , recording :: Maybe Sh.Cmd
@@ -42,6 +48,8 @@ type State =
   , toggleMac :: Boolean
   , toggleRecording :: Boolean
   , toggleError :: Maybe String
+  , profEnabled :: Boolean
+  , profile :: Maybe ProfileRec
   }
 
 data Action
@@ -53,6 +61,16 @@ data Action
   | StartRecordToggle
   | CapturedToggle String
   | ResetToggle
+  | ToggleProfiling Boolean
+  | RefreshProfile
+  | DownloadProfile
+  | ClearProfile
+
+-- | The last sidebar-open profile the sidebar persisted ({} / corrupt -> Nothing).
+readProfile :: Effect (Maybe ProfileRec)
+readProfile = do
+  s <- Profile.readLast
+  pure (hush (jsonParser s) >>= (hush <<< decodeJson))
 
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
@@ -64,6 +82,8 @@ component = H.mkComponent
       , toggleMac: false
       , toggleRecording: false
       , toggleError: Nothing
+      , profEnabled: false
+      , profile: Nothing
       }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
@@ -77,7 +97,9 @@ handleAction = case _ of
     overrides <- H.liftEffect Settings.getShortcuts
     mac <- H.liftEffect Commands.isMac
     toggle <- H.liftAff Commands.getSidebarToggle
-    H.modify_ _ { overrides = overrides, listener = Just listener, toggle = toggle, toggleMac = mac }
+    pe <- H.liftEffect Profile.getEnabled
+    pr <- H.liftEffect readProfile
+    H.modify_ _ { overrides = overrides, listener = Just listener, toggle = toggle, toggleMac = mac, profEnabled = pe, profile = pr }
 
   StartRecord cmd -> do
     st <- H.get
@@ -132,6 +154,17 @@ handleAction = case _ of
     cur <- H.liftAff Commands.getSidebarToggle
     H.modify_ _ { toggle = cur, toggleRecording = false, toggleError = Nothing }
 
+  ToggleProfiling b -> do
+    H.liftEffect (Profile.setEnabled b)
+    H.modify_ _ { profEnabled = b }
+  RefreshProfile -> do
+    pr <- H.liftEffect readProfile
+    H.modify_ _ { profile = pr }
+  DownloadProfile -> H.liftEffect Profile.downloadProfile
+  ClearProfile -> do
+    H.liftEffect Profile.clearLast
+    H.modify_ _ { profile = Nothing }
+
 render :: State -> H.ComponentHTML Action () Aff
 render st =
   HH.div [ HP.id "wrap" ]
@@ -145,6 +178,7 @@ render st =
         )
     , HH.button [ HP.id "reset-all", HE.onClick \_ -> ResetAll ] [ HH.text "Reset all to defaults" ]
     , toggleSection st
+    , profilingSection st
     ]
 
 row :: State -> Sh.Cmd -> H.ComponentHTML Action () Aff
@@ -202,6 +236,40 @@ toggleSection st =
   errorNote = case st.toggleError of
     Just msg -> [ HH.div [ HP.class_ (ClassName "warn"), HP.id "toggle-error" ] [ HH.text msg ] ]
     Nothing -> []
+
+-- | Opt-in profiling of the sidebar-open path. Enable here, open the sidebar on
+-- | the tree to measure, then Refresh to see the phase breakdown (and Download it
+-- | for side-by-side notes). Mirrors the original extension's profiling control.
+profilingSection :: State -> H.ComponentHTML Action () Aff
+profilingSection st =
+  HH.div_
+    [ HH.h2_ [ HH.text "Profiling" ]
+    , HH.p [ HP.class_ (ClassName "hint") ]
+        [ HH.text "Measure where time goes when the sidebar opens. Enable it, open the sidebar on the tree you want to measure, then come back here and click Refresh." ]
+    , HH.label [ HP.class_ (ClassName "toggle-row") ]
+        [ HH.input
+            [ HP.type_ HP.InputCheckbox, HP.id "profiling-enabled", HP.checked st.profEnabled, HE.onChecked ToggleProfiling ]
+        , HH.text " Enable profiling"
+        ]
+    , profileTable st.profile
+    , HH.button [ HP.id "profile-refresh", HE.onClick \_ -> RefreshProfile ] [ HH.text "Refresh" ]
+    , HH.button [ HP.id "profile-download", HE.onClick \_ -> DownloadProfile ] [ HH.text "Download JSON" ]
+    , HH.button [ HP.id "profile-clear", HE.onClick \_ -> ClearProfile ] [ HH.text "Clear" ]
+    ]
+
+profileTable :: Maybe ProfileRec -> H.ComponentHTML Action () Aff
+profileTable = case _ of
+  Nothing -> HH.p [ HP.class_ (ClassName "hint") ] [ HH.text "No profile captured yet." ]
+  Just p ->
+    HH.div_
+      [ HH.p [ HP.class_ (ClassName "hint") ] [ HH.text (p.label <> " — " <> p.at) ]
+      , HH.table [ HP.id "profile" ]
+          ( [ HH.tr_ [ HH.th_ [ HH.text "Phase" ], HH.th_ [ HH.text "ms" ] ] ]
+              <> map entryRow p.entries
+          )
+      ]
+  where
+  entryRow e = HH.tr_ [ HH.td_ [ HH.text e.name ], HH.td [ HP.class_ (ClassName "num") ] [ HH.text (show e.ms) ] ]
 
 -- | Warn when two actions resolve to the same combo (the first in allCmds order
 -- | wins on a real keypress, so the other would be dead).

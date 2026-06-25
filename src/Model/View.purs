@@ -52,7 +52,9 @@ type ViewRow =
   , isLastRoot :: Boolean
   }
 
-type View = { total :: Int, rows :: Array ViewRow, focusIndex :: Int }
+-- `serverMs` is the background's own compute time for this window (0 unless
+-- profiling), so the sidebar can split the round-trip into compute vs transport.
+type View = { total :: Int, rows :: Array ViewRow, focusIndex :: Int, serverMs :: Number }
 
 -- | The full visible order for a query, each entry tagged with its subtree end.
 -- | `visible`/`searchVisible` are reused as-is; `withSubtreeEnds` is one O(N) pass.
@@ -148,10 +150,10 @@ rowFromWire r =
   }
 
 encodeView :: View -> Json
-encodeView v = encodeJson { total: v.total, rows: map rowToWire v.rows, focusIndex: v.focusIndex }
+encodeView v = encodeJson { total: v.total, rows: map rowToWire v.rows, focusIndex: v.focusIndex, serverMs: v.serverMs }
 
 decodeView :: Json -> Either String View
 decodeView json = do
   rec <- lmap printJsonDecodeError
-    (decodeJson json :: Either _ { total :: Int, rows :: Array RowWire, focusIndex :: Int })
-  pure { total: rec.total, rows: map rowFromWire rec.rows, focusIndex: rec.focusIndex }
+    (decodeJson json :: Either _ { total :: Int, rows :: Array RowWire, focusIndex :: Int, serverMs :: Number })
+  pure { total: rec.total, rows: map rowFromWire rec.rows, focusIndex: rec.focusIndex, serverMs: rec.serverMs }

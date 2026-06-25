@@ -24,6 +24,7 @@ import Effect (Effect)
 import Effect.Aff (Aff, attempt, delay)
 import Effect.Browser (BrowserApi, getBrowser, getCurrentWindowId)
 import Effect.Channel (onBroadcast, request)
+import Effect.Profile as Profile
 import Effect.Settings as Settings
 import Halogen as H
 import Halogen.Aff as HA
@@ -94,6 +95,8 @@ type State =
   , listener :: Maybe (HS.Listener Action)
   , myWindow :: Maybe Int
   , focusObserved :: Maybe Int -- last revealed focus index, so we follow focus without re-scrolling
+  , profiling :: Boolean
+  , bootProfiled :: Boolean -- the open profile is recorded once, on the first window load
   }
 
 data Action
@@ -136,6 +139,7 @@ component = H.mkComponent
       { api: Nothing, total: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
       , dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
       , viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing
+      , profiling: false, bootProfiled: false
       }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
@@ -144,6 +148,11 @@ component = H.mkComponent
 handleAction :: forall o. Action -> H.HalogenM State Action () o Aff Unit
 handleAction = case _ of
   Initialize -> do
+    -- profiling: `nowMs` here is time since this document started loading, i.e. the
+    -- bundle download + parse + eval + Halogen bootstrap before we ran.
+    t0 <- H.liftEffect Profile.nowMs
+    prof <- H.liftEffect Profile.getEnabled
+    when prof (H.liftEffect Profile.clearBuffer)
     api <- H.liftEffect getBrowser
     H.liftEffect allowDrops
     z <- H.liftEffect getZoom
@@ -162,8 +171,14 @@ handleAction = case _ of
           Nothing -> pure false
     h <- H.liftEffect treeViewportHeight
     win <- H.liftAff (getCurrentWindowId api)
-    H.modify_ _ { viewportH = h, myWindow = win }
+    tSetup <- H.liftEffect Profile.nowMs
+    H.modify_ _ { viewportH = h, myWindow = win, profiling = prof }
+    when prof $ H.liftEffect do
+      Profile.record "boot.bootstrap" t0 -- doc load -> Initialize (bundle eval + Halogen)
+      Profile.record "boot.setup" (tSetup - t0) -- subscribe / measure / window id
     requestView true
+    -- on a warm background the window is loaded by now; stamp first paint + persist
+    when prof (H.liftEffect (Profile.finishBoot "sidebar.open"))
 
   Invalidate -> requestView true
   Remeasure -> do
@@ -288,16 +303,27 @@ attemptView reveal n = do
         count = Int.ceil (st.viewportH / rowH) + overscan * 2 + 1
         start = max 0 (Int.floor (st.scrollTop / rowH) - overscan)
         vr = { start, count, query: st.query, myWindow: st.myWindow, wantFocus: reveal && st.query == "" }
+      tReq <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
       resp <- H.liftAff (attempt (request api (encodeRequest (GetView vr))))
+      tFetch <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
       case resp of
-        Right json | Right v <- decodeView json -> do
-          H.modify_ _ { total = v.total, rows = v.rows, reqStart = start }
-          when (reveal && st.query == "") (maybeReveal v.focusIndex)
-        _
-          | n > 1 -> void $ H.fork do
-              H.liftAff (delay (Milliseconds 200.0))
-              attemptView reveal (n - 1)
-          | otherwise -> pure unit
+        Right json -> case decodeView json of
+          Right v -> do
+            tDecode <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
+            H.modify_ _ { total = v.total, rows = v.rows, reqStart = start }
+            when (reveal && st.query == "") (maybeReveal v.focusIndex)
+            when (st.profiling && not st.bootProfiled) do
+              H.modify_ _ { bootProfiled = true }
+              H.liftEffect do
+                Profile.record "boot.fetch" (tFetch - tReq) -- GetView round-trip
+                Profile.record "boot.server" v.serverMs -- background compute within it
+                Profile.record "boot.decode" (tDecode - tFetch) -- argonaut decode of the view
+          Left _ -> retry
+        Left _ -> retry
+  where
+  retry = when (n > 1) $ void $ H.fork do
+    H.liftAff (delay (Milliseconds 200.0))
+    attemptView reveal (n - 1)
 
 maybeReveal :: forall o. Int -> H.HalogenM State Action () o Aff Unit
 maybeReveal fi = do

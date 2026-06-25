@@ -23,6 +23,7 @@ import Effect.Browser (BrowserApi)
 import Effect.Browser as Browser
 import Effect.Channel as Channel
 import Effect.Persist as Persist
+import Effect.Profile as Profile
 import Model.Codec (encodeSnapshot)
 import Model.Command (BrowserAction(..), Request(..), applyCommand, decodeRequest)
 import Model.Event (BrowserEvent)
@@ -108,6 +109,7 @@ main = launchAff_ do
   -- is given here.
   liftEffect $ Channel.onRequest api \reqJson -> case decodeRequest reqJson of
     Right (GetView vr) -> do
+      ts0 <- liftEffect Profile.nowMs
       m <- liftEffect (Ref.read ref)
       v <- liftEffect (Ref.read versionRef)
       cache <- liftEffect (Ref.read viewRef)
@@ -123,8 +125,10 @@ main = launchAff_ do
         focusIndex = case vr.myWindow of
           Just w | vr.wantFocus -> focusIndexOf w order m
           _ -> -1
-        view = { total: Array.length order, rows: sliceView m order vr.start vr.count, focusIndex }
-      pure (encodeView view)
+        rows = sliceView m order vr.start vr.count
+        total = Array.length order
+      ts1 <- liftEffect Profile.nowMs
+      pure (encodeView { total, rows, focusIndex, serverMs: ts1 - ts0 })
     Right (RunCommand cmd) -> do
       m <- liftEffect (Ref.read ref)
       t <- liftEffect nowMs
