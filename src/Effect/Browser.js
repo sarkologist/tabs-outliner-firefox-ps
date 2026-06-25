@@ -63,6 +63,23 @@ export const subscribeImpl = (api) => (sink) => () => {
   t.onAttached.addListener((tabId, info) =>
     sink.tabAttached({ tabId, windowId: info.newWindowId, index: info.newPosition })()
   );
+  // Dragging a tab OUT to a brand-new window (tab tear-off) is not reliably
+  // reported by onAttached in Firefox — the new window can be born already
+  // holding the tab, with no onCreated/onAttached to observe — so onAttached
+  // alone misses the move. onDetached, however, always fires when a tab leaves a
+  // window. Resolve where the tab actually landed and feed it through the same
+  // attach path; resolveWindow mints the window node if it was never announced.
+  // For an ordinary window-to-window move (which does fire onAttached) this is a
+  // harmless idempotent re-home; a tab that vanished (detach then close) get()s
+  // nothing, so we leave it for onRemoved.
+  t.onDetached?.addListener((tabId) =>
+    // Two-arg then: swallow only a tabs.get rejection (the tab was closed right
+    // after detaching — onRemoved handles it), not a throw from the handler, which
+    // should surface like every other listener's does.
+    Promise.resolve(api.tabs.get(tabId)).then((tab) => {
+      if (tab) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
+    }, () => {})
+  );
   w.onCreated.addListener((win) => sink.windowOpened(win.id)());
   w.onRemoved.addListener((winId) => sink.windowClosed(winId)());
 };

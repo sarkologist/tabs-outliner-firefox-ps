@@ -85,6 +85,23 @@ spec = describe "Model.Reconcile" do
     (_.children <$> win2) `shouldEqual` Just [ "n4", "n2" ] -- the tab joined window 2
     (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n3")
 
+  it "attaching a tab to a never-announced window lazily creates that window node" do
+    -- the tab tear-off path: a tab is dragged out to a brand-new window that was
+    -- never seen via WindowOpened, and only the attach (resolved from the detach)
+    -- arrives. resolveWindow must mint the window node so the move is tracked.
+    let
+      m = runEvents
+        [ openTab 11 1 0 "A" true
+        , openTab 12 1 1 "B" false
+        , TabAttached { tabId: 12, windowId: 2, index: 0 }
+        ]
+    m.roots `shouldEqual` [ "n1", "n4" ]
+    (_.windowId <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just 2)
+    (_.children <$> Map.lookup "n4" m.nodes) `shouldEqual` Just [ "n3" ]
+    (_.parent <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just "n4")
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ] -- window 1 keeps A
+    Map.lookup 2 m.byWindow `shouldEqual` Just "n4"
+
   it "closes a window subtree to history but keeps it as a root" do
     let
       m = runEvents
