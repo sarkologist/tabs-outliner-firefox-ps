@@ -177,8 +177,6 @@ handleAction = case _ of
       Profile.record "boot.bootstrap" t0 -- doc load -> Initialize (bundle eval + Halogen)
       Profile.record "boot.setup" (tSetup - t0) -- subscribe / measure / window id
     requestView true
-    -- on a warm background the window is loaded by now; stamp first paint + persist
-    when prof (H.liftEffect (Profile.finishBoot "sidebar.open"))
 
   Invalidate -> requestView true
   Remeasure -> do
@@ -312,12 +310,17 @@ attemptView reveal n = do
             tDecode <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
             H.modify_ _ { total = v.total, rows = v.rows, reqStart = start }
             when (reveal && st.query == "") (maybeReveal v.focusIndex)
+            -- record the open profile once, when the FIRST window actually loads
+            -- (which on a cold/suspended background is after it has woken + loaded,
+            -- so boot.firstWindow / boot.paint reveal that wait).
             when (st.profiling && not st.bootProfiled) do
               H.modify_ _ { bootProfiled = true }
               H.liftEffect do
-                Profile.record "boot.fetch" (tFetch - tReq) -- GetView round-trip
+                Profile.record "boot.firstWindow" tFetch -- absolute: doc load -> window in hand
+                Profile.record "boot.fetch" (tFetch - tReq) -- the (final) GetView round-trip
                 Profile.record "boot.server" v.serverMs -- background compute within it
                 Profile.record "boot.decode" (tDecode - tFetch) -- argonaut decode of the view
+                Profile.finishBoot "sidebar.open" -- first paint mark + persist
           Left _ -> retry
         Left _ -> retry
   where
