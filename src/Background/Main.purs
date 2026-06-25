@@ -23,13 +23,14 @@ import Effect.Browser (BrowserApi)
 import Effect.Browser as Browser
 import Effect.Channel as Channel
 import Effect.Persist as Persist
-import Model.Codec (encodePatch)
+import Model.Codec (encodeSnapshot)
 import Model.Command (BrowserAction(..), Request(..), applyCommand, decodeRequest)
 import Model.Event (BrowserEvent)
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
 import Model.Types (Patch)
 import Model.Undo (applyEntry, inversePatch, undoable)
+import Model.View (OrderEntry, computeOrder, encodeView, focusIndexOf, sliceView)
 
 nowMs :: Effect Number
 nowMs = (unwrap <<< unInstant) <$> now
@@ -47,10 +48,14 @@ main = launchAff_ do
   let
     model0 = Persist.modelFromLoaded loaded.nodes loaded.roots
     rematched = rematchOnStartup t0 wins model0
-  -- broadcast too, so a sidebar already open at startup gets the re-match
-  -- (it loads the rest straight from IndexedDB)
-  persistAndBroadcast api db rematched.patch
   ref <- liftEffect (Ref.new rematched.model)
+  -- The model's structural version: bumped on every change so the sidebar's view
+  -- cache knows when its visible order is stale. The cache memoizes the order for
+  -- the last (version, query), so scrolling (same query, no edits) is O(window).
+  versionRef <- liftEffect (Ref.new 0)
+  viewRef <- liftEffect (Ref.new { version: (-1), query: "", order: ([] :: Array OrderEntry) })
+  -- broadcast too, so a sidebar already open at startup re-fetches its window
+  persistAndBroadcast api db versionRef rematched.patch
   -- Undo/redo are background-only state (not part of the shared, persisted Model):
   -- stacks of inverse patches. Browser events never touch them — you don't undo a
   -- tab the browser opened — so they survive arbitrary live activity between a
@@ -69,7 +74,7 @@ main = launchAff_ do
       m <- liftEffect (Ref.read ref)
       let s = applyBrowser t ev m
       liftEffect (Ref.write s.model ref)
-      persistAndBroadcast api db s.patch
+      persistAndBroadcast api db versionRef s.patch
 
     -- Undo/redo step: pop one inverse patch off `from`, apply it (reusing the
     -- command persist/broadcast path), and push the resulting inverse onto `to`.
@@ -87,18 +92,36 @@ main = launchAff_ do
             Ref.write a.model ref
             Ref.write tail from
             Ref.modify_ (pushBounded a.inverse) to
-          persistAndBroadcast api db a.patch
+          persistAndBroadcast api db versionRef a.patch
           traverse_ (runAction api) a.actions
           pure ackJson
 
   -- Live browser events.
   liftEffect $ Browser.subscribe api \ev -> launchAff_ (dispatch ev)
 
-  -- Serve the sidebar's commands. A command applies, persists, broadcasts the
-  -- patch to every sidebar, and runs its browser actions (focus/create/remove).
-  -- (The sidebar loads its initial model from IndexedDB directly, so there is no
-  -- snapshot request.)
+  -- Serve the sidebar. A command applies, persists, bumps the version, broadcasts
+  -- `invalidate`, and runs its browser actions; a GetView returns one window of the
+  -- visible order. The sidebar holds no model — it only ever renders the window it
+  -- is given here.
   liftEffect $ Channel.onRequest api \reqJson -> case decodeRequest reqJson of
+    Right (GetView vr) -> do
+      m <- liftEffect (Ref.read ref)
+      v <- liftEffect (Ref.read versionRef)
+      cache <- liftEffect (Ref.read viewRef)
+      -- reuse the cached order unless the model changed or the query differs;
+      -- a pure scroll (same version + query) skips the O(N) recompute.
+      order <-
+        if cache.version == v && cache.query == vr.query then pure cache.order
+        else do
+          let o = computeOrder vr.query m
+          liftEffect (Ref.write { version: v, query: vr.query, order: o } viewRef)
+          pure o
+      let
+        focusIndex = case vr.myWindow of
+          Just w | vr.wantFocus -> focusIndexOf w order m
+          _ -> -1
+        view = { total: Array.length order, rows: sliceView m order vr.start vr.count, focusIndex }
+      pure (encodeView view)
     Right (RunCommand cmd) -> do
       m <- liftEffect (Ref.read ref)
       t <- liftEffect nowMs
@@ -112,19 +135,33 @@ main = launchAff_ do
         when (undoable cmd && not (isEmptyPatch r.patch) && not (Array.any relocates r.actions)) do
           Ref.modify_ (pushBounded (inversePatch t m r.patch)) undoRef
           Ref.write [] redoRef
-      persistAndBroadcast api db r.patch
+      persistAndBroadcast api db versionRef r.patch
       traverse_ (runAction api) r.actions
       pure ackJson
     Right Undo -> stepStack undoRef redoRef
     Right Redo -> stepStack redoRef undoRef
+    -- export needs the whole tree; it's a rare, explicit user action, so paying
+    -- O(total) once here (rather than keeping a model copy in the sidebar) is fine.
+    Right Export -> do
+      m <- liftEffect (Ref.read ref)
+      pure (encodeSnapshot m)
     _ -> pure ackJson
 
--- Persist + broadcast a patch, skipping the no-op patches that focus/close/
--- restore commands and ignored events produce (no IDB tx, no message).
-persistAndBroadcast :: BrowserApi -> Persist.Db -> Patch -> Aff Unit
-persistAndBroadcast api db patch = unless (isEmptyPatch patch) do
+-- Bump the structural version, ping open sidebars to re-fetch, then persist.
+-- The version bump + broadcast are synchronous with the caller's model write (no
+-- await between), so a GetView can never observe the new model against a stale
+-- cached order, and a slow/failed persist can't strand the sidebar on stale rows
+-- (it re-fetches from the in-memory model, not IndexedDB). No-op patches are
+-- skipped entirely. Persist is last, purely for durability across a bg restart.
+persistAndBroadcast :: BrowserApi -> Persist.Db -> Ref.Ref Int -> Patch -> Aff Unit
+persistAndBroadcast api db versionRef patch = unless (isEmptyPatch patch) do
+  liftEffect do
+    Ref.modify_ (_ + 1) versionRef
+    Channel.broadcast api invalidateMsg
   Persist.writePatch db patch
-  liftEffect (Channel.broadcast api (encodePatch patch))
+
+invalidateMsg :: Json
+invalidateMsg = encodeJson { invalidate: true }
 
 isEmptyPatch :: Patch -> Boolean
 isEmptyPatch p = Array.null p.upserts && Array.null p.removes && isNothing p.roots

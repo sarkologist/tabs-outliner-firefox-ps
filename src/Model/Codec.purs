@@ -13,6 +13,8 @@ module Model.Codec
   , encodeSnapshotData
   , decodeSnapshot
   , Snapshot
+  , kindStr
+  , parseKind
   ) where
 
 import Prelude

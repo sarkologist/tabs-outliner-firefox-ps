@@ -5,21 +5,23 @@ import Prelude
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Model.Command (Command(..))
-import Model.Drop (dropCommand, dropPlacement)
-import Model.Tree (visible)
+import Model.Command (Command(..), applyCommand)
+import Model.Drop (dropPlacement)
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
+import Model.View (Row)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
 node :: String -> Kind -> Maybe String -> Array String -> Node
 node id kind parent children = (defaultNode id kind 0.0) { parent = parent, children = children }
 
--- Command has no Eq/Show; project a Move to a comparable record (Nothing otherwise).
-moveOf :: Command -> Maybe { nid :: String, parent :: Maybe String, index :: Int }
-moveOf = case _ of
-  Move nid parent index -> Just { nid, parent, index }
-  _ -> Nothing
+-- a projected row, only the fields dropPlacement reads
+row :: String -> Int -> Int -> Int -> Kind -> Row
+row id index depth subtreeEnd kind =
+  { id, index, depth, subtreeEnd, kind, title: "", live: false, active: false, collapsed: false, hasChildren: false, isLastRoot: false }
+
+childrenOf :: String -> Model -> Maybe (Array String)
+childrenOf id m = _.children <$> Map.lookup id m.nodes
 
 -- W(window) -> [A, B, C], three tab siblings
 siblings3 :: Model
@@ -33,7 +35,7 @@ siblings3 = emptyModel
       ]
   }
 
--- W(window) -> [A(tab), G(group) -> [C(tab)]]
+-- W(window) -> [A(tab), G(group) -> [C(tab)]]; visible order [W@0,A@1,G@2,C@3]
 fixture :: Model
 fixture = emptyModel
   { roots = [ "W" ]
@@ -45,52 +47,49 @@ fixture = emptyModel
       ]
   }
 
-collapse :: String -> Model -> Model
-collapse id m = m { nodes = Map.update (\n -> Just (n { collapsed = true })) id m.nodes }
-
 spec :: Spec Unit
 spec = describe "Model.Drop" do
   describe "dropPlacement" do
-    -- visible: [W@0, A@1, G@2, C@3]
     it "drops onto a group as its last child (line below the subtree, one deeper)" do
-      dropPlacement fixture (visible fixture) "A" "G"
+      -- drag A (span [1,2)) onto group G (idx 2, depth 1, subtreeEnd 4)
+      dropPlacement { index: 1, subtreeEnd: 2 } (row "G" 2 1 4 KGroup)
         `shouldEqual` Just { atIndex: 4, depth: 2 }
 
     it "drops onto a non-group as a sibling before it (line at the target's depth)" do
-      dropPlacement fixture (visible fixture) "C" "A"
+      dropPlacement { index: 3, subtreeEnd: 4 } (row "A" 1 1 2 KTab)
         `shouldEqual` Just { atIndex: 1, depth: 1 }
 
     it "appends right under a collapsed group (its subtree isn't visible)" do
-      let m = collapse "G" fixture
-      dropPlacement m (visible m) "A" "G"
+      -- collapsed G has no visible children, so its subtreeEnd is 3
+      dropPlacement { index: 1, subtreeEnd: 2 } (row "G" 2 1 3 KGroup)
         `shouldEqual` Just { atIndex: 3, depth: 2 }
 
     it "has no placement when dropping onto itself" do
-      dropPlacement fixture (visible fixture) "A" "A" `shouldEqual` Nothing
+      dropPlacement { index: 1, subtreeEnd: 2 } (row "A" 1 1 2 KTab) `shouldEqual` Nothing
 
     it "has no placement when dropping into its own subtree (would be a cycle)" do
-      dropPlacement fixture (visible fixture) "W" "C" `shouldEqual` Nothing
+      -- drag W (span [0,4)) onto C (idx 3, inside the span)
+      dropPlacement { index: 0, subtreeEnd: 4 } (row "C" 3 2 4 KTab) `shouldEqual` Nothing
 
-  describe "dropCommand" do
-    -- the index must land the node where the preview says: immediately BEFORE the
-    -- target. `move` deletes the node first, so dragging downward past a sibling
-    -- needs the target's index in the post-removal list, not the original.
+  describe "Drop command (resolved by applyCommand)" do
     it "drops downward past a sibling, landing before the target (not after)" do
-      -- drag A onto C in [A,B,C]: A removed -> [B,C], C at 1 -> insert -> [B,A,C]
-      moveOf (dropCommand "A" (node "C" KTab (Just "W") []) siblings3)
-        `shouldEqual` Just { nid: "A", parent: Just "W", index: 1 }
+      -- drag A onto C in [A,B,C]: A removed -> [B,C], insert before C -> [B,A,C]
+      childrenOf "W" (applyCommand 0.0 (Drop "A" "C") siblings3).model
+        `shouldEqual` Just [ "B", "A", "C" ]
 
     it "drops upward before the target" do
-      -- drag C onto A: C removed -> [A,B], A at 0 -> insert -> [C,A,B]
-      moveOf (dropCommand "C" (node "A" KTab (Just "W") []) siblings3)
-        `shouldEqual` Just { nid: "C", parent: Just "W", index: 0 }
+      childrenOf "W" (applyCommand 0.0 (Drop "C" "A") siblings3).model
+        `shouldEqual` Just [ "C", "A", "B" ]
 
     it "drops onto a group as its last child" do
-      moveOf (dropCommand "A" (node "G" KGroup (Just "W") [ "C" ]) fixture)
-        `shouldEqual` Just { nid: "A", parent: Just "G", index: 1 }
+      let m = (applyCommand 0.0 (Drop "A" "G") fixture).model
+      childrenOf "G" m `shouldEqual` Just [ "C", "A" ]
+      childrenOf "W" m `shouldEqual` Just [ "G" ]
 
-    it "drops onto a window (a container) as its last child, not a sibling before it" do
-      -- a window is just a container now, so a drop onto W lands inside it; the old
-      -- KWindow path inserted before W as a root sibling (parent Nothing)
-      moveOf (dropCommand "B" (node "W" KGroup Nothing [ "A", "B", "C" ]) siblings3)
-        `shouldEqual` Just { nid: "B", parent: Just "W", index: 3 }
+    it "drops onto a container window as its last child, not a sibling before it" do
+      childrenOf "W" (applyCommand 0.0 (Drop "B" "W") siblings3).model
+        `shouldEqual` Just [ "A", "C", "B" ]
+
+    it "a self-drop is a no-op (doesn't shuffle the node to the end)" do
+      childrenOf "W" (applyCommand 0.0 (Drop "A" "A") siblings3).model
+        `shouldEqual` Just [ "A", "B", "C" ]
