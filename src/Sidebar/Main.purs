@@ -22,6 +22,7 @@ import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Aff (Aff, attempt, delay)
+import Effect.BootCache as BootCache
 import Effect.Browser (BrowserApi, getBrowser, getCurrentWindowId)
 import Effect.Channel (onBroadcast, request)
 import Effect.Profile as Profile
@@ -176,6 +177,16 @@ handleAction = case _ of
     when prof $ H.liftEffect do
       Profile.record "boot.bootstrap" t0 -- doc load -> Initialize (bundle eval + Halogen)
       Profile.record "boot.setup" (tSetup - t0) -- subscribe / measure / window id
+    -- Paint instantly from the last cached top window. A fresh open against a
+    -- suspended background otherwise waits for it to wake + reload the whole model
+    -- (~½s on a big tree); this shows content immediately, then requestView swaps
+    -- in the live window (and reveals the active tab) once the background answers.
+    cached <- H.liftEffect BootCache.load
+    case jsonParser cached >>= decodeView of
+      Right v -> do
+        H.modify_ _ { total = v.total, rows = v.rows }
+        when prof (H.liftEffect (Profile.nowMs >>= Profile.record "boot.cached"))
+      Left _ -> pure unit
     requestView true
 
   Invalidate -> requestView true
@@ -309,6 +320,8 @@ attemptView reveal n = do
           Right v -> do
             tDecode <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
             H.modify_ _ { total = v.total, rows = v.rows, reqStart = start }
+            -- cache the top window so the next (possibly cold) open paints instantly
+            when (start == 0 && st.query == "") (H.liftEffect (BootCache.save (stringify json)))
             when (reveal && st.query == "") (maybeReveal v.focusIndex)
             -- record the open profile once, when the FIRST window actually loads
             -- (which on a cold/suspended background is after it has woken + loaded,
