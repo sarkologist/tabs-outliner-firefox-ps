@@ -62,15 +62,7 @@ applyBrowser now ev model = case ev of
       Just { head: wNid, tail } ->
         let model' = model { pendingRestoreWindows = tail }
         in case Map.lookup wNid model'.nodes of
-          Just wn | wn.kind == KGroup ->
-            let
-              wn' = wn { windowId = Just windowId, closedAt = Nothing }
-              -- queue this window's restorable tabs so each rebinds (in creation
-              -- order) as its onCreated arrives, instead of spawning a duplicate
-              model'' = model' { pendingRestore = Map.insert windowId (restorableTabs wNid model') model'.pendingRestore }
-              patch = { upserts: [ wn' ], removes: [], roots: Nothing }
-            in
-              commit model''.nextId patch model''
+          Just wn | wn.kind == KGroup -> bindRestoredWindow wNid windowId wn model'
           -- the restored node was deleted before its window opened: drop the
           -- stale queue entry and treat this as a brand-new window.
           _ -> freshWindow now windowId model'
@@ -142,14 +134,62 @@ orElse old new = case new of
 openTab :: Number -> OpenedTab -> Model -> Step
 openTab now t model = case liveTabNode t.tabId model of
   Just _ -> noop model -- already tracking this browser tab; ignore duplicate
-  Nothing -> case popPendingRestore t.windowId model of
-    -- a restore into this window is pending: rebind the next queued node to this
-    -- tab (matched by window + creation order, NOT url, which the browser may
-    -- report differently for the recreated tab)
-    Just r -> case Map.lookup r.node r.model.nodes of
-      Just n -> rebindRestored now t r.node n r.model
-      Nothing -> openFresh now t r.model -- queued node vanished; consume the slot, open fresh
-    Nothing -> openFresh now t model
+  Nothing -> case bindPendingWindowForTab t.windowId model of
+    -- tabs-before-window: this tab is the first sign of a restored window whose
+    -- WindowOpened hasn't arrived (Firefox does not order windows.onCreated before
+    -- the new window's tabs.onCreated). Bind the queued window node onto this new
+    -- browser window, then rebind this tab from the queue that bind just populated —
+    -- instead of minting a duplicate window + tab and stranding the originals.
+    Just bound -> andThen bound (rebindOrFresh now t bound.model)
+    -- window already known (WindowOpened arrived first), or no restore is pending
+    Nothing -> rebindOrFresh now t model
+
+-- | Pop the node queued to rebind in this tab's window and re-use it; open fresh if
+-- | the queue is empty or the queued node vanished. The window + creation-order
+-- | match is deliberate — the browser may report a different url for the recreated
+-- | tab than the one stored.
+rebindOrFresh :: Number -> OpenedTab -> Model -> Step
+rebindOrFresh now t model = case popPendingRestore t.windowId model of
+  Just r -> case Map.lookup r.node r.model.nodes of
+    Just n -> rebindRestored now t r.node n r.model
+    Nothing -> openFresh now t r.model -- queued node vanished; consume the slot, open fresh
+  Nothing -> openFresh now t model
+
+-- | Sequence two steps: keep the later model, combine both patches (for persist +
+-- | broadcast).
+andThen :: Step -> Step -> Step
+andThen a b = { model: b.model, patch: mergePatch a.patch b.patch }
+
+-- | The tabs-before-window restore binding. When a tab surfaces for a browser
+-- | window that is not a known live window yet and a window restore is pending,
+-- | bind the head of the pending-restore-window queue onto this new browser window —
+-- | exactly what `WindowOpened` does when it arrives first. `Nothing` when the
+-- | window is already known, no restore is pending, or the queued head is stale,
+-- | leaving the caller on the ordinary fresh-tab path.
+bindPendingWindowForTab :: Int -> Model -> Maybe Step
+bindPendingWindowForTab windowId model
+  | isJust (liveWindowNode windowId model) = Nothing
+  | otherwise = case Array.uncons model.pendingRestoreWindows of
+      Just { head: wNid, tail } -> case Map.lookup wNid model.nodes of
+        Just wn | wn.kind == KGroup ->
+          Just (bindRestoredWindow wNid windowId wn (model { pendingRestoreWindows = tail }))
+        _ -> Nothing
+      Nothing -> Nothing
+
+-- | Bind closed window node `wNid` onto freshly-opened browser window `windowId`:
+-- | it goes live in place and its restorable direct-child tabs are queued (FIFO) so
+-- | each rebinds in creation order as its onCreated arrives, instead of a duplicate
+-- | window/tab being spawned. Shared by both arrival orders (`WindowOpened`, or the
+-- | window's first tab when its WindowOpened lags). `model` must already have the
+-- | queue head advanced.
+bindRestoredWindow :: NodeId -> Int -> Node -> Model -> Step
+bindRestoredWindow wNid windowId wn model =
+  let
+    wn' = wn { windowId = Just windowId, closedAt = Nothing }
+    model' = model { pendingRestore = Map.insert windowId (restorableTabs wNid model) model.pendingRestore }
+    patch = { upserts: [ wn' ], removes: [], roots: Nothing }
+  in
+    commit model'.nextId patch model'
 
 -- | Pop the next node queued to rebind in `windowId` (FIFO), returning it and the
 -- | model with the queue advanced.

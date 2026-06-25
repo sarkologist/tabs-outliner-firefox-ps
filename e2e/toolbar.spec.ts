@@ -129,6 +129,51 @@ test.describe("toolbar", () => {
     await expect(page.locator('[data-status="closed"]').filter({ hasText: "OrigTab" })).toBeVisible();
   });
 
+  // Regression: an imported window was never a live browser window here, so it can
+  // only be restored by recreating it via windows.create — and Firefox can fire the
+  // new window's tabs.onCreated before its windows.onCreated. Restoring must still
+  // match the runtime window/tabs onto the existing imported nodes (they go live in
+  // place), not mint a duplicate window + tabs and strand the imports as closed.
+  test("restoring an imported window rebinds its nodes instead of duplicating them", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+
+    const snapshot = JSON.stringify({
+      nodes: [
+        node({ id: "w1", kind: "group", children: ["t1", "t2"], title: "ImportedWindow" }),
+        node({ id: "t1", kind: "tab", parent: "w1", title: "ImpA", url: "http://impa" }),
+        node({ id: "t2", kind: "tab", parent: "w1", title: "ImpB", url: "http://impb" }),
+      ],
+      roots: ["w1"],
+    });
+    page.on("filechooser", (fc) =>
+      fc.setFiles({ name: "outline.json", mimeType: "application/json", buffer: Buffer.from(snapshot) })
+    );
+    await page.locator("#import").click();
+    await expect(page.getByText("ImportedWindow")).toBeVisible();
+    // the three imported nodes (window + two tabs) land as closed history
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    // restore it by clicking the imported window row's title
+    await page
+      .locator('.row[data-status="closed"]')
+      .filter({ hasText: "ImportedWindow" })
+      .locator(".title")
+      .click();
+
+    // the imported nodes go live IN PLACE: no closed rows remain, and the tree still
+    // holds exactly six nodes (3 seeded + 3 imported) — no phantom window/tab nodes
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    await expect(page.locator("[role=treeitem]")).toHaveCount(6);
+    await expect.poll(() => countNodes(page)).toBe(6);
+
+    // the restored tabs really reopened in one brand-new browser window
+    const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+    expect(windows.length).toBe(2);
+    const restored = windows.find((w: any) => w.id !== 1);
+    expect(restored.tabs.map((t: any) => t.url).sort()).toEqual(["http://impa", "http://impb"]);
+  });
+
   test("imports a real ~26k-node portable export without choking", async ({ page }) => {
     test.skip(!existsSync(REAL_EXPORT), "real export file not present on this machine");
     test.setTimeout(90_000);

@@ -112,16 +112,21 @@ export function installFakeBrowser(seed: Seed) {
       create: (props: any = {}) => {
         const id = ++winSeq;
         wins.set(id, { id, tabIds: [] });
-        ev.winCreated._emit({ id });
         if (props.tabId != null) {
-          // create a window holding an existing tab: onCreated (above) then the
-          // tab's onAttached into it — the order the background relies on
+          // create a window holding an existing tab: onCreated then the tab's
+          // onAttached into it — the order the background relies on for a re-home
+          ev.winCreated._emit({ id });
           driver.attachTab(props.tabId, id, 0);
         } else {
+          // create a window populated with urls (a window restore). Firefox does
+          // NOT guarantee windows.onCreated arrives before the new window's
+          // tabs.onCreated — the tabs can surface first — so emit the tabs BEFORE
+          // the window event, the harder ordering the restore rebind must survive.
           const urls = Array.isArray(props.url) ? props.url : props.url != null ? [props.url] : [];
           urls.forEach((u: string, i: number) =>
             driver.openTab({ id: ++tabSeq, windowId: id, url: u, title: u, active: i === 0 })
           );
+          ev.winCreated._emit({ id });
         }
         return Promise.resolve({ id, tabs: wins.get(id)!.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },

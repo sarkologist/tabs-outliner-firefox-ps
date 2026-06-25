@@ -252,6 +252,34 @@ spec = describe "Model.Command" do
     (_.parent <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just "n4")
     reopened.roots `shouldEqual` [ "n1", "n4" ]
 
+  -- Firefox does NOT guarantee windows.onCreated arrives before the new window's
+  -- tabs.onCreated, so a restored window's tabs can surface before its WindowOpened.
+  -- The restore must still rebind the existing nodes in place — not mint a duplicate
+  -- window + tabs and strand the originals as closed history.
+  it "restoring an imported window rebinds even when its tabs arrive before WindowOpened" do
+    let
+      grp = (defaultNode "g1" KGroup 0.0) { title = "W", children = [ "t1", "t2" ] }
+      t1 = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1" }
+      t2 = (defaultNode "t2" KTab 0.0) { title = "B", url = Just "http://b", parent = Just "g1" }
+      -- base.nextId is 4: g1 -> n4, t1 -> n5, t2 -> n6
+      saved = (applyCommand 0.0 (Import { nodes: [ grp, t1, t2 ], roots: [ "g1" ] }) base).model
+      activated = applyCommand 0.0 (Activate "n4") saved
+      -- TABS-FIRST: both recreated tabs' onCreated arrive (reporting redirected urls,
+      -- so only window+order matching can work) BEFORE the window's onCreated.
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ openTabU 71 5 0 "http://a?x" "A"
+        , openTabU 72 5 1 "http://b?x" "B"
+        , WindowOpened { windowId: 5 }
+        ]
+    -- the imported window node n4 went live in place, bound to browser window 5
+    (_.windowId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 5)
+    -- its tabs rebound to their existing nodes (n5, n6) — no crossing, no duplicates
+    (_.tabId <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just 71)
+    (_.tabId <$> Map.lookup "n6" reopened.nodes) `shouldEqual` Just (Just 72)
+    -- no phantom window/tab nodes were minted, and n4 stayed put at the root
+    reopened.roots `shouldEqual` [ "n1", "n4" ]
+    Map.size reopened.nodes `shouldEqual` Map.size saved.nodes
+
   -- Dragging a LIVE tab to a new owning container drives the real browser tab; the
   -- tree is left untouched and re-settles from the resulting onAttached/onCreated.
   describe "live-tab moves drive the browser" do
