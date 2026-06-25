@@ -16,7 +16,7 @@ import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Int.Bits (and)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.String.Common (joinWith)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
@@ -109,6 +109,8 @@ data Action
   | CloseClick NodeId
   | DeleteClick NodeId
   | FlattenClick NodeId
+  | MoveTopLevelClick NodeId
+  | MoveBottomClick NodeId
   | NewGroupTop
   | StartRename NodeId String
   | EditInput String
@@ -193,6 +195,8 @@ handleAction = case _ of
   CloseClick nid -> sendCommand (CloseNode nid)
   DeleteClick nid -> sendCommand (Delete nid)
   FlattenClick nid -> sendCommand (Flatten nid)
+  MoveTopLevelClick nid -> sendCommand (MoveTopLevel nid)
+  MoveBottomClick nid -> sendCommand (MoveBottom nid)
   NewGroupTop -> sendCommand (NewGroup Nothing 0)
 
   StartRename nid text -> H.modify_ _ { editing = Just { id: nid, text }, hover = Nothing }
@@ -382,9 +386,10 @@ render st =
       Just hi -> buildGuide entries hi
       Nothing -> emptyGuide
     _, _ -> emptyGuide
+  lastRoot = Array.last st.model.roots
   slot i entry = Tuple entry.id $ case Map.lookup entry.id st.model.nodes of
     Nothing -> HH.text ""
-    Just node -> renderNode (st.dragId == Just node.id) st.editing guide (firstIdx + i) entry.depth rowH node
+    Just node -> renderNode (st.dragId == Just node.id) st.editing guide (firstIdx + i) entry.depth rowH (Just node.id == lastRoot) node
   -- a single guide-styled insertion line marking where a drop would land
   dropSlots = case st.dragId, st.dropTarget of
     Just dragId, Just targetId -> case dropPlacement st.model entries dragId targetId of
@@ -411,8 +416,8 @@ noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-renderNode :: Boolean -> Maybe Editing -> Guide -> Int -> Int -> Number -> Node -> H.ComponentHTML Action () Aff
-renderNode dragging editing guide idx depth rowH n =
+renderNode :: Boolean -> Maybe Editing -> Guide -> Int -> Int -> Number -> Boolean -> Node -> H.ComponentHTML Action () Aff
+renderNode dragging editing guide idx depth rowH isLastRoot n =
   HH.div
     [ HP.classes (map ClassName (rowClasses dragging n))
     , HP.attr (AttrName "data-node-id") n.id
@@ -436,7 +441,7 @@ renderNode dragging editing guide idx depth rowH n =
     -- never inserts/removes a sibling of the toggle/title/actions. Otherwise the
     -- DOM mutation races a pointer hit-test on the hover-revealed action buttons.
     -- It paints behind the content via z-index, not DOM order.
-    [ toggleEl n, body editing n, actionsEl n, guideLayer guide idx ]
+    [ toggleEl n, body editing n, actionsEl isLastRoot n, guideLayer guide idx ]
 
 rowClasses :: Boolean -> Node -> Array String
 rowClasses dragging n =
@@ -459,15 +464,23 @@ body editing n = case editing of
       [ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow n.id ]
       [ HH.text (displayTitle n) ]
 
--- Hover-revealed action cluster (rename / close / flatten / delete).
-actionsEl :: Node -> H.ComponentHTML Action () Aff
-actionsEl n = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons n)
+-- Hover-revealed action cluster (rename / close / flatten / move-to-top-level /
+-- move-to-bottom / delete). `isLastRoot` gates "move to bottom": there is nowhere
+-- below the last top-level node to send it.
+actionsEl :: Boolean -> Node -> H.ComponentHTML Action () Aff
+actionsEl isLastRoot n = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons isLastRoot n)
 
-buttons :: Node -> Array (H.ComponentHTML Action () Aff)
-buttons n =
+buttons :: Boolean -> Node -> Array (H.ComponentHTML Action () Aff)
+buttons isLastRoot n =
   [ btn "btn-rename" "Rename" "pencil" (StartRename n.id (displayTitle n)) ]
     <> (if isLive n then [ btn "btn-close" "Close" "close-circle" (CloseClick n.id) ] else [])
     <> (if n.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick n.id) ] else [])
+    -- "To top level" applies to any NESTED node (a top-level node has nowhere up to
+    -- go); "to bottom" applies to any node that isn't already the last root. Both are
+    -- offered on every kind, including live tabs (which get promoted into their own
+    -- new window, like a drag to the root).
+    <> (if isJust n.parent then [ btn "btn-to-top-level" "Move to top level" "root-outdent" (MoveTopLevelClick n.id) ] else [])
+    <> (if not isLastRoot then [ btn "btn-to-bottom" "Move to bottom" "root-down" (MoveBottomClick n.id) ] else [])
     <> [ btn "btn-delete" "Delete" "trash" (DeleteClick n.id) ]
   where
   btn cls label name act =

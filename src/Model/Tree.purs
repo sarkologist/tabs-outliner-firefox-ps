@@ -106,6 +106,21 @@ liveWindowNode w model = do
   n <- Map.lookup nid model.nodes
   if n.windowId == Just w && isLive n then Just n else Nothing
 
+-- | The topmost ancestor of `nid` (the root of the tree it sits in) — walks
+-- | parent links to the node that has no parent. O(depth). A node with no parent
+-- | is its own root ancestor. Used to position a "move to top level" just after
+-- | the root the node currently belongs to. The visited set is a corruption
+-- | backstop: a parent cycle (only reachable via tampered persisted data — every
+-- | command keeps the forest acyclic) stops the walk instead of looping forever.
+rootAncestor :: NodeId -> Model -> NodeId
+rootAncestor = go Set.empty
+  where
+  go seen nid model
+    | Set.member nid seen = nid
+    | otherwise = case Map.lookup nid model.nodes >>= _.parent of
+        Just pid -> go (Set.insert nid seen) pid model
+        Nothing -> nid
+
 -- | Is `ancestor` an ancestor of (or equal to) `start`? Walks parent links
 -- | upward — O(depth), not O(subtree). Used for move cycle-detection.
 isAncestorOrSelf :: NodeId -> NodeId -> Model -> Boolean

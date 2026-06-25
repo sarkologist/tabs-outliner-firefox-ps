@@ -5,7 +5,7 @@ import Prelude
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Model.Tree (applyPatch, insertAtClamped, isLiveWindow, moveWithin, searchVisible, subtreeIds, visible)
+import Model.Tree (applyPatch, insertAtClamped, isLiveWindow, moveWithin, rootAncestor, searchVisible, subtreeIds, visible)
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -66,6 +66,40 @@ spec = describe "Model.Tree" do
     it "collects the subtree including the root" do
       subtreeIds "C" fixture `shouldEqual` [ "C", "D" ]
       subtreeIds "A" fixture `shouldEqual` [ "A", "B", "C", "D" ]
+
+  describe "rootAncestor" do
+    -- a model whose nesting is wired via parent back-links (which rootAncestor
+    -- walks): A -> [B, C]; C -> [D]
+    let
+      linked = applyPatch
+        { upserts:
+            [ (defaultNode "A" KGroup 0.0) { children = [ "B", "C" ] }
+            , (defaultNode "B" KTab 0.0) { parent = Just "A" }
+            , (defaultNode "C" KGroup 0.0) { parent = Just "A", children = [ "D" ] }
+            , (defaultNode "D" KTab 0.0) { parent = Just "C" }
+            ]
+        , removes: []
+        , roots: Just [ "A" ]
+        }
+        emptyModel
+    it "walks up to the topmost ancestor" do
+      rootAncestor "D" linked `shouldEqual` "A" -- D -> C -> A
+      rootAncestor "B" linked `shouldEqual` "A" -- B -> A
+    it "is the node itself when it has no parent" do
+      rootAncestor "A" linked `shouldEqual` "A"
+    it "stops on a parent cycle instead of looping forever (corruption backstop)" do
+      let
+        cyclic = applyPatch
+          { upserts:
+              [ (defaultNode "X" KGroup 0.0) { parent = Just "Y" }
+              , (defaultNode "Y" KGroup 0.0) { parent = Just "X" }
+              ]
+          , removes: []
+          , roots: Just []
+          }
+          emptyModel
+      -- terminates at the first re-seen node rather than recursing forever
+      rootAncestor "X" cyclic `shouldEqual` "X"
 
   describe "isLiveWindow" do
     -- a container is a window exactly while it directly owns a live tab; the
