@@ -253,13 +253,16 @@ openFresh now t model =
   in
     commit (rw.nextId + 1) patch model
 
--- | A restored closed tab re-using its existing node (no duplicate). Position in
--- | the tree is unchanged; the node just goes Live again. The pending-restore
--- | queue was already advanced by `popPendingRestore`.
+-- | A restored closed tab re-using its existing node (no duplicate). The node goes
+-- | Live again; the pending-restore queue was already advanced by `popPendingRestore`.
+-- | If it was nested under ANOTHER tab — the original outline allows that, a browser
+-- | window cannot — it is flattened to a direct child of its window at the browser
+-- | position, keeping the model's invariant that a live tab's parent is its window.
+-- | A tab already directly under its window (the common case) stays exactly in place.
 rebindRestored :: Number -> OpenedTab -> NodeId -> Node -> Model -> Step
-rebindRestored _ t _ n model =
+rebindRestored _ t nid n model =
   let
-    n' = n
+    live = n
       { tabId = Just t.tabId
       , active = t.active
       , title = t.title
@@ -267,9 +270,19 @@ rebindRestored _ t _ n model =
       , favIconUrl = t.favIconUrl
       , closedAt = Nothing
       }
-    patch = { upserts: [ n' ], removes: [], roots: Nothing }
   in
-    commit model.nextId patch model
+    case liveWindowNode t.windowId model of
+      Just w | n.parent /= Just w.id ->
+        let
+          oldParentUpsert = case n.parent >>= (\pid -> Map.lookup pid model.nodes) of
+            Just p -> [ p { children = Array.delete nid p.children } ]
+            Nothing -> []
+          w' = w { children = insertAtClamped t.index nid (Array.delete nid w.children) }
+          patch = { upserts: oldParentUpsert <> [ w', live { parent = Just w.id } ], removes: [], roots: Nothing }
+        in
+          commit model.nextId patch model
+      -- already a direct child of its window, or window not yet known: rebind in place
+      _ -> commit model.nextId { upserts: [ live ], removes: [], roots: Nothing } model
 
 activateTab :: Int -> Int -> Model -> Step
 activateTab tabId windowId model = case liveTabNode tabId model of
