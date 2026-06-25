@@ -18,9 +18,10 @@ import Data.Int.Bits (and)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.Common (joinWith)
+import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
-import Effect.Aff (Aff, attempt)
+import Effect.Aff (Aff, attempt, delay)
 import Effect.Browser (BrowserApi, getBrowser, getCurrentWindowId)
 import Effect.Channel (onBroadcast, request)
 import Effect.Settings as Settings
@@ -268,7 +269,15 @@ handleAction = case _ of
 -- | index *changed* (tracked in `focusObserved`), so unrelated updates and the
 -- | user's own scrolling are left alone, and never during search.
 requestView :: forall o. Boolean -> H.HalogenM State Action () o Aff Unit
-requestView reveal = do
+requestView reveal = attemptView reveal 20
+
+-- | Fetch the window; on failure (a suspended background still waking up, a flaky
+-- | wake-delivery) retry a bounded number of times. The retry is *forked* so it
+-- | never blocks the action queue, and each attempt re-reads state so it always
+-- | fetches the current window. The background's post-boot ping is the primary
+-- | recovery path; this is the belt-and-suspenders.
+attemptView :: forall o. Boolean -> Int -> H.HalogenM State Action () o Aff Unit
+attemptView reveal n = do
   st <- H.get
   case st.api of
     Nothing -> pure unit
@@ -284,7 +293,11 @@ requestView reveal = do
         Right json | Right v <- decodeView json -> do
           H.modify_ _ { total = v.total, rows = v.rows, reqStart = start }
           when (reveal && st.query == "") (maybeReveal v.focusIndex)
-        _ -> pure unit
+        _
+          | n > 1 -> void $ H.fork do
+              H.liftAff (delay (Milliseconds 200.0))
+              attemptView reveal (n - 1)
+          | otherwise -> pure unit
 
 maybeReveal :: forall o. Int -> H.HalogenM State Action () o Aff Unit
 maybeReveal fi = do

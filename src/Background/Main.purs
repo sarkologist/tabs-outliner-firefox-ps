@@ -54,8 +54,11 @@ main = launchAff_ do
   -- the last (version, query), so scrolling (same query, no edits) is O(window).
   versionRef <- liftEffect (Ref.new 0)
   viewRef <- liftEffect (Ref.new { version: (-1), query: "", order: ([] :: Array OrderEntry) })
-  -- broadcast too, so a sidebar already open at startup re-fetches its window
-  persistAndBroadcast api db versionRef rematched.patch
+  -- persist the re-match for durability, but do NOT broadcast yet: we aren't
+  -- serving requests until onRequest is registered below, and the sidebar whose
+  -- message woke this (possibly suspended) page must hear its refetch ping only
+  -- once we can answer it.
+  unless (isEmptyPatch rematched.patch) (Persist.writePatch db rematched.patch)
   -- Undo/redo are background-only state (not part of the shared, persisted Model):
   -- stacks of inverse patches. Browser events never touch them — you don't undo a
   -- tab the browser opened — so they survive arbitrary live activity between a
@@ -146,6 +149,12 @@ main = launchAff_ do
       m <- liftEffect (Ref.read ref)
       pure (encodeSnapshot m)
     _ -> pure ackJson
+
+  -- We can now serve requests: ping every open sidebar to (re)fetch its window.
+  -- UNCONDITIONAL — on a clean restart the re-match patch is empty, but a sidebar
+  -- that opened while this (event) page was suspended still needs this wake-up to
+  -- recover from its first request racing our boot.
+  liftEffect (Channel.broadcast api invalidateMsg)
 
 -- Bump the structural version, ping open sidebars to re-fetch, then persist.
 -- The version bump + broadcast are synchronous with the caller's model write (no
