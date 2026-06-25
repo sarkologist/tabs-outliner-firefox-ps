@@ -160,21 +160,31 @@ rebindOrFresh now t model = case popPendingRestore t.windowId model of
 andThen :: Step -> Step -> Step
 andThen a b = { model: b.model, patch: mergePatch a.patch b.patch }
 
--- | The tabs-before-window restore binding. When a tab surfaces for a browser
--- | window that is not a known live window yet and a window restore is pending,
--- | bind the head of the pending-restore-window queue onto this new browser window —
--- | exactly what `WindowOpened` does when it arrives first. `Nothing` when the
--- | window is already known, no restore is pending, or the queued head is stale,
--- | leaving the caller on the ordinary fresh-tab path.
+-- | The tabs-before-window restore binding. Firefox does not guarantee a new
+-- | window's `windows.onCreated` precedes its tabs' `tabs.onCreated`, so a restored
+-- | window's first tab can surface before its `WindowOpened`. When it does — an
+-- | unknown window, a restore pending — bind the head of the pending-restore-window
+-- | queue onto this new browser window, exactly what `WindowOpened` does when it
+-- | arrives first; the caller then rebinds the tab. A stale head (its node deleted
+-- | meanwhile) is dropped, also like `WindowOpened`, so it can't wedge later
+-- | restores. `Nothing` when the window is already known or no restore is pending.
+-- |
+-- | Trade-off (accepted, in keeping with this module's waived interleavings): as
+-- | with the existing `WindowOpened` FIFO, a brand-new *user* window opening during
+-- | the brief CreateWindow round-trip can be mistaken for the restored one — now via
+-- | its first tab too, not only its window event.
 bindPendingWindowForTab :: Int -> Model -> Maybe Step
 bindPendingWindowForTab windowId model
   | isJust (liveWindowNode windowId model) = Nothing
   | otherwise = case Array.uncons model.pendingRestoreWindows of
-      Just { head: wNid, tail } -> case Map.lookup wNid model.nodes of
-        Just wn | wn.kind == KGroup ->
-          Just (bindRestoredWindow wNid windowId wn (model { pendingRestoreWindows = tail }))
-        _ -> Nothing
       Nothing -> Nothing
+      Just { head: wNid, tail } ->
+        let model' = model { pendingRestoreWindows = tail }
+        in case Map.lookup wNid model'.nodes of
+          Just wn | wn.kind == KGroup -> Just (bindRestoredWindow wNid windowId wn model')
+          -- stale head: drop it (the queue is advanced in model') and let the caller
+          -- open this tab fresh, so a deleted restore can't block the next one
+          _ -> Just (noop model')
 
 -- | Bind closed window node `wNid` onto freshly-opened browser window `windowId`:
 -- | it goes live in place and its restorable direct-child tabs are queued (FIFO) so

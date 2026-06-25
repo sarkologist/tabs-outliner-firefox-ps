@@ -280,6 +280,25 @@ spec = describe "Model.Command" do
     reopened.roots `shouldEqual` [ "n1", "n4" ]
     Map.size reopened.nodes `shouldEqual` Map.size saved.nodes
 
+  -- If the restoring window node is deleted before its (tabs-first) browser window
+  -- surfaces, the stale queue head must be dropped — not left to wedge the NEXT
+  -- restore — matching how WindowOpened handles a vanished restore node.
+  it "a tabs-first restore whose node was deleted drops the stale queue head" do
+    let
+      grp = (defaultNode "g1" KGroup 0.0) { title = "W", children = [ "t1" ] }
+      t1 = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1" }
+      -- base.nextId is 4: g1 -> n4, t1 -> n5
+      saved = (applyCommand 0.0 (Import { nodes: [ grp, t1 ], roots: [ "g1" ] }) base).model
+      activated = applyCommand 0.0 (Activate "n4") saved -- queues n4 in pendingRestoreWindows
+      -- the user deletes the restoring window node before its window opens
+      deleted = (applyCommand 0.0 (Delete "n4") activated.model).model
+      -- then its recreated tab surfaces tabs-first for the as-yet-unknown window
+      after = (applyBrowser 0.0 (openTabU 71 5 0 "http://a?x" "A") deleted).model
+    -- the stale head was consumed, so the queue is not wedged for later restores
+    after.pendingRestoreWindows `shouldEqual` []
+    -- and the orphaned tab opened as a fresh live window node (n6 window, n7 tab)
+    Map.lookup 71 after.byTab `shouldEqual` Just "n7"
+
   -- Dragging a LIVE tab to a new owning container drives the real browser tab; the
   -- tree is left untouched and re-settles from the resulting onAttached/onCreated.
   describe "live-tab moves drive the browser" do
