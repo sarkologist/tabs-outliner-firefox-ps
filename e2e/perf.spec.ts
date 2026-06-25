@@ -68,7 +68,7 @@ test("opening the sidebar on a ~26k-node tree (window projection, warm backgroun
             // channel envelope: { kind: "req", body: <request> }
             const v: any = await (globalThis as any).browser.runtime.sendMessage({
               kind: "req",
-              body: { tag: "getView", start: 0, count: 1, query: "", myWindow: null, wantFocus: false },
+              body: { tag: "getView", start: 0, count: 1, query: "", myWindow: null, wantFocus: false, tail: false },
             });
             return v && v.total ? v.total : 0;
           } catch {

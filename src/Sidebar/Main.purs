@@ -98,6 +98,7 @@ type State =
   , focusObserved :: Maybe Int -- last revealed focus index, so we follow focus without re-scrolling
   , profiling :: Boolean
   , bootProfiled :: Boolean -- the open profile is recorded once, on the first window load
+  , opened :: Boolean -- false until the first live window loads; while false we land at the bottom
   }
 
 data Action
@@ -140,7 +141,7 @@ component = H.mkComponent
       { api: Nothing, total: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
       , dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
       , viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing
-      , profiling: false, bootProfiled: false
+      , profiling: false, bootProfiled: false, opened: false
       }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
@@ -177,14 +178,16 @@ handleAction = case _ of
     when prof $ H.liftEffect do
       Profile.record "boot.bootstrap" t0 -- doc load -> Initialize (bundle eval + Halogen)
       Profile.record "boot.setup" (tSetup - t0) -- subscribe / measure / window id
-    -- Paint instantly from the last cached top window. A fresh open against a
-    -- suspended background otherwise waits for it to wake + reload the whole model
-    -- (~½s on a big tree); this shows content immediately, then requestView swaps
-    -- in the live window (and reveals the active tab) once the background answers.
+    -- Paint instantly from the last cached *bottom* window (the open default). A
+    -- fresh open against a suspended background otherwise waits for it to wake +
+    -- reload the whole model (~½s on a big tree); this shows content immediately,
+    -- then requestView swaps in the live window (and reveals the active tab).
     cached <- H.liftEffect BootCache.load
     case jsonParser cached >>= decodeView of
       Right v -> do
-        H.modify_ _ { total = v.total, rows = v.rows }
+        let sb = max 0.0 (Int.toNumber v.total * (baseRowHeight * clampZoom z) - h)
+        H.modify_ _ { total = v.total, rows = v.rows, scrollTop = sb }
+        H.liftEffect (scrollTreeTo sb)
         when prof (H.liftEffect (Profile.nowMs >>= Profile.record "boot.cached"))
       Left _ -> pure unit
     requestView true
@@ -310,8 +313,11 @@ attemptView reveal n = do
         rowH = baseRowHeight * st.zoom
         -- +1 covers the partial rows at both viewport edges
         count = Int.ceil (st.viewportH / rowH) + overscan * 2 + 1
+        -- land at the bottom on the first load (new windows / live nodes are there);
+        -- after that the window simply follows the scroll position.
+        tail = reveal && not st.opened
         start = max 0 (Int.floor (st.scrollTop / rowH) - overscan)
-        vr = { start, count, query: st.query, myWindow: st.myWindow, wantFocus: reveal && st.query == "" }
+        vr = { start, count, query: st.query, myWindow: st.myWindow, wantFocus: reveal && st.query == "", tail }
       tReq <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
       resp <- H.liftAff (attempt (request api (encodeRequest (GetView vr))))
       tFetch <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
@@ -319,9 +325,15 @@ attemptView reveal n = do
         Right json -> case decodeView json of
           Right v -> do
             tDecode <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
-            H.modify_ _ { total = v.total, rows = v.rows, reqStart = start }
-            -- cache the top window so the next (possibly cold) open paints instantly
-            when (start == 0 && st.query == "") (H.liftEffect (BootCache.save (stringify json)))
+            -- `tail` ignores `start`; the bg served the last window, so mirror its start.
+            let actualStart = if tail then max 0 (v.total - count) else start
+            H.modify_ _ { total = v.total, rows = v.rows, reqStart = actualStart, opened = true }
+            when tail do
+              let sb = max 0.0 (Int.toNumber v.total * rowH - st.viewportH)
+              H.modify_ _ { scrollTop = sb }
+              H.liftEffect (scrollTreeTo sb)
+            -- cache the bottom window so the next (possibly cold) open paints it instantly
+            when (actualStart + count >= v.total && st.query == "") (H.liftEffect (BootCache.save (stringify json)))
             when (reveal && st.query == "") (maybeReveal v.focusIndex)
             -- record the open profile once, when the FIRST window actually loads
             -- (which on a cold/suspended background is after it has woken + loaded,

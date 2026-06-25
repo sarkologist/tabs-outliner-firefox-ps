@@ -89,6 +89,22 @@ test.describe("sidebar view", () => {
     await expect.poll(() => treeScrollTop(page)).toBe(0);
   });
 
+  // No active tab anywhere, so nothing to reveal — the open default alone decides
+  // where we land. It should be the BOTTOM (new windows / live nodes collect there).
+  const noActiveTall = {
+    windows: [
+      { id: 1, tabs: Array.from({ length: 100 }, (_, i) => ({ id: 200 + i, url: `http://t${i}`, title: `Tab ${i}` })) },
+    ],
+  };
+
+  test("on open, defaults to the bottom of the tree", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, noActiveTall);
+    await expect(page.getByText("Tab 99", { exact: true })).toBeVisible();
+    await expect.poll(() => treeScrollTop(page)).toBeGreaterThan(0);
+    // the top of the tree is scrolled past — not even mounted (virtualized)
+    await expect(page.getByText("Tab 0", { exact: true })).toHaveCount(0);
+  });
+
   test("follows focus: scrolls when a far-down tab becomes active", async ({ page }) => {
     await bootBackgroundAndSidebar(page, tallSeed(0));
     await expect.poll(() => treeScrollTop(page)).toBe(0);

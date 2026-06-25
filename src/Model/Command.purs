@@ -388,14 +388,16 @@ restoreTargetOf model nid = case parentNode nid of
 -- Request protocol -----------------------------------------------------------
 
 -- A window of the visible order: rows [start, start+count) of the order for
--- `query`, with the active tab's index in `myWindow` when `wantFocus`.
-type ViewReq = { start :: Int, count :: Int, query :: String, myWindow :: Maybe Int, wantFocus :: Boolean }
+-- `query`, with the active tab's index in `myWindow` when `wantFocus`. With
+-- `tail`, `start` is ignored and the *last* window is returned (the open default,
+-- since new windows land at the bottom — that's where the live nodes are).
+type ViewReq = { start :: Int, count :: Int, query :: String, myWindow :: Maybe Int, wantFocus :: Boolean, tail :: Boolean }
 
 data Request = GetView ViewReq | RunCommand Command | Undo | Redo | Export
 
 encodeRequest :: Request -> Json
 encodeRequest (GetView r) = encodeJson
-  { tag: "getView", start: r.start, count: r.count, query: r.query, myWindow: r.myWindow, wantFocus: r.wantFocus }
+  { tag: "getView", start: r.start, count: r.count, query: r.query, myWindow: r.myWindow, wantFocus: r.wantFocus, tail: r.tail }
 encodeRequest (RunCommand c) = encodeJson { tag: "command", body: encodeCommand c }
 encodeRequest Undo = encodeJson { tag: "undo" }
 encodeRequest Redo = encodeJson { tag: "redo" }

@@ -14,8 +14,8 @@ const seed = {
   ],
 };
 
-test("a cold open paints instantly from the cached top window (no background yet)", async ({ context }) => {
-  // Session 1: a normal boot renders the tree and caches the top window.
+test("a cold open paints instantly from the cached bottom window (no background yet)", async ({ context }) => {
+  // Session 1: a normal boot renders the tree and caches the bottom window.
   const a = await context.newPage();
   await bootBackgroundAndSidebar(a, seed);
   await expect(a.getByText("Alpha")).toBeVisible();
