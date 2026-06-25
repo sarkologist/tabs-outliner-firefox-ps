@@ -280,6 +280,38 @@ spec = describe "Model.Command" do
     reopened.roots `shouldEqual` [ "n1", "n4" ]
     Map.size reopened.nodes `shouldEqual` Map.size saved.nodes
 
+  -- The original's outline nests tabs UNDER other tabs (a tab can hold child tabs);
+  -- a live browser window never does (its tabs are flat under the window), which is
+  -- why this only bites imported trees. A nested tab's owning window is its nearest
+  -- container ANCESTOR, not its immediate parent — so restoring opens one window for
+  -- the whole tab forest and rebinds every tab in place, rather than treating the
+  -- parent tab as a window (which can't bind → a duplicate window + tab).
+  it "restoring an imported window rebinds tabs nested under tabs (no duplicate window)" do
+    let
+      grp = (defaultNode "g1" KGroup 0.0) { title = "W", children = [ "t1" ] }
+      a = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1", children = [ "t2" ] }
+      b = (defaultNode "t2" KTab 0.0) { title = "B", url = Just "http://b", parent = Just "t1" }
+      -- base.nextId is 4: g1 -> n4, t1 -> n5 (A), t2 -> n6 (B, nested under A)
+      saved = (applyCommand 0.0 (Import { nodes: [ grp, a, b ], roots: [ "g1" ] }) base).model
+      activated = applyCommand 0.0 (Activate "n4") saved
+    -- BOTH tabs belong to the one restored window — a single CreateWindow, in order
+    activated.actions `shouldEqual` [ CreateWindow [ "http://a", "http://b" ] ]
+    activated.model.pendingRestoreWindows `shouldEqual` [ "n4" ]
+    let
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ WindowOpened { windowId: 5 }
+        , openTabU 71 5 0 "http://a?x" "A"
+        , openTabU 72 5 1 "http://b?x" "B"
+        ]
+    -- the window and both nested tabs go live in place, bound to their nodes
+    (_.windowId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 5)
+    (_.tabId <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just 71)
+    (_.tabId <$> Map.lookup "n6" reopened.nodes) `shouldEqual` Just (Just 72)
+    -- the nested tab stays nested under its parent tab (outline structure preserved)
+    (_.parent <$> Map.lookup "n6" reopened.nodes) `shouldEqual` Just (Just "n5")
+    -- no phantom window/tab nodes
+    Map.size reopened.nodes `shouldEqual` Map.size saved.nodes
+
   -- If the restoring window node is deleted before its (tabs-first) browser window
   -- surfaces, the stale queue head must be dropped — not left to wedge the NEXT
   -- restore — matching how WindowOpened handles a vanished restore node.

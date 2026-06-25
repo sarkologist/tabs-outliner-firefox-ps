@@ -213,19 +213,25 @@ popPendingRestore windowId model = do
       else Map.insert windowId tail model.pendingRestore
   pure { node: head, model: model { pendingRestore = pr } }
 
--- | The window's own restorable tabs — its DIRECT closed tab children with a url,
--- | in child order. Only these are recreated in this window (`Command.restore`
--- | groups tabs by their immediate parent, so a nested group's tabs open in their
--- | own new window), so the rebind queue lines up with the onCreated events.
+-- | The window's restorable tabs, in the order their recreated tabs' onCreated will
+-- | arrive: every closed-with-url tab in its tab FOREST — direct children and tabs
+-- | nested under those tabs (the original outline nests tabs under tabs) — in
+-- | preorder, NOT descending into a nested sub-window (a child group), whose own
+-- | tabs open in their own window. This lines the rebind FIFO up with the preorder
+-- | `Command.restore` lays the CreateWindow urls out in.
 restorableTabs :: NodeId -> Model -> List NodeId
-restorableTabs root model = List.fromFoldable (Array.filter isRestorable kids)
+restorableTabs root model = List.fromFoldable (go root)
   where
-  kids = case Map.lookup root model.nodes of
-    Just wn -> wn.children
+  go nid = case Map.lookup nid model.nodes of
     Nothing -> []
-  isRestorable nid = case Map.lookup nid model.nodes of
-    Just n -> n.kind == KTab && isNothing n.tabId && isJust n.url
-    Nothing -> false
+    Just n ->
+      let
+        here = if n.kind == KTab && isNothing n.tabId && isJust n.url then [ nid ] else []
+        -- descend through the window itself and through tabs (tabs nest), but halt
+        -- at a nested group — that is a separate window with its own restore
+        kids = if nid == root || n.kind == KTab then Array.concatMap go n.children else []
+      in
+        here <> kids
 
 -- | A brand-new tab: create a node under its (possibly new) window.
 openFresh :: Number -> OpenedTab -> Model -> Step
