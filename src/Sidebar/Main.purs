@@ -314,8 +314,9 @@ attemptView reveal n = do
         -- +1 covers the partial rows at both viewport edges
         count = Int.ceil (st.viewportH / rowH) + overscan * 2 + 1
         -- land at the bottom on the first load (new windows / live nodes are there);
-        -- after that the window simply follows the scroll position.
-        tail = reveal && not st.opened
+        -- after that the window simply follows the scroll position. Never while
+        -- searching — results read top-down, so a query starts at the top.
+        tail = reveal && not st.opened && st.query == ""
         start = max 0 (Int.floor (st.scrollTop / rowH) - overscan)
         vr = { start, count, query: st.query, myWindow: st.myWindow, wantFocus: reveal && st.query == "", tail }
       tReq <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
