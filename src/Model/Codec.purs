@@ -7,8 +7,6 @@
 module Model.Codec
   ( encodeNode
   , decodeNode
-  , encodePatch
-  , decodePatch
   , encodeSnapshot
   , encodeSnapshotData
   , decodeSnapshot
@@ -27,7 +25,7 @@ import Data.Bifunctor (lmap)
 import Data.Either (Either)
 import Data.Map as Map
 import Data.Maybe (Maybe)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch)
+import Model.Types (Kind(..), Model, Node, NodeId)
 
 type NodeRec =
   { id :: String
@@ -54,15 +52,6 @@ encodeNode = encodeJson <<< toRec
 
 decodeNode :: Json -> Either String Node
 decodeNode json = map fromRec (lmap printJsonDecodeError (decodeJson json))
-
-encodePatch :: Patch -> Json
-encodePatch p = encodeJson { upserts: map toRec p.upserts, removes: p.removes, roots: p.roots }
-
-decodePatch :: Json -> Either String Patch
-decodePatch json = do
-  rec <- lmap printJsonDecodeError
-    (decodeJson json :: Either _ { upserts :: Array NodeRec, removes :: Array NodeId, roots :: Maybe (Array NodeId) })
-  pure { upserts: map fromRec rec.upserts, removes: rec.removes, roots: rec.roots }
 
 encodeSnapshot :: Model -> Json
 encodeSnapshot model = encodeJson

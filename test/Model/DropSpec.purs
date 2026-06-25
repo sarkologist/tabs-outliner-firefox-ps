@@ -8,7 +8,7 @@ import Data.Tuple (Tuple(..))
 import Model.Command (Command(..), applyCommand)
 import Model.Drop (dropPlacement)
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
-import Model.View (Row)
+import Model.View (ViewRow)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -16,7 +16,7 @@ node :: String -> Kind -> Maybe String -> Array String -> Node
 node id kind parent children = (defaultNode id kind 0.0) { parent = parent, children = children }
 
 -- a projected row, only the fields dropPlacement reads
-row :: String -> Int -> Int -> Int -> Kind -> Row
+row :: String -> Int -> Int -> Int -> Kind -> ViewRow
 row id index depth subtreeEnd kind =
   { id, index, depth, subtreeEnd, kind, title: "", live: false, active: false, collapsed: false, hasChildren: false, isLastRoot: false }
 

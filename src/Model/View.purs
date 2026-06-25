@@ -3,7 +3,7 @@
 -- | of the visible order and gets back exactly the rows in view. Pure (so it is
 -- | unit-tested without a browser); the background owns the order cache around it.
 module Model.View
-  ( Row
+  ( ViewRow
   , View
   , OrderEntry
   , computeOrder
@@ -38,7 +38,7 @@ type OrderEntry = { id :: NodeId, depth :: Int, subtreeEnd :: Int }
 
 -- One projected row: everything a sidebar needs to render it and treat it as a
 -- command / drag target, with no access to the model.
-type Row =
+type ViewRow =
   { id :: NodeId
   , index :: Int
   , depth :: Int
@@ -52,7 +52,7 @@ type Row =
   , isLastRoot :: Boolean
   }
 
-type View = { total :: Int, rows :: Array Row, focusIndex :: Int }
+type View = { total :: Int, rows :: Array ViewRow, focusIndex :: Int }
 
 -- | The full visible order for a query, each entry tagged with its subtree end.
 -- | `visible`/`searchVisible` are reused as-is; `withSubtreeEnds` is one O(N) pass.
@@ -83,7 +83,7 @@ withSubtreeEnds entries =
       }
 
 -- | Project the rows in window `[start, start+count)` of an already-computed order.
-sliceView :: Model -> Array OrderEntry -> Int -> Int -> Array Row
+sliceView :: Model -> Array OrderEntry -> Int -> Int -> Array ViewRow
 sliceView model order start count =
   let
     total = Array.length order
@@ -95,7 +95,7 @@ sliceView model order start count =
   in
     Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model lastRoot (s + off) oe) window)
 
-toRow :: Model -> Maybe NodeId -> Int -> OrderEntry -> Maybe Row
+toRow :: Model -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
 toRow model lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   { id: n.id
   , index: i
@@ -133,14 +133,14 @@ type RowWire =
   , isLastRoot :: Boolean
   }
 
-rowToWire :: Row -> RowWire
+rowToWire :: ViewRow -> RowWire
 rowToWire r =
   { id: r.id, index: r.index, depth: r.depth, subtreeEnd: r.subtreeEnd, kind: kindStr r.kind
   , title: r.title, live: r.live, active: r.active, collapsed: r.collapsed
   , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot
   }
 
-rowFromWire :: RowWire -> Row
+rowFromWire :: RowWire -> ViewRow
 rowFromWire r =
   { id: r.id, index: r.index, depth: r.depth, subtreeEnd: r.subtreeEnd, kind: parseKind r.kind
   , title: r.title, live: r.live, active: r.active, collapsed: r.collapsed

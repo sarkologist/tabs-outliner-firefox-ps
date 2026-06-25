@@ -9,7 +9,7 @@ module Sidebar.Main where
 
 import Prelude
 
-import Data.Argonaut.Core (Json, stringify)
+import Data.Argonaut.Core (stringify)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -41,7 +41,7 @@ import Model.PortableImport (portableToSnapshot)
 import Model.Scroll as Scroll
 import Model.Shortcuts as Sh
 import Model.Types (Kind(..), NodeId)
-import Model.View (Row, decodeView)
+import Model.View (ViewRow, decodeView)
 import Web.Event.Event (Event)
 import Web.UIEvent.KeyboardEvent (key)
 
@@ -78,7 +78,7 @@ type Editing = { id :: NodeId, text :: String }
 type State =
   { api :: Maybe BrowserApi
   , total :: Int
-  , rows :: Array Row
+  , rows :: Array ViewRow
   , reqStart :: Int -- start index of the currently-loaded window
   , editing :: Maybe Editing
   , dragId :: Maybe NodeId
@@ -113,7 +113,7 @@ data Action
   | EditKey String
   | CommitRename
   | CancelRename
-  | DragStart Row
+  | DragStart ViewRow
   | DragOver NodeId
   | DropOn NodeId
   | DragEnd
@@ -394,7 +394,7 @@ noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-renderRow :: Boolean -> Maybe Editing -> Guide -> Int -> Number -> Row -> H.ComponentHTML Action () Aff
+renderRow :: Boolean -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
 renderRow dragging editing guide wi rowH r =
   HH.div
     [ HP.classes (map ClassName (rowClasses dragging r))
@@ -415,13 +415,13 @@ renderRow dragging editing guide wi rowH r =
     ]
     [ toggleEl r, body editing r, actionsEl r, guideLayer guide wi ]
 
-rowClasses :: Boolean -> Row -> Array String
+rowClasses :: Boolean -> ViewRow -> Array String
 rowClasses dragging r =
   [ "row", statusClass r, kindClass r ]
     <> (if r.active && r.live then [ "active" ] else [])
     <> (if dragging then [ "dragging" ] else [])
 
-body :: Maybe Editing -> Row -> H.ComponentHTML Action () Aff
+body :: Maybe Editing -> ViewRow -> H.ComponentHTML Action () Aff
 body editing r = case editing of
   Just e | e.id == r.id ->
     HH.input
@@ -434,10 +434,10 @@ body editing r = case editing of
   _ ->
     HH.span [ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow r.id ] [ HH.text r.title ]
 
-actionsEl :: Row -> H.ComponentHTML Action () Aff
+actionsEl :: ViewRow -> H.ComponentHTML Action () Aff
 actionsEl r = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons r)
 
-buttons :: Row -> Array (H.ComponentHTML Action () Aff)
+buttons :: ViewRow -> Array (H.ComponentHTML Action () Aff)
 buttons r =
   [ btn "btn-rename" "Rename" "pencil" (StartRename r.id r.title) ]
     <> (if r.live then [ btn "btn-close" "Close" "close-circle" (CloseClick r.id) ] else [])
@@ -451,17 +451,17 @@ buttons r =
       [ HP.class_ (ClassName cls), HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ]
       [ icon name ]
 
-toggleEl :: Row -> H.ComponentHTML Action () Aff
+toggleEl :: ViewRow -> H.ComponentHTML Action () Aff
 toggleEl r
   | not r.hasChildren = HH.span [ HP.class_ (ClassName "spacer") ] []
   | otherwise =
       HH.span [ HP.class_ (ClassName "toggle"), HE.onClick \_ -> Toggle r.id (not r.collapsed) ]
         [ icon (if r.collapsed then "chevron-right" else "chevron-down") ]
 
-statusClass :: Row -> String
+statusClass :: ViewRow -> String
 statusClass r = if r.live then "live" else "closed"
 
-kindClass :: Row -> String
+kindClass :: ViewRow -> String
 kindClass r = case r.kind of
   KTab -> "kind-tab"
   KGroup -> if r.live then "kind-window" else "kind-group"
