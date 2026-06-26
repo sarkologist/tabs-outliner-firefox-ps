@@ -5,6 +5,11 @@
 -- | flag-gated console.log (see Trace.js). Remove once the bug is pinned.
 module Effect.Trace
   ( trace
+  , getEnabled
+  , setEnabled
+  , readTrace
+  , clearTrace
+  , downloadTrace
   , fmtEvent
   , fmtPatch
   , fmtQueues
@@ -26,7 +31,22 @@ import Model.Types (Model, Node, Patch)
 
 foreign import traceImpl :: String -> Effect Unit
 
--- | Emit one trace line (prefixed + flag-gated in Trace.js).
+-- | Is tracing enabled? (the localStorage flag the options page toggles).
+foreign import getEnabled :: Effect Boolean
+
+-- | Turn restore tracing on/off (from the options page).
+foreign import setEnabled :: Boolean -> Effect Unit
+
+-- | The whole captured trace buffer (newline-joined), for the options page to show.
+foreign import readTrace :: Effect String
+
+-- | Wipe the trace buffer.
+foreign import clearTrace :: Effect Unit
+
+-- | Download the trace buffer as a .txt (for sharing).
+foreign import downloadTrace :: Effect Unit
+
+-- | Emit one trace line (buffered + console-logged, flag-gated, in Trace.js).
 trace :: String -> Effect Unit
 trace = traceImpl
 

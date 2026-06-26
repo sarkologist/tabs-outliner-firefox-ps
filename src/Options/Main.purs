@@ -20,6 +20,7 @@ import Effect.Aff (Aff)
 import Effect.Commands as Commands
 import Effect.Profile as Profile
 import Effect.Settings as Settings
+import Effect.Trace as Trace
 import Foreign.Object (Object)
 import Foreign.Object as Object
 import Halogen as H
@@ -50,6 +51,8 @@ type State =
   , toggleError :: Maybe String
   , profEnabled :: Boolean
   , profile :: Maybe ProfileRec
+  , traceOn :: Boolean
+  , traceText :: String
   }
 
 data Action
@@ -65,6 +68,10 @@ data Action
   | RefreshProfile
   | DownloadProfile
   | ClearProfile
+  | ToggleTracing Boolean
+  | RefreshTrace
+  | ClearTrace
+  | DownloadTrace
 
 -- | The last sidebar-open profile the sidebar persisted ({} / corrupt -> Nothing).
 readProfile :: Effect (Maybe ProfileRec)
@@ -84,6 +91,8 @@ component = H.mkComponent
       , toggleError: Nothing
       , profEnabled: false
       , profile: Nothing
+      , traceOn: false
+      , traceText: ""
       }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
@@ -99,7 +108,9 @@ handleAction = case _ of
     toggle <- H.liftAff Commands.getSidebarToggle
     pe <- H.liftEffect Profile.getEnabled
     pr <- H.liftEffect readProfile
-    H.modify_ _ { overrides = overrides, listener = Just listener, toggle = toggle, toggleMac = mac, profEnabled = pe, profile = pr }
+    ton <- H.liftEffect Trace.getEnabled
+    ttx <- H.liftEffect Trace.readTrace
+    H.modify_ _ { overrides = overrides, listener = Just listener, toggle = toggle, toggleMac = mac, profEnabled = pe, profile = pr, traceOn = ton, traceText = ttx }
 
   StartRecord cmd -> do
     st <- H.get
@@ -165,6 +176,17 @@ handleAction = case _ of
     H.liftEffect Profile.clearLast
     H.modify_ _ { profile = Nothing }
 
+  ToggleTracing b -> do
+    H.liftEffect (Trace.setEnabled b)
+    H.modify_ _ { traceOn = b }
+  RefreshTrace -> do
+    t <- H.liftEffect Trace.readTrace
+    H.modify_ _ { traceText = t }
+  ClearTrace -> do
+    H.liftEffect Trace.clearTrace
+    H.modify_ _ { traceText = "" }
+  DownloadTrace -> H.liftEffect Trace.downloadTrace
+
 render :: State -> H.ComponentHTML Action () Aff
 render st =
   HH.div [ HP.id "wrap" ]
@@ -179,6 +201,7 @@ render st =
     , HH.button [ HP.id "reset-all", HE.onClick \_ -> ResetAll ] [ HH.text "Reset all to defaults" ]
     , toggleSection st
     , profilingSection st
+    , tracingSection st
     ]
 
 row :: State -> Sh.Cmd -> H.ComponentHTML Action () Aff
@@ -270,6 +293,31 @@ profileTable = case _ of
       ]
   where
   entryRow e = HH.tr_ [ HH.td_ [ HH.text e.name ], HH.td [ HP.class_ (ClassName "num") ] [ HH.text (show e.ms) ] ]
+
+-- | Opt-in restore tracing. Enable it, reproduce the restore in the browser, then
+-- | Refresh to read the captured trace here (no devtools needed). The background
+-- | writes lines to a shared localStorage buffer that survives it being suspended.
+tracingSection :: State -> H.ComponentHTML Action () Aff
+tracingSection st =
+  HH.div_
+    [ HH.h2_ [ HH.text "Restore tracing (debug)" ]
+    , HH.p [ HP.class_ (ClassName "hint") ]
+        [ HH.text "Trace the restore flow to diagnose a restore opening a new window instead of binding the existing group. Enable it, reproduce the restore, then click Refresh — and Download to share the trace." ]
+    , HH.label [ HP.class_ (ClassName "toggle-row") ]
+        [ HH.input
+            [ HP.type_ HP.InputCheckbox, HP.id "tracing-enabled", HP.checked st.traceOn, HE.onChecked ToggleTracing ]
+        , HH.text " Enable restore tracing"
+        ]
+    , HH.div_
+        [ HH.button [ HP.id "trace-refresh", HE.onClick \_ -> RefreshTrace ] [ HH.text "Refresh" ]
+        , HH.button [ HP.id "trace-clear", HE.onClick \_ -> ClearTrace ] [ HH.text "Clear" ]
+        , HH.button [ HP.id "trace-download", HE.onClick \_ -> DownloadTrace ] [ HH.text "Download" ]
+        ]
+    , if st.traceText == "" then
+        HH.p [ HP.class_ (ClassName "hint") ] [ HH.text "No trace captured yet." ]
+      else
+        HH.textarea [ HP.id "trace-text", HP.readOnly true, HP.rows 18, HP.value st.traceText ]
+    ]
 
 -- | Warn when two actions resolve to the same combo (the first in allCmds order
 -- | wins on a real keypress, so the other would be dead).

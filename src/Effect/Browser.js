@@ -3,15 +3,13 @@
 // returning Effect are `() => ...` thunks, and Sink callbacks are
 // `(arg) => () => unit`, so we call them as `sink.fn(arg)()`.
 
-// Debug trace (mirrors Effect/Trace.js; kept local so this FFI stays standalone).
-// Silence with `globalThis.__toTrace = false`.
+// Debug trace: route raw-event logs through the shared sink Effect/Trace.js
+// installs on globalThis (same localStorage buffer + on/off flag). A no-op until
+// the background's Trace module loads and while tracing is disabled.
 const tlog = (msg) => {
-  if (globalThis.__toTrace === false) return;
-  const t =
-    globalThis.performance && typeof performance.now === "function"
-      ? Math.round(performance.now())
-      : 0;
-  console.log("[trace " + t + "] " + msg);
+  try {
+    if (globalThis.__toTraceSink) globalThis.__toTraceSink(msg);
+  } catch {}
 };
 
 export const getBrowser = () => globalThis.browser;

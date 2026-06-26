@@ -1,16 +1,13 @@
-// Throwaway: drives the exact reported scenario (single-tab restore of a
-// non-imported closed group) against the fake browser and dumps the background
-// trace. The fake is window-first, so this is the KNOWN-GOOD reference sequence
-// to diff the real-Firefox console against. Delete once the bug is pinned.
+// Drives the exact reported scenario (single-tab restore of a non-imported closed
+// group) with tracing enabled, and asserts the lifecycle lands in the shared
+// localStorage trace buffer the options page reads. The fake is window-first, so
+// this also dumps the KNOWN-GOOD reference sequence to diff the real Firefox
+// console/options-trace against. Delete once the bug is pinned.
 import { test, expect } from "@playwright/test";
 import { bootBackgroundAndSidebar, fake } from "./support/harness";
 
-test("TRACE single-tab restore of a closed (non-imported) group", async ({ page }) => {
-  const logs: string[] = [];
-  page.on("console", (m) => {
-    const t = m.text();
-    if (t.includes("[trace")) logs.push(t);
-  });
+test("single-tab restore of a closed (non-imported) group writes its lifecycle to the trace buffer", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("tabsOutlinerTraceEnabled", "1"));
 
   await bootBackgroundAndSidebar(page, {
     windows: [
@@ -30,15 +27,17 @@ test("TRACE single-tab restore of a closed (non-imported) group", async ({ page 
   await fake(page, "closeWindow", 2);
   await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
 
-  logs.length = 0; // keep only the restore
+  await page.evaluate(() => localStorage.removeItem("tabsOutlinerTrace")); // keep only the restore
   // restore a SINGLE tab (Alpha) by clicking its closed row title
   await page.locator('.row[data-status="closed"]').filter({ hasText: "Alpha" }).locator(".title").click();
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(400);
 
-  console.log("\n========== RESTORE TRACE (fake browser, window-first) ==========");
-  for (const l of logs) console.log(l);
-  console.log("========== END ==========");
-  const wins = await page.evaluate(() => (globalThis as any).__fake.listWindows());
-  console.log("FINAL windows:", JSON.stringify(wins));
-  console.log("================================================================\n");
+  const buf = await page.evaluate(() => localStorage.getItem("tabsOutlinerTrace") || "");
+  console.log("\n========== RESTORE TRACE (fake browser, window-first) ==========\n" + buf + "\n================================================================\n");
+
+  // the lifecycle was captured: command -> browser action -> the window event binds
+  // the EXISTING group node (this is the line that differs in real Firefox).
+  expect(buf).toContain("CMD Activate");
+  expect(buf).toContain("RUN CreateWindow");
+  expect(buf).toContain("WindowOpened");
 });
