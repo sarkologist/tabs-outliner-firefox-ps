@@ -3,6 +3,17 @@
 // returning Effect are `() => ...` thunks, and Sink callbacks are
 // `(arg) => () => unit`, so we call them as `sink.fn(arg)()`.
 
+// Debug trace (mirrors Effect/Trace.js; kept local so this FFI stays standalone).
+// Silence with `globalThis.__toTrace = false`.
+const tlog = (msg) => {
+  if (globalThis.__toTrace === false) return;
+  const t =
+    globalThis.performance && typeof performance.now === "function"
+      ? Math.round(performance.now())
+      : 0;
+  console.log("[trace " + t + "] " + msg);
+};
+
 export const getBrowser = () => globalThis.browser;
 
 export const getAllWindowsImpl = (api) => () =>
@@ -34,7 +45,10 @@ export const getCurrentWindowIdImpl = (api) => () => {
 export const subscribeImpl = (api) => (sink) => () => {
   const t = api.tabs;
   const w = api.windows;
-  t.onCreated.addListener((tab) =>
+  t.onCreated.addListener((tab) => {
+    // RAW arrival time, before the background's queue/drainer — compare with the
+    // EV dispatch line to see if buffering reorders relative to windows.onCreated.
+    tlog("RAW tabs.onCreated tab=" + tab.id + " win=" + tab.windowId + " idx=" + tab.index + " url=" + (tab.url ?? "-"));
     sink.tabOpened({
       tabId: tab.id,
       windowId: tab.windowId,
@@ -43,8 +57,8 @@ export const subscribeImpl = (api) => (sink) => () => {
       title: tab.title ?? "",
       active: !!tab.active,
       favIconUrl: tab.favIconUrl ?? null,
-    })()
-  );
+    })();
+  });
   t.onRemoved.addListener((tabId) => sink.tabClosed(tabId)());
   t.onUpdated.addListener((tabId, change, tab) =>
     sink.tabChanged({
@@ -80,7 +94,10 @@ export const subscribeImpl = (api) => (sink) => () => {
       if (tab) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
     }, () => {})
   );
-  w.onCreated.addListener((win) => sink.windowOpened(win.id)());
+  w.onCreated.addListener((win) => {
+    tlog("RAW windows.onCreated win=" + win.id);
+    sink.windowOpened(win.id)();
+  });
   w.onRemoved.addListener((winId) => sink.windowClosed(winId)());
 };
 
@@ -95,11 +112,19 @@ export const createTabImpl = (api) => (windowId) => (url) => () => {
   const props = {};
   if (windowId !== null) props.windowId = windowId;
   if (url !== null) props.url = url;
-  return Promise.resolve(api.tabs.create(props));
+  tlog("CALL tabs.create props=" + JSON.stringify(props));
+  return Promise.resolve(api.tabs.create(props)).then((tab) => {
+    tlog("DONE tabs.create -> tab=" + (tab && tab.id) + " win=" + (tab && tab.windowId));
+  });
 };
 
-export const createWindowImpl = (api) => (urls) => () =>
-  Promise.resolve(api.windows.create({ url: urls }));
+export const createWindowImpl = (api) => (urls) => () => {
+  tlog("CALL windows.create urls=" + JSON.stringify(urls));
+  return Promise.resolve(api.windows.create({ url: urls })).then((w) => {
+    const tabs = w && w.tabs ? w.tabs.map((x) => ({ id: x.id, url: x.url })) : [];
+    tlog("DONE windows.create -> win=" + (w && w.id) + " tabs=" + JSON.stringify(tabs));
+  });
+};
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
 // tabs.onAttached.

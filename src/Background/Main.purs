@@ -26,6 +26,7 @@ import Effect.Browser as Browser
 import Effect.Channel as Channel
 import Effect.Persist as Persist
 import Effect.Profile as Profile
+import Effect.Trace as Trace
 import Model.Codec (encodeSnapshot)
 import Model.Command (BrowserAction(..), Request(..), applyCommand, decodeRequest)
 import Model.Event (BrowserEvent)
@@ -68,6 +69,11 @@ main = launchAff_ do
     model0 = Persist.modelFromLoaded loaded.nodes loaded.roots
     rematched = rematchOnStartup t0 wins model0
   ref <- liftEffect (Ref.new rematched.model)
+  -- Boot marker: a fresh one appearing mid-repro means Firefox suspended/woke the
+  -- event page (which would reset transient restore queues). Shows what rematch did.
+  liftEffect $ Trace.trace $ "BOOT roots=" <> show (Array.length rematched.model.roots)
+    <> " liveWins=" <> show (Array.length wins)
+    <> " rematchPatch " <> Trace.fmtPatch rematched.patch
   -- The model's structural version: bumped on every change so the sidebar's view
   -- cache knows when its visible order is stale. The cache memoizes the order for
   -- the last (version, query), so scrolling (same query, no edits) is O(window).
@@ -95,6 +101,10 @@ main = launchAff_ do
       t <- liftEffect nowMs
       m <- liftEffect (Ref.read ref)
       let s = applyBrowser t ev m
+      liftEffect $ Trace.trace $ "EV  " <> Trace.fmtEvent ev
+        <> "  | before " <> Trace.fmtQueues m
+        <> "  | patch " <> Trace.fmtPatch s.patch
+        <> "  | after " <> Trace.fmtQueues s.model
       liftEffect (Ref.write s.model ref)
       persistAndBroadcast api db versionRef s.patch
 
@@ -179,6 +189,9 @@ main = launchAff_ do
       m <- liftEffect (Ref.read ref)
       t <- liftEffect nowMs
       let r = applyCommand t cmd m
+      liftEffect $ Trace.trace $ "CMD " <> Trace.fmtCommand cmd
+        <> "  | actions " <> show r.actions
+        <> "  | " <> Trace.fmtQueues r.model
       liftEffect do
         Ref.write r.model ref
         -- record the inverse so this command can be undone; a fresh edit
@@ -243,13 +256,15 @@ ackJson :: Json
 ackJson = encodeJson { ok: true }
 
 runAction :: BrowserApi -> BrowserAction -> Aff Unit
-runAction api = case _ of
-  FocusTab t -> Browser.focusTab api t
-  CreateTab w u -> Browser.createTab api w u
-  CreateWindow us -> Browser.createWindow api us
-  MoveTabToWindow t w i -> Browser.moveTabToWindow api t w i
-  NewWindowWithTabs ts -> Browser.newWindowWithTabs api ts
-  RemoveTab t -> Browser.removeTab api t
+runAction api act = do
+  liftEffect (Trace.trace ("RUN " <> show act))
+  case act of
+    FocusTab t -> Browser.focusTab api t
+    CreateTab w u -> Browser.createTab api w u
+    CreateWindow us -> Browser.createWindow api us
+    MoveTabToWindow t w i -> Browser.moveTabToWindow api t w i
+    NewWindowWithTabs ts -> Browser.newWindowWithTabs api ts
+    RemoveTab t -> Browser.removeTab api t
 
 -- | Did this command relocate real browser tabs (move them between windows or into
 -- | a new one)? Such a command can't be undone — undo reverts only the tree, not
