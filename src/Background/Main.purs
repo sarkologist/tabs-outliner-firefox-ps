@@ -17,6 +17,8 @@ import Data.Newtype (unwrap)
 import Effect (Effect)
 import Effect.Aff (Aff, attempt, launchAff_)
 import Effect.Class (liftEffect)
+import Effect.Class.Console as Console
+import Effect.Exception (message)
 import Effect.Now (now)
 import Effect.Ref as Ref
 import Effect.Browser (BrowserApi)
@@ -123,7 +125,9 @@ main = launchAff_ do
     -- listener enqueues can never be stranded with the drainer already stopped.
     -- `attempt` keeps one event's failure (e.g. a rejected IndexedDB write — the
     -- model ref is already updated by then, only durability is lost) from wedging
-    -- the drainer with `drainingRef` stuck true and every later event ignored.
+    -- the drainer with `drainingRef` stuck true and every later event ignored. The
+    -- failure is logged, not swallowed silently: persistence is best-effort by
+    -- design (no journal/resync), and the next restart's url-rematch re-heals.
     pump :: Aff Unit
     pump = do
       q <- liftEffect (Ref.read queueRef)
@@ -131,7 +135,9 @@ main = launchAff_ do
         Nothing -> liftEffect (Ref.write false drainingRef)
         Just { head: ev, tail } -> do
           liftEffect (Ref.write tail queueRef)
-          _ <- attempt (dispatch ev)
+          attempt (dispatch ev) >>= case _ of
+            Left err -> liftEffect (Console.error ("background: dispatch failed, event dropped: " <> message err))
+            Right _ -> pure unit
           pump
     kick :: Effect Unit
     kick = do
