@@ -113,9 +113,10 @@ test.describe("sidebar view", () => {
   // Firefox spends the first click on an unfocused sidebar document focusing it
   // rather than activating what was clicked, so actions need a second click. We
   // can't reproduce that focus-eating headlessly (Playwright drives a focused
-  // page), but we can assert the guard that defeats it: any pointer over the
-  // sidebar reacquires window focus *only* while the document lacks it.
-  test("reacquires window focus on pointer activity while unfocused", async ({ page }) => {
+  // page), but we can assert the guard that defeats it: a press reacquires window
+  // focus only while the document lacks it — and a mere hover never does, so it
+  // can't steal a page's keyboard focus when the pointer drifts over the sidebar.
+  test("a press reacquires window focus while unfocused; hover never does", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
 
@@ -130,24 +131,23 @@ test.describe("sidebar view", () => {
       const row = document.querySelector(".row") as HTMLElement;
       const fire = (type: string) => row.dispatchEvent(new PointerEvent(type, { bubbles: true }));
 
-      focused = true; // already focused: the guard must make these no-ops
-      fire("pointerover");
+      focused = true; // already focused: the guard makes the press a no-op
       fire("pointerdown");
-      const whileFocused = n;
+      const pressWhileFocused = n;
 
-      focused = false; // unfocused: both hooks must grab focus back
+      focused = false; // unfocused: hover must stay hands-off, the press grabs
       fire("pointerover");
-      const afterOver = n;
+      const hoverWhileUnfocused = n;
       fire("pointerdown");
-      const afterDown = n;
+      const pressWhileUnfocused = n;
 
       window.focus = real;
       delete (document as { hasFocus?: unknown }).hasFocus;
-      return { whileFocused, afterOver, afterDown };
+      return { pressWhileFocused, hoverWhileUnfocused, pressWhileUnfocused };
     });
 
-    expect(calls.whileFocused).toBe(0); // never steals focus when we already hold it
-    expect(calls.afterOver).toBe(1); // pointerover reacquires before the click
-    expect(calls.afterDown).toBe(2); // pointerdown is the backstop
+    expect(calls.pressWhileFocused).toBe(0); // never steals focus when we hold it
+    expect(calls.hoverWhileUnfocused).toBe(0); // hover must not steal page focus
+    expect(calls.pressWhileUnfocused).toBe(1); // the press reacquires it
   });
 });

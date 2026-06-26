@@ -12,27 +12,29 @@ export const allowDrops = () => {
 // the action only lands on the second click. Here the sidebar is unfocused most
 // of the time — activating a tab focuses its window/page (focusTabImpl), and
 // ordinary browsing keeps focus in the content too — and nothing pulls focus
-// back, so almost any click can need a second try. Reacquire focus the moment the
-// pointer is over the sidebar, i.e. before the click resolves. Guarded by
-// hasFocus() so it's a cheap no-op (one boolean read) whenever we already hold
-// focus, and so it never yanks focus around while the sidebar is in use.
+// back, so almost any click can need a second try.
+//
+// Reacquire window focus on the press, in the capture phase, so it runs before
+// the browser's own focus-on-mousedown handling and the click lands on an
+// already-focused document. We grab on pointerdown — an unambiguous intent to
+// use the sidebar — and deliberately NOT on hover (pointerover): hovering the
+// sidebar while typing in a page must not steal that page's keyboard focus.
+// hasFocus() keeps it a cheap no-op whenever we already hold focus.
 export const keepFocused = () => {
-  const grab = () => {
-    if (!document.hasFocus()) {
-      try {
-        window.focus();
-      } catch (_) {
-        // focus() can throw in unusual window states; a missed grab just leaves
-        // the pre-existing double-click, never anything worse.
+  document.addEventListener(
+    "pointerdown",
+    () => {
+      if (!document.hasFocus()) {
+        try {
+          window.focus();
+        } catch (_) {
+          // focus() can throw in unusual window states; a missed grab just
+          // leaves the pre-existing double-click, never anything worse.
+        }
       }
-    }
-  };
-  // pointerover (capture) fires as the pointer arrives over the row about to be
-  // clicked — early enough that the click lands on an already-focused document.
-  document.addEventListener("pointerover", grab, true);
-  // backstop for "pointer already resting on the sidebar when a background tab
-  // event stole focus, then the user presses": grab again at the press.
-  document.addEventListener("pointerdown", grab, true);
+    },
+    true
+  );
 };
 
 // Download a string as a file via a Blob URL (no downloads permission needed).
