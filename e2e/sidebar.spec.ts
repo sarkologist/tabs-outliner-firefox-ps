@@ -125,4 +125,45 @@ test.describe("sidebar view", () => {
     await page.locator(".toggle").first().click();
     await expect(page.getByText("Alpha")).toBeVisible();
   });
+
+  // Firefox spends the first click on an unfocused sidebar document focusing it
+  // rather than activating what was clicked, so actions need a second click. We
+  // can't reproduce that focus-eating headlessly (Playwright drives a focused
+  // page), but we can assert the guard that defeats it: a press reacquires window
+  // focus only while the document lacks it — and a mere hover never does, so it
+  // can't steal a page's keyboard focus when the pointer drifts over the sidebar.
+  test("a press reacquires window focus while unfocused; hover never does", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+
+    const calls = await page.evaluate(() => {
+      const real = window.focus.bind(window);
+      let focused: boolean;
+      let n = 0;
+      Object.defineProperty(document, "hasFocus", { configurable: true, value: () => focused });
+      window.focus = () => {
+        n++;
+      };
+      const row = document.querySelector(".row") as HTMLElement;
+      const fire = (type: string) => row.dispatchEvent(new PointerEvent(type, { bubbles: true }));
+
+      focused = true; // already focused: the guard makes the press a no-op
+      fire("pointerdown");
+      const pressWhileFocused = n;
+
+      focused = false; // unfocused: hover must stay hands-off, the press grabs
+      fire("pointerover");
+      const hoverWhileUnfocused = n;
+      fire("pointerdown");
+      const pressWhileUnfocused = n;
+
+      window.focus = real;
+      delete (document as { hasFocus?: unknown }).hasFocus;
+      return { pressWhileFocused, hoverWhileUnfocused, pressWhileUnfocused };
+    });
+
+    expect(calls.pressWhileFocused).toBe(0); // never steals focus when we hold it
+    expect(calls.hoverWhileUnfocused).toBe(0); // hover must not steal page focus
+    expect(calls.pressWhileUnfocused).toBe(1); // the press reacquires it
+  });
 });
