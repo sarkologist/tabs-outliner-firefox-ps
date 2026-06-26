@@ -7,6 +7,34 @@ export const allowDrops = () => {
   document.addEventListener("drop", (e) => e.preventDefault());
 };
 
+// Firefox eats the first click into an *unfocused* sidebar document: that click
+// is spent focusing the sidebar instead of activating whatever was under it, so
+// the action only lands on the second click. Here the sidebar is unfocused most
+// of the time — activating a tab focuses its window/page (focusTabImpl), and
+// ordinary browsing keeps focus in the content too — and nothing pulls focus
+// back, so almost any click can need a second try. Reacquire focus the moment the
+// pointer is over the sidebar, i.e. before the click resolves. Guarded by
+// hasFocus() so it's a cheap no-op (one boolean read) whenever we already hold
+// focus, and so it never yanks focus around while the sidebar is in use.
+export const keepFocused = () => {
+  const grab = () => {
+    if (!document.hasFocus()) {
+      try {
+        window.focus();
+      } catch (_) {
+        // focus() can throw in unusual window states; a missed grab just leaves
+        // the pre-existing double-click, never anything worse.
+      }
+    }
+  };
+  // pointerover (capture) fires as the pointer arrives over the row about to be
+  // clicked — early enough that the click lands on an already-focused document.
+  document.addEventListener("pointerover", grab, true);
+  // backstop for "pointer already resting on the sidebar when a background tab
+  // event stole focus, then the user presses": grab again at the press.
+  document.addEventListener("pointerdown", grab, true);
+};
+
 // Download a string as a file via a Blob URL (no downloads permission needed).
 export const downloadJson = (filename) => (content) => () => {
   const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));

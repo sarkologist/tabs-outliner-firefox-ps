@@ -47,6 +47,7 @@ import Web.Event.Event (Event)
 import Web.UIEvent.KeyboardEvent (key)
 
 foreign import allowDrops :: Effect Unit
+foreign import keepFocused :: Effect Unit
 foreign import downloadJson :: String -> String -> Effect Unit
 foreign import pickJson :: (String -> Effect Unit) -> Effect Unit
 foreign import getZoom :: Effect Number
@@ -146,6 +147,7 @@ handleAction = case _ of
   Initialize -> do
     api <- H.liftEffect getBrowser
     H.liftEffect allowDrops
+    H.liftEffect keepFocused
     z <- H.liftEffect getZoom
     { emitter, listener } <- H.liftEffect HS.create
     H.modify_ _ { api = Just api, zoom = clampZoom z, listener = Just listener }

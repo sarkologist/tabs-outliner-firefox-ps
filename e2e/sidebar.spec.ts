@@ -109,4 +109,45 @@ test.describe("sidebar view", () => {
     await page.locator(".toggle").first().click();
     await expect(page.getByText("Alpha")).toBeVisible();
   });
+
+  // Firefox spends the first click on an unfocused sidebar document focusing it
+  // rather than activating what was clicked, so actions need a second click. We
+  // can't reproduce that focus-eating headlessly (Playwright drives a focused
+  // page), but we can assert the guard that defeats it: any pointer over the
+  // sidebar reacquires window focus *only* while the document lacks it.
+  test("reacquires window focus on pointer activity while unfocused", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+
+    const calls = await page.evaluate(() => {
+      const real = window.focus.bind(window);
+      let focused: boolean;
+      let n = 0;
+      Object.defineProperty(document, "hasFocus", { configurable: true, value: () => focused });
+      window.focus = () => {
+        n++;
+      };
+      const row = document.querySelector(".row") as HTMLElement;
+      const fire = (type: string) => row.dispatchEvent(new PointerEvent(type, { bubbles: true }));
+
+      focused = true; // already focused: the guard must make these no-ops
+      fire("pointerover");
+      fire("pointerdown");
+      const whileFocused = n;
+
+      focused = false; // unfocused: both hooks must grab focus back
+      fire("pointerover");
+      const afterOver = n;
+      fire("pointerdown");
+      const afterDown = n;
+
+      window.focus = real;
+      delete (document as { hasFocus?: unknown }).hasFocus;
+      return { whileFocused, afterOver, afterDown };
+    });
+
+    expect(calls.whileFocused).toBe(0); // never steals focus when we already hold it
+    expect(calls.afterOver).toBe(1); // pointerover reacquires before the click
+    expect(calls.afterDown).toBe(2); // pointerdown is the backstop
+  });
 });
