@@ -62,12 +62,13 @@ instance showBrowserAction :: Show BrowserAction where
   show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
   show (RemoveTab t) = "RemoveTab " <> show t
 
--- | Where a restored tab should reopen, decided by its IMMEDIATE PARENT — the
--- | container that owns it (a node's owning window is its immediate parent).
+-- | Where a restored tab should reopen, decided by its owning window — the nearest
+-- | CONTAINER (group) ancestor (usually the immediate parent, but the original nests
+-- | tabs under tabs, and a browser tab lives directly in a window).
 data RestoreTarget
-  = IntoWindow Int -- parent already live as a window (reopen the tab back into it)
-  | IntoNewWindow NodeId -- saved-container parent (its tabs open one new window it goes live as)
-  | IntoCurrent -- no parent container (reopen in the current window)
+  = IntoWindow Int -- container already live as a window (reopen the tab back into it)
+  | IntoNewWindow NodeId -- saved-container ancestor (its tabs open one new window it goes live as)
+  | IntoCurrent -- no container ancestor (reopen in the current window)
 
 derive instance eqRestoreTarget :: Eq RestoreTarget
 
@@ -371,19 +372,29 @@ spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 pushPending :: NodeId -> Array NodeId -> Array NodeId
 pushPending pid xs = if Array.elem pid xs then xs else Array.snoc xs pid
 
--- | Where a closed tab node should reopen, decided by its IMMEDIATE parent — the
--- | container that owns it (a node's owning window is its immediate parent). A
--- | parent already live as a window -> back into that window; a parent that is a
--- | saved group -> a new window that the group goes live as; no parent (a bare
--- | root tab) -> the current window.
+-- | Where a closed tab node should reopen, decided by its owning window — the
+-- | nearest CONTAINER (group) ancestor. Usually that is the immediate parent, but
+-- | the original's outline nests tabs under other tabs, and a browser tab can only
+-- | live directly in a window, so the owning window is found by walking up past any
+-- | parent tabs to the first group. That group live as a window -> back into it; a
+-- | saved group -> a new window it goes live as; no group ancestor (a bare tab, or
+-- | tabs nested only under tabs up to the root) -> the current window.
 restoreTargetOf :: Model -> NodeId -> RestoreTarget
-restoreTargetOf model nid = case parentNode nid of
+restoreTargetOf model nid = case owningContainer (parentOf nid) of
   Just p
     | Just wid <- p.windowId -> IntoWindow wid
     | otherwise -> IntoNewWindow p.id
   Nothing -> IntoCurrent
   where
-  parentNode id = (Map.lookup id model.nodes >>= _.parent) >>= \pid -> Map.lookup pid model.nodes
+  parentOf id = Map.lookup id model.nodes >>= _.parent
+  -- the nearest ancestor that is a group; tabs (which can't own a browser window)
+  -- are walked past. O(depth), and acyclic by construction.
+  owningContainer = case _ of
+    Nothing -> Nothing
+    Just pid -> case Map.lookup pid model.nodes of
+      Just p | p.kind == KGroup -> Just p
+             | otherwise -> owningContainer p.parent
+      Nothing -> Nothing
 
 -- Request protocol -----------------------------------------------------------
 

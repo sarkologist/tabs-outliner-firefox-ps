@@ -252,6 +252,89 @@ spec = describe "Model.Command" do
     (_.parent <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just "n4")
     reopened.roots `shouldEqual` [ "n1", "n4" ]
 
+  -- Firefox does NOT guarantee windows.onCreated arrives before the new window's
+  -- tabs.onCreated, so a restored window's tabs can surface before its WindowOpened.
+  -- The restore must still rebind the existing nodes in place — not mint a duplicate
+  -- window + tabs and strand the originals as closed history.
+  it "restoring an imported window rebinds even when its tabs arrive before WindowOpened" do
+    let
+      grp = (defaultNode "g1" KGroup 0.0) { title = "W", children = [ "t1", "t2" ] }
+      t1 = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1" }
+      t2 = (defaultNode "t2" KTab 0.0) { title = "B", url = Just "http://b", parent = Just "g1" }
+      -- base.nextId is 4: g1 -> n4, t1 -> n5, t2 -> n6
+      saved = (applyCommand 0.0 (Import { nodes: [ grp, t1, t2 ], roots: [ "g1" ] }) base).model
+      activated = applyCommand 0.0 (Activate "n4") saved
+      -- TABS-FIRST: both recreated tabs' onCreated arrive (reporting redirected urls,
+      -- so only window+order matching can work) BEFORE the window's onCreated.
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ openTabU 71 5 0 "http://a?x" "A"
+        , openTabU 72 5 1 "http://b?x" "B"
+        , WindowOpened { windowId: 5 }
+        ]
+    -- the imported window node n4 went live in place, bound to browser window 5
+    (_.windowId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 5)
+    -- its tabs rebound to their existing nodes (n5, n6) — no crossing, no duplicates
+    (_.tabId <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just 71)
+    (_.tabId <$> Map.lookup "n6" reopened.nodes) `shouldEqual` Just (Just 72)
+    -- no phantom window/tab nodes were minted, and n4 stayed put at the root
+    reopened.roots `shouldEqual` [ "n1", "n4" ]
+    Map.size reopened.nodes `shouldEqual` Map.size saved.nodes
+
+  -- The original's outline nests tabs UNDER other tabs (a tab can hold child tabs);
+  -- a live browser window never does (its tabs are flat under the window), which is
+  -- why this only bites imported trees. A nested tab's owning window is its nearest
+  -- container ANCESTOR, not its immediate parent — so restoring opens one window for
+  -- the whole tab forest and rebinds every tab (rather than treating the parent tab
+  -- as a window, which can't bind → a duplicate window + tab). As each tab goes live
+  -- it flattens to a direct child of the window, since the model keeps live tabs flat.
+  it "restoring an imported window flattens tabs nested under tabs into the window" do
+    let
+      grp = (defaultNode "g1" KGroup 0.0) { title = "W", children = [ "t1" ] }
+      a = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1", children = [ "t2" ] }
+      b = (defaultNode "t2" KTab 0.0) { title = "B", url = Just "http://b", parent = Just "t1" }
+      -- base.nextId is 4: g1 -> n4, t1 -> n5 (A), t2 -> n6 (B, nested under A)
+      saved = (applyCommand 0.0 (Import { nodes: [ grp, a, b ], roots: [ "g1" ] }) base).model
+      activated = applyCommand 0.0 (Activate "n4") saved
+    -- BOTH tabs belong to the one restored window — a single CreateWindow, in order
+    activated.actions `shouldEqual` [ CreateWindow [ "http://a", "http://b" ] ]
+    activated.model.pendingRestoreWindows `shouldEqual` [ "n4" ]
+    let
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ WindowOpened { windowId: 5 }
+        , openTabU 71 5 0 "http://a?x" "A"
+        , openTabU 72 5 1 "http://b?x" "B"
+        ]
+    -- the window and both tabs go live, bound to their existing nodes (no duplicates)
+    (_.windowId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 5)
+    (_.tabId <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just 71)
+    (_.tabId <$> Map.lookup "n6" reopened.nodes) `shouldEqual` Just (Just 72)
+    -- both tabs are now flat, direct children of the window in browser order; the
+    -- once-nested tab no longer hangs off its old parent tab
+    (_.children <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just [ "n5", "n6" ]
+    (_.parent <$> Map.lookup "n6" reopened.nodes) `shouldEqual` Just (Just "n4")
+    (_.children <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just []
+    -- no phantom window/tab nodes
+    Map.size reopened.nodes `shouldEqual` Map.size saved.nodes
+
+  -- If the restoring window node is deleted before its (tabs-first) browser window
+  -- surfaces, the stale queue head must be dropped — not left to wedge the NEXT
+  -- restore — matching how WindowOpened handles a vanished restore node.
+  it "a tabs-first restore whose node was deleted drops the stale queue head" do
+    let
+      grp = (defaultNode "g1" KGroup 0.0) { title = "W", children = [ "t1" ] }
+      t1 = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1" }
+      -- base.nextId is 4: g1 -> n4, t1 -> n5
+      saved = (applyCommand 0.0 (Import { nodes: [ grp, t1 ], roots: [ "g1" ] }) base).model
+      activated = applyCommand 0.0 (Activate "n4") saved -- queues n4 in pendingRestoreWindows
+      -- the user deletes the restoring window node before its window opens
+      deleted = (applyCommand 0.0 (Delete "n4") activated.model).model
+      -- then its recreated tab surfaces tabs-first for the as-yet-unknown window
+      after = (applyBrowser 0.0 (openTabU 71 5 0 "http://a?x" "A") deleted).model
+    -- the stale head was consumed, so the queue is not wedged for later restores
+    after.pendingRestoreWindows `shouldEqual` []
+    -- and the orphaned tab opened as a fresh live window node (n6 window, n7 tab)
+    Map.lookup 71 after.byTab `shouldEqual` Just "n7"
+
   -- Dragging a LIVE tab to a new owning container drives the real browser tab; the
   -- tree is left untouched and re-settles from the resulting onAttached/onCreated.
   describe "live-tab moves drive the browser" do
