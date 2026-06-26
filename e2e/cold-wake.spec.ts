@@ -44,4 +44,40 @@ test.describe("cold wake (event page)", () => {
     expect(ext.tabId).toBe(12);
     expect(ext.parent).toBe((await readNodes(page)).find((n) => n.windowId === 1)?.id);
   });
+
+  // The same waking event, two ways: the link's tab already exists when boot
+  // snapshots the windows (so the snapshot seeds a node for it) AND its queued
+  // onCreated is then replayed to the woken page and buffered. The buffered event
+  // must not mint a second node.
+  test("does not duplicate a tab present in both the boot snapshot and the backlog", async ({ page }) => {
+    await page.addInitScript(installFakeBrowser, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a", title: "Alpha", active: true },
+            { id: 12, url: "http://ext", title: "External" },
+          ],
+        },
+      ],
+    });
+    await page.goto("/blank.html");
+
+    await fake(page, "blockGetAll");
+    await page.addScriptTag({ path: "dist/background/background.js" });
+    await expect
+      .poll(() => page.evaluate(() => (globalThis as any).__fake.getAllCalls))
+      .toBeGreaterThan(0);
+
+    // Firefox replays the queued onCreated to the woken page after it snapshotted
+    await fake(page, "emitTabCreated", 12);
+    await fake(page, "releaseGetAll");
+
+    // exactly one node for the tab — seeded by the snapshot; its buffered onCreated
+    // is a no-op (the already-tracking guard), not a duplicate
+    await expect
+      .poll(() => readNodes(page).then((n) => n.filter((x) => x.tabId === 12).length))
+      .toBe(1);
+    expect((await readNodes(page)).filter((n) => n.title === "External").length).toBe(1);
+  });
 });

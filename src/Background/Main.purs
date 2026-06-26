@@ -15,7 +15,7 @@ import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), isNothing)
 import Data.Newtype (unwrap)
 import Effect (Effect)
-import Effect.Aff (Aff, launchAff_)
+import Effect.Aff (Aff, attempt, launchAff_)
 import Effect.Class (liftEffect)
 import Effect.Now (now)
 import Effect.Ref as Ref
@@ -121,6 +121,9 @@ main = launchAff_ do
     -- against starting a second drainer; reading the queue and clearing the flag
     -- when it is empty are synchronous (no `await` between), so an event the
     -- listener enqueues can never be stranded with the drainer already stopped.
+    -- `attempt` keeps one event's failure (e.g. a rejected IndexedDB write — the
+    -- model ref is already updated by then, only durability is lost) from wedging
+    -- the drainer with `drainingRef` stuck true and every later event ignored.
     pump :: Aff Unit
     pump = do
       q <- liftEffect (Ref.read queueRef)
@@ -128,7 +131,7 @@ main = launchAff_ do
         Nothing -> liftEffect (Ref.write false drainingRef)
         Just { head: ev, tail } -> do
           liftEffect (Ref.write tail queueRef)
-          dispatch ev
+          _ <- attempt (dispatch ev)
           pump
     kick :: Effect Unit
     kick = do

@@ -282,6 +282,13 @@ export function installFakeBrowser(seed: Seed) {
       reindex(t.windowId);
       ev.tabCreated._emit(tabInfo(tab));
     },
+    // Re-emit onCreated for a tab that already exists, mutating nothing — models
+    // Firefox replaying a suspended page's queued tabs.onCreated to it after boot
+    // has already snapshotted the (by then present) tab.
+    emitTabCreated: (id: number) => {
+      const t = tabs.get(id);
+      if (t) ev.tabCreated._emit(tabInfo(t));
+    },
     closeTab: (id: number) => {
       const t = tabs.get(id);
       if (!t) return;
