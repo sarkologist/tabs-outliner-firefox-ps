@@ -15,8 +15,10 @@ import Data.Foldable (traverse_)
 import Data.Maybe (Maybe(..), isNothing)
 import Data.Newtype (unwrap)
 import Effect (Effect)
-import Effect.Aff (Aff, launchAff_)
+import Effect.Aff (Aff, attempt, launchAff_)
 import Effect.Class (liftEffect)
+import Effect.Class.Console as Console
+import Effect.Exception (message)
 import Effect.Now (now)
 import Effect.Ref as Ref
 import Effect.Browser (BrowserApi)
@@ -39,6 +41,22 @@ nowMs = (unwrap <<< unInstant) <$> now
 main :: Effect Unit
 main = launchAff_ do
   api <- liftEffect Browser.getBrowser
+  -- Register the live browser-event listeners NOW — synchronously, before the
+  -- first `await` below. This is a non-persistent (event) page: Firefox suspends
+  -- it when idle and wakes it by replaying the event that woke it, which for an
+  -- externally opened link is that new tab's `tabs.onCreated`. Firefox only primes
+  -- — and so re-delivers — listeners registered during the initial top-level run,
+  -- so a listener added after the async boot (open DB, load, snapshot the windows)
+  -- would miss the waking event and the link would go untracked. Events that
+  -- arrive before the model is ready are buffered in `queueRef`; `kickRef` holds
+  -- the drainer that flushes them through `dispatch` — a no-op until boot installs
+  -- it (so nothing dispatches against a not-yet-loaded model).
+  queueRef <- liftEffect (Ref.new ([] :: Array BrowserEvent))
+  drainingRef <- liftEffect (Ref.new false)
+  kickRef <- liftEffect (Ref.new (pure unit :: Effect Unit))
+  liftEffect $ Browser.subscribe api \ev -> do
+    Ref.modify_ (\q -> Array.snoc q ev) queueRef
+    join (Ref.read kickRef)
   db <- Persist.open
   loaded <- Persist.load db
   t0 <- liftEffect nowMs
@@ -100,8 +118,33 @@ main = launchAff_ do
           traverse_ (runAction api) a.actions
           pure ackJson
 
-  -- Live browser events.
-  liftEffect $ Browser.subscribe api \ev -> launchAff_ (dispatch ev)
+    -- Flush queued browser events (the boot backlog first, then live ones) through
+    -- `dispatch`, strictly FIFO via a single drainer fiber. `drainingRef` guards
+    -- against starting a second drainer; reading the queue and clearing the flag
+    -- when it is empty are synchronous (no `await` between), so an event the
+    -- listener enqueues can never be stranded with the drainer already stopped.
+    -- `attempt` keeps one event's failure (e.g. a rejected IndexedDB write — the
+    -- model ref is already updated by then, only durability is lost) from wedging
+    -- the drainer with `drainingRef` stuck true and every later event ignored. The
+    -- failure is logged, not swallowed silently: persistence is best-effort by
+    -- design (no journal/resync), and the next restart's url-rematch re-heals.
+    pump :: Aff Unit
+    pump = do
+      q <- liftEffect (Ref.read queueRef)
+      case Array.uncons q of
+        Nothing -> liftEffect (Ref.write false drainingRef)
+        Just { head: ev, tail } -> do
+          liftEffect (Ref.write tail queueRef)
+          attempt (dispatch ev) >>= case _ of
+            Left err -> liftEffect (Console.error ("background: dispatch failed, event dropped: " <> message err))
+            Right _ -> pure unit
+          pump
+    kick :: Effect Unit
+    kick = do
+      busy <- Ref.read drainingRef
+      unless busy do
+        Ref.write true drainingRef
+        launchAff_ pump
 
   -- Serve the sidebar. A command applies, persists, bumps the version, broadcasts
   -- `invalidate`, and runs its browser actions; a GetView returns one window of the
@@ -162,6 +205,12 @@ main = launchAff_ do
   -- that opened while this (event) page was suspended still needs this wake-up to
   -- recover from its first request racing our boot.
   liftEffect (Channel.broadcast api invalidateMsg)
+
+  -- Boot done, model live: install the drainer (so the buffered backlog and every
+  -- future event flow through `dispatch`) and flush whatever arrived while booting.
+  liftEffect do
+    Ref.write kick kickRef
+    kick
 
 -- Bump the structural version, ping open sidebars to re-fetch, then persist.
 -- The version bump + broadcast are synchronous with the caller's model write (no

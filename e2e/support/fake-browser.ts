@@ -98,13 +98,20 @@ export function installFakeBrowser(seed: Seed) {
 
   (globalThis as any).browser = {
     windows: {
-      getAll: (opts: any = {}) =>
-        Promise.resolve(
-          [...wins.values()].map((w) => ({
-            id: w.id,
-            tabs: opts.populate ? w.tabIds.map((id) => tabInfo(tabs.get(id))) : undefined,
-          }))
-        ),
+      getAll: (opts: any = {}) => {
+        driver.getAllCalls++;
+        // Capture the snapshot at CALL time — before awaiting any gate — exactly as
+        // a real getAll reflects the windows at the instant it ran. A test can hold
+        // boot open on `driver._getAllGate` to drive the "an event arrives after the
+        // boot snapshot but before boot finishes" path deterministically.
+        const snapshot = [...wins.values()].map((w) => ({
+          id: w.id,
+          tabs: opts.populate ? w.tabIds.map((id) => tabInfo(tabs.get(id))) : undefined,
+        }));
+        return driver._getAllGate
+          ? driver._getAllGate.then(() => snapshot)
+          : Promise.resolve(snapshot);
+      },
       update: (id: number, props: any) => {
         if (props && props.focused) driver.winFocusLog.push(id);
         return Promise.resolve({});
@@ -214,6 +221,22 @@ export function installFakeBrowser(seed: Seed) {
   const driver: any = {
     focusLog: [] as number[],
     winFocusLog: [] as number[],
+    // how many times windows.getAll has been called, and an optional gate a test
+    // can use to suspend boot mid-snapshot (see windows.getAll above).
+    getAllCalls: 0,
+    _getAllGate: null as Promise<void> | null,
+    _releaseGetAll: null as (() => void) | null,
+    blockGetAll: () => {
+      driver._getAllGate = new Promise<void>((res) => {
+        driver._releaseGetAll = res;
+      });
+    },
+    releaseGetAll: () => {
+      const r = driver._releaseGetAll;
+      driver._getAllGate = null;
+      driver._releaseGetAll = null;
+      if (r) r();
+    },
     // which window getCurrent() reports as hosting the sidebar (undefined = first)
     focusedWindowId: undefined as number | undefined,
     focusWindow: (id: number) => {
@@ -258,6 +281,13 @@ export function installFakeBrowser(seed: Seed) {
       w.tabIds.splice(index, 0, t.id);
       reindex(t.windowId);
       ev.tabCreated._emit(tabInfo(tab));
+    },
+    // Re-emit onCreated for a tab that already exists, mutating nothing — models
+    // Firefox replaying a suspended page's queued tabs.onCreated to it after boot
+    // has already snapshotted the (by then present) tab.
+    emitTabCreated: (id: number) => {
+      const t = tabs.get(id);
+      if (t) ev.tabCreated._emit(tabInfo(t));
     },
     closeTab: (id: number) => {
       const t = tabs.get(id);
