@@ -29,6 +29,15 @@ type RuntimeTab =
 
 type RuntimeWindow = { windowId :: Int, tabs :: Array RuntimeTab }
 
+-- | A container node awaiting a freshly-opened browser window to bind to, plus the
+-- | EXACT closed tab nodes (in creation order) to rebind in that window. Carrying
+-- | the precise list — rather than re-deriving "all the container's closed
+-- | children" when the window opens — is what lets a partial restore (one tab out
+-- | of a saved group) and a live-tab rehome (which recreates none of the group's
+-- | saved tabs) avoid hijacking the container's other saved tabs. `tabs` is empty
+-- | for a rehome (the window binds; its dragged tab arrives via onAttached).
+type PendingWindow = { node :: NodeId, tabs :: List NodeId }
+
 -- | A node is a browser tab or a container (group/folder). A container is also a
 -- | browser *window* whenever it currently owns a live tab — "window" is not a
 -- | separate kind, just a container with a live immediate child (and a windowId
@@ -86,17 +95,18 @@ type Node =
 -- | is being recreated in (a FIFO consumed in creation order), since the url the
 -- | browser reports for the new tab can differ from the saved one (trailing slash,
 -- | redirect, about:blank while loading); `pendingRestoreWindows` is the
--- | FIFO of container nodes awaiting a newly-opened browser window to bind to —
--- | either a closed window being restored, or a saved/plain container a live tab
--- | was just dragged into (so it goes live in place rather than a fresh window
--- | node appearing); `nextId` allocates NodeIds.
+-- | FIFO of container nodes awaiting a newly-opened browser window to bind to,
+-- | each carrying the exact tabs to rebind there (see `PendingWindow`) — either a
+-- | closed window/group being restored, or a saved/plain container a live tab was
+-- | just dragged into (so it goes live in place rather than a fresh window node
+-- | appearing); `nextId` allocates NodeIds.
 type Model =
   { roots :: Array NodeId
   , nodes :: Map NodeId Node
   , byTab :: Map Int NodeId
   , byWindow :: Map Int NodeId
   , pendingRestore :: Map Int (List NodeId)
-  , pendingRestoreWindows :: Array NodeId
+  , pendingRestoreWindows :: Array PendingWindow
   -- | tabIds the outliner itself is closing (a `CloseNode` "save & close" emits
   -- | `RemoveTab` for each). The browser reports every close — outliner-driven or
   -- | not — as the same `tabs.onRemoved`, so this set is how `TabClosed` tells the

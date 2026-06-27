@@ -11,7 +11,7 @@ import Data.Array as Array
 import Data.List (List)
 import Data.List as List
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
 import Model.Tree (applyPatch, insertAtClamped, liveTabNode, liveWindowNode, mergePatch, moveWithin, pruneFrom, subtreeIds)
@@ -60,15 +60,20 @@ applyBrowser now ev model = case ev of
       -- a window restore is pending: bind this new browser window to the closed
       -- window node being restored, so it goes live in place (its tabs rebind as
       -- their own onCreated events arrive) rather than a fresh node.
-      Just { head: wNid, tail } ->
+      Just { head: pw, tail } ->
         let model' = model { pendingRestoreWindows = tail }
-        in case Map.lookup wNid model'.nodes of
+        in case Map.lookup pw.node model'.nodes of
           Just wn | wn.kind == KGroup ->
             let
               wn' = wn { windowId = Just windowId, closedAt = Nothing }
-              -- queue this window's restorable tabs so each rebinds (in creation
-              -- order) as its onCreated arrives, instead of spawning a duplicate
-              model'' = model' { pendingRestore = Map.insert windowId (restorableTabs wNid model') model'.pendingRestore }
+              -- queue EXACTLY the tabs this restore opens into the window (carried on
+              -- the pending entry, in creation order), so each rebinds as its
+              -- onCreated arrives. A rehome carries none (its dragged tab arrives via
+              -- onAttached); a partial restore carries only the chosen tab(s) — so
+              -- neither hijacks the container's other saved closed tabs.
+              model'' =
+                if List.null pw.tabs then model'
+                else model' { pendingRestore = Map.insert windowId pw.tabs model'.pendingRestore }
               patch = { upserts: [ wn' ], removes: [], roots: Nothing }
             in
               commit model''.nextId patch model''
@@ -198,20 +203,6 @@ popPendingRestore windowId model = do
       if List.null tail then Map.delete windowId model.pendingRestore
       else Map.insert windowId tail model.pendingRestore
   pure { node: head, model: model { pendingRestore = pr } }
-
--- | The window's own restorable tabs — its DIRECT closed tab children with a url,
--- | in child order. Only these are recreated in this window (`Command.restore`
--- | groups tabs by their immediate parent, so a nested group's tabs open in their
--- | own new window), so the rebind queue lines up with the onCreated events.
-restorableTabs :: NodeId -> Model -> List NodeId
-restorableTabs root model = List.fromFoldable (Array.filter isRestorable kids)
-  where
-  kids = case Map.lookup root model.nodes of
-    Just wn -> wn.children
-    Nothing -> []
-  isRestorable nid = case Map.lookup nid model.nodes of
-    Just n -> n.kind == KTab && isNothing n.tabId && isJust n.url
-    Nothing -> false
 
 -- | A brand-new tab: create a node under its (possibly new) window.
 openFresh :: Number -> OpenedTab -> Model -> Step

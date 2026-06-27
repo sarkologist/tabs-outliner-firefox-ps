@@ -117,9 +117,9 @@ spec = describe "Model.Reconcile" do
 
   it "a pending-queue rebind is not itself marked restored (only Command.restore marks)" do
     -- a closed tab n2 with a pending-restore slot for its window that did NOT come
-    -- from a user restore — exactly what a live-tab rehome into a saved group leaves
-    -- behind (its closed children get queued via restorableTabs). The rebind must
-    -- NOT set restoredFromClosed, or a later browser close would wrongly DROP it.
+    -- from a user restore (Command.restore is what flags the tabs it reopens). The
+    -- rebind itself must NOT set restoredFromClosed, so that a stray queued node can
+    -- never be turned into one a later browser close would wrongly DROP.
     let
       m0 = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
       m1 = m0 { pendingRestore = Map.singleton 1 (List.singleton "n2") }
