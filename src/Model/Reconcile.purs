@@ -246,9 +246,6 @@ rebindRestored _ t _ n model =
       , url = t.url
       , favIconUrl = t.favIconUrl
       , closedAt = Nothing
-      -- mark the restore origin: if the browser later closes this tab, it is
-      -- dropped rather than re-saved (see the TabClosed handler).
-      , restoredFromClosed = true
       }
     patch = { upserts: [ n' ], removes: [], roots: Nothing }
   in

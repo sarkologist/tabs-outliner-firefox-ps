@@ -4,6 +4,7 @@ import Prelude
 
 import Data.Array as Array
 import Data.Foldable (foldl)
+import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Model.Event (BrowserEvent(..))
@@ -113,6 +114,23 @@ spec = describe "Model.Reconcile" do
     (isLive <$> Map.lookup "n1" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
+
+  it "a pending-queue rebind is not itself marked restored (only Command.restore marks)" do
+    -- a closed tab n2 with a pending-restore slot for its window that did NOT come
+    -- from a user restore — exactly what a live-tab rehome into a saved group leaves
+    -- behind (its closed children get queued via restorableTabs). The rebind must
+    -- NOT set restoredFromClosed, or a later browser close would wrongly DROP it.
+    let
+      m0 = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
+      m1 = m0 { pendingRestore = Map.singleton 1 (List.singleton "n2") }
+      reopened = (applyBrowser 0.0 (openTab 99 1 0 "A" true) m1).model
+    -- n2 rebound to the new browser tab...
+    (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
+    -- ...but is NOT flagged restored, so a browser close keeps it as history
+    (_.restoredFromClosed <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just false
+    let closedAgain = (applyBrowser 0.0 (TabClosed { tabId: 99 }) reopened).model
+    (isLive <$> Map.lookup "n2" closedAgain.nodes) `shouldEqual` Just false
+    (_.children <$> Map.lookup "n1" closedAgain.nodes) `shouldEqual` Just [ "n2" ]
 
   it "a reused browser tab id creates a fresh node (no stale-index no-op)" do
     let
