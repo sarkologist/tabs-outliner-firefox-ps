@@ -86,6 +86,38 @@ test.describe("commands", () => {
     await expect(page.locator("[role=treeitem]")).toHaveCount(3);
   });
 
+  test("a browser close of a restored tab drops it (does not re-save it)", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    // node id is stable across the close/restore round-trip (the SAME node rebinds)
+    const alphaId = (await readNodes(page)).find((n) => n.title === "Alpha")!.id;
+    await fake(page, "closeTab", 11); // close Alpha -> closed history
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(1);
+    // restore it (re-binds the node, now flagged as restored-from-closed)
+    await rowOf(page, "Alpha").locator(".title").click();
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    await expect(page.locator("[role=treeitem]")).toHaveCount(3);
+    // the BROWSER now closes the restored tab -> the node is dropped, not re-saved
+    const alphaTabId = (await readNodes(page)).find((n) => n.id === alphaId)!.tabId;
+    await fake(page, "closeTab", alphaTabId);
+    await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(false);
+    // Beta keeps window 1 alive, so only Alpha is gone: window + Beta remain
+    await expect(page.locator("[role=treeitem]")).toHaveCount(2);
+  });
+
+  test("the outliner's own close still keeps a restored tab as history", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    const alphaId = (await readNodes(page)).find((n) => n.title === "Alpha")!.id;
+    await fake(page, "closeTab", 11);
+    await rowOf(page, "Alpha").locator(".title").click(); // restore
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    // close it from the outliner ("save & close"): kept as closed history, NOT dropped
+    // (the restored row's title mirrors its url under the fake browser)
+    await clickAction(page, "http://a", ".btn-close");
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
+    await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(true);
+    await expect(page.locator("[role=treeitem]")).toHaveCount(3);
+  });
+
   test("restoring a closed window re-opens it as a new browser window", async ({ page }) => {
     // two windows: window 1 (the one that stays open) and window 2 (to be closed)
     await bootBackgroundAndSidebar(page, {

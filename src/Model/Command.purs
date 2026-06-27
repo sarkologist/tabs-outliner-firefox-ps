@@ -17,6 +17,7 @@ import Data.Foldable (foldl)
 import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, mergePatch, pruneFrom, rootAncestor, subtreeIds)
@@ -83,7 +84,18 @@ applyCommand now cmd model = case cmd of
     Just t -> actionsOnly [ FocusTab t ]
     Nothing -> restore nid
 
-  CloseNode nid -> actionsOnly (map RemoveTab (liveTabIds nid))
+  -- "Close (keep history)": remove the live tabs in the subtree but keep their
+  -- nodes as closed history. The browser reports each removal as a plain
+  -- tabs.onRemoved, indistinguishable from a user closing the tab — so mark these
+  -- tabIds as outliner-initiated, letting Model.Reconcile keep them (even a
+  -- restored tab, which a *browser* close would instead drop).
+  CloseNode nid ->
+    let tabIds = liveTabIds nid
+    in
+      { model: model { closingTabs = Set.union model.closingTabs (Set.fromFoldable tabIds) }
+      , patch: emptyPatch
+      , actions: map RemoveTab tabIds
+      }
 
   Delete nid -> case Map.lookup nid model.nodes of
     Nothing -> noChange

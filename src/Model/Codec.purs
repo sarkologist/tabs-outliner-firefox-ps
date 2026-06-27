@@ -104,6 +104,9 @@ fromRec r =
   , tabId: r.tabId
   , windowId: r.windowId
   , sessionId: r.sessionId
+  -- not serialized: restore origin is transient runtime state, re-derived false on
+  -- load (a reloaded live tab is treated as a fresh binding, not a user restore).
+  , restoredFromClosed: false
   }
 
 kindStr :: Kind -> String

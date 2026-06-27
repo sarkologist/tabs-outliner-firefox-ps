@@ -9,6 +9,8 @@ import Data.List (List)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Set (Set)
+import Data.Set as Set
 
 type NodeId = String
 
@@ -65,6 +67,14 @@ type Node =
   , tabId :: Maybe Int
   , windowId :: Maybe Int
   , sessionId :: Maybe String -- for browser.sessions restore of closed items
+  -- | True when this node's CURRENT live binding came from restoring it out of
+  -- | saved/closed history (set in `Model.Reconcile.rebindRestored`), as opposed
+  -- | to a tab the browser opened fresh. It governs one thing: a *browser*-initiated
+  -- | close of such a tab drops the node instead of re-saving it (the restored copy
+  -- | has served its purpose). Cleared the moment the node goes closed again, so it
+  -- | tracks only the live session in flight. Not persisted (re-derived as `false`
+  -- | on load) — restore state is transient here, like `pendingRestore`.
+  , restoredFromClosed :: Boolean
   }
 
 -- | The authoritative state. `byTab`/`byWindow` are derived indexes giving
@@ -84,6 +94,14 @@ type Model =
   , byWindow :: Map Int NodeId
   , pendingRestore :: Map Int (List NodeId)
   , pendingRestoreWindows :: Array NodeId
+  -- | tabIds the outliner itself is closing (a `CloseNode` "save & close" emits
+  -- | `RemoveTab` for each). The browser reports every close — outliner-driven or
+  -- | not — as the same `tabs.onRemoved`, so this set is how `TabClosed` tells the
+  -- | two apart: a tabId in here is an outliner close (keep it as history, the
+  -- | original behaviour) and the marker is consumed; a tabId absent is a genuine
+  -- | browser close (subject to the restored-tab drop rule). Transient, like the
+  -- | pending-restore queues.
+  , closingTabs :: Set Int
   , nextId :: Int
   }
 
@@ -112,6 +130,7 @@ emptyModel =
   , byWindow: Map.empty
   , pendingRestore: Map.empty
   , pendingRestoreWindows: []
+  , closingTabs: Set.empty
   , nextId: 1
   }
 
@@ -132,6 +151,7 @@ defaultNode id kind now =
   , tabId: Nothing
   , windowId: Nothing
   , sessionId: Nothing
+  , restoredFromClosed: false
   }
 
 displayTitle :: Node -> String
