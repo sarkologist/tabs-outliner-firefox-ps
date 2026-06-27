@@ -14,13 +14,15 @@ import Data.Array as Array
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
+import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, mergePatch, pruneFrom, rootAncestor, subtreeIds)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, defaultNode, emptyPatch, isLiveTab)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, defaultNode, emptyPatch, isLiveTab)
 
 data Command
   = Collapse NodeId Boolean
@@ -83,7 +85,18 @@ applyCommand now cmd model = case cmd of
     Just t -> actionsOnly [ FocusTab t ]
     Nothing -> restore nid
 
-  CloseNode nid -> actionsOnly (map RemoveTab (liveTabIds nid))
+  -- "Close (keep history)": remove the live tabs in the subtree but keep their
+  -- nodes as closed history. The browser reports each removal as a plain
+  -- tabs.onRemoved, indistinguishable from a user closing the tab — so mark these
+  -- tabIds as outliner-initiated, letting Model.Reconcile keep them (even a
+  -- restored tab, which a *browser* close would instead drop).
+  CloseNode nid ->
+    let tabIds = liveTabIds nid
+    in
+      { model: model { closingTabs = Set.union model.closingTabs (Set.fromFoldable tabIds) }
+      , patch: emptyPatch
+      , actions: map RemoveTab tabIds
+      }
 
   Delete nid -> case Map.lookup nid model.nodes of
     Nothing -> noChange
@@ -238,9 +251,12 @@ applyCommand now cmd model = case cmd of
       newWinIds = Array.nub (Array.mapMaybe (\x -> case x.target of
         IntoNewWindow w -> Just w
         _ -> Nothing) tagged)
-      urlsForWindow w = Array.mapMaybe
-        (\x -> if x.target == IntoNewWindow w then Just x.url else Nothing) tagged
-      windowActions = map (\w -> CreateWindow (urlsForWindow w)) newWinIds
+      forWindow w = Array.filter (\x -> x.target == IntoNewWindow w) tagged
+      windowActions = map (\w -> CreateWindow (map _.url (forWindow w))) newWinIds
+      -- carry the EXACT node ids (same order as the urls above) so each rebinds to
+      -- the right node when the window's tabs arrive — not "all of the container's
+      -- closed children", which a partial restore must not resurrect.
+      newWindows = map (\w -> { node: w, tabs: List.fromFoldable (map _.id (forWindow w)) }) newWinIds
 
       tabActions = Array.mapMaybe (\x -> case x.target of
         IntoWindow wid -> Just (CreateTab (Just wid) (Just x.url))
@@ -255,12 +271,23 @@ applyCommand now cmd model = case cmd of
         IntoWindow wid -> Map.alter (\ml -> Just (maybe (List.singleton x.id) (\l -> List.snoc l x.id) ml)) wid m
         _ -> m
       pending' = foldl queueIntoWindow model.pendingRestore tagged
+
+      -- Mark every closed tab we are reopening: if the *browser* later closes it,
+      -- the restored copy is dropped instead of re-saved (Reconcile.TabClosed). The
+      -- flag is set HERE — where we know a genuine user restore is happening — and
+      -- not in `rebindRestored`, because a live tab rehomed into a saved group also
+      -- rebinds via `pendingRestore`; flagging at the rebind would mistake that
+      -- (and any later tab in that window) for a restore and wrongly drop it.
+      flagged = Array.mapMaybe
+        (\x -> (\n -> n { restoredFromClosed = true }) <$> Map.lookup x.id model.nodes) tagged
+      patch = { upserts: flagged, removes: [], roots: Nothing }
+      model' = (applyPatch patch model)
+        { pendingRestore = pending'
+        , pendingRestoreWindows = model.pendingRestoreWindows <> newWindows
+        }
     in
-      { model: model
-          { pendingRestore = pending'
-          , pendingRestoreWindows = model.pendingRestoreWindows <> newWinIds
-          }
-      , patch: emptyPatch
+      { model: model'
+      , patch
       , actions: windowActions <> tabActions
       }
 
@@ -367,9 +394,11 @@ applyCommand now cmd model = case cmd of
 spliceReplace :: NodeId -> Array NodeId -> Array NodeId -> Array NodeId
 spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 
--- Append a container to the pending-window queue unless it is already waiting.
-pushPending :: NodeId -> Array NodeId -> Array NodeId
-pushPending pid xs = if Array.elem pid xs then xs else Array.snoc xs pid
+-- Append a container to the pending-window queue unless it is already waiting. A
+-- rehome carries no tabs to rebind (the dragged tab arrives via onAttached); the
+-- container just needs to bind the new window.
+pushPending :: NodeId -> Array PendingWindow -> Array PendingWindow
+pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.snoc xs { node: pid, tabs: Nil }
 
 -- | Where a closed tab node should reopen, decided by its IMMEDIATE parent — the
 -- | container that owns it (a node's owning window is its immediate parent). A

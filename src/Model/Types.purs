@@ -9,6 +9,8 @@ import Data.List (List)
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Set (Set)
+import Data.Set as Set
 
 type NodeId = String
 
@@ -26,6 +28,15 @@ type RuntimeTab =
   }
 
 type RuntimeWindow = { windowId :: Int, tabs :: Array RuntimeTab }
+
+-- | A container node awaiting a freshly-opened browser window to bind to, plus the
+-- | EXACT closed tab nodes (in creation order) to rebind in that window. Carrying
+-- | the precise list — rather than re-deriving "all the container's closed
+-- | children" when the window opens — is what lets a partial restore (one tab out
+-- | of a saved group) and a live-tab rehome (which recreates none of the group's
+-- | saved tabs) avoid hijacking the container's other saved tabs. `tabs` is empty
+-- | for a rehome (the window binds; its dragged tab arrives via onAttached).
+type PendingWindow = { node :: NodeId, tabs :: List NodeId }
 
 -- | A node is a browser tab or a container (group/folder). A container is also a
 -- | browser *window* whenever it currently owns a live tab — "window" is not a
@@ -65,6 +76,17 @@ type Node =
   , tabId :: Maybe Int
   , windowId :: Maybe Int
   , sessionId :: Maybe String -- for browser.sessions restore of closed items
+  -- | True when this node was reopened out of saved/closed history by a user
+  -- | restore (set in `Model.Command.restore`, on exactly the tabs it reopens),
+  -- | as opposed to a tab the browser opened fresh. It governs one thing: a
+  -- | *browser*-initiated close of such a tab drops the node instead of re-saving
+  -- | it (the restored copy has served its purpose). Cleared the moment the node
+  -- | goes closed again (`closeNode`), so it tracks only the live session in
+  -- | flight. NOT persisted (re-derived `false` on load): restore state is
+  -- | transient here, like `pendingRestore`. The deliberate consequence is that a
+  -- | restored tab closed after the event page has suspended/reloaded is *kept*,
+  -- | not dropped — a safe degradation (it never wrongly drops, only wrongly keeps).
+  , restoredFromClosed :: Boolean
   }
 
 -- | The authoritative state. `byTab`/`byWindow` are derived indexes giving
@@ -73,17 +95,26 @@ type Node =
 -- | is being recreated in (a FIFO consumed in creation order), since the url the
 -- | browser reports for the new tab can differ from the saved one (trailing slash,
 -- | redirect, about:blank while loading); `pendingRestoreWindows` is the
--- | FIFO of container nodes awaiting a newly-opened browser window to bind to —
--- | either a closed window being restored, or a saved/plain container a live tab
--- | was just dragged into (so it goes live in place rather than a fresh window
--- | node appearing); `nextId` allocates NodeIds.
+-- | FIFO of container nodes awaiting a newly-opened browser window to bind to,
+-- | each carrying the exact tabs to rebind there (see `PendingWindow`) — either a
+-- | closed window/group being restored, or a saved/plain container a live tab was
+-- | just dragged into (so it goes live in place rather than a fresh window node
+-- | appearing); `nextId` allocates NodeIds.
 type Model =
   { roots :: Array NodeId
   , nodes :: Map NodeId Node
   , byTab :: Map Int NodeId
   , byWindow :: Map Int NodeId
   , pendingRestore :: Map Int (List NodeId)
-  , pendingRestoreWindows :: Array NodeId
+  , pendingRestoreWindows :: Array PendingWindow
+  -- | tabIds the outliner itself is closing (a `CloseNode` "save & close" emits
+  -- | `RemoveTab` for each). The browser reports every close — outliner-driven or
+  -- | not — as the same `tabs.onRemoved`, so this set is how `TabClosed` tells the
+  -- | two apart: a tabId in here is an outliner close (keep it as history, the
+  -- | original behaviour) and the marker is consumed; a tabId absent is a genuine
+  -- | browser close (subject to the restored-tab drop rule). Transient, like the
+  -- | pending-restore queues.
+  , closingTabs :: Set Int
   , nextId :: Int
   }
 
@@ -112,6 +143,7 @@ emptyModel =
   , byWindow: Map.empty
   , pendingRestore: Map.empty
   , pendingRestoreWindows: []
+  , closingTabs: Set.empty
   , nextId: 1
   }
 
@@ -132,6 +164,7 @@ defaultNode id kind now =
   , tabId: Nothing
   , windowId: Nothing
   , sessionId: Nothing
+  , restoredFromClosed: false
   }
 
 displayTitle :: Node -> String

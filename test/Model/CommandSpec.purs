@@ -3,8 +3,10 @@ module Test.Model.CommandSpec where
 import Prelude
 
 import Data.Foldable (foldl)
+import Data.List (List(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Set as Set
 import Model.Command (BrowserAction(..), Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
@@ -170,7 +172,7 @@ spec = describe "Model.Command" do
     -- one new window carrying both tabs' urls, in order — no bare CreateTab
     activated.actions `shouldEqual` [ CreateWindow [ "http://A", "http://B" ] ]
     -- the closed window node is queued to rebind to the window that opens
-    activated.model.pendingRestoreWindows `shouldEqual` [ "n1" ]
+    (map _.node activated.model.pendingRestoreWindows) `shouldEqual` [ "n1" ]
 
   it "the restored window node goes live in place when its window opens (no duplicate)" do
     let
@@ -240,7 +242,7 @@ spec = describe "Model.Command" do
     -- (no bare CreateTab into the focused window)
     activated.actions `shouldEqual` [ CreateWindow [ "http://t" ] ]
     -- ...and the group node itself queues to bind that window — it goes live in place
-    activated.model.pendingRestoreWindows `shouldEqual` [ "n4" ]
+    (map _.node activated.model.pendingRestoreWindows) `shouldEqual` [ "n4" ]
     let
       reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
         [ WindowOpened { windowId: 5 }, openTab 71 5 0 "t" true ]
@@ -251,6 +253,83 @@ spec = describe "Model.Command" do
     (isLive <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just true
     (_.parent <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just "n4")
     reopened.roots `shouldEqual` [ "n1", "n4" ]
+
+  it "restoring ONE tab from a saved group rebinds that tab, not a sibling" do
+    let
+      grp = (defaultNode "g1" KGroup 0.0) { title = "Saved", children = [ "t1", "t2" ] }
+      a = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1" }
+      b = (defaultNode "t2" KTab 0.0) { title = "B", url = Just "http://b", parent = Just "g1" }
+      -- base.nextId is 4: import remaps g1 -> n4, t1 -> n5 (A), t2 -> n6 (B)
+      saved = (applyCommand 0.0 (Import { nodes: [ grp, a, b ], roots: [ "g1" ] }) base).model
+      -- restore only tab B (n6); its saved-group parent goes live as one new window
+      activated = applyCommand 0.0 (Activate "n6") saved
+    activated.actions `shouldEqual` [ CreateWindow [ "http://b" ] ]
+    -- exactly B is queued to rebind in that window — NOT its sibling A (the bug:
+    -- re-deriving "all the group's closed children" would queue [n5, n6])
+    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "n6" Nil ]
+    let
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ WindowOpened { windowId: 5 }, openTab 71 5 0 "b" true ]
+    -- B (n6) rebound to the created tab and flagged restored
+    (_.tabId <$> Map.lookup "n6" reopened.nodes) `shouldEqual` Just (Just 71)
+    (_.restoredFromClosed <$> Map.lookup "n6" reopened.nodes) `shouldEqual` Just true
+    -- A (n5) is untouched: still closed, unflagged, identity (url) intact — not hijacked
+    (isLive <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just false
+    (_.restoredFromClosed <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just false
+    (_.url <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just "http://a")
+    -- browser-closing the restored B drops it; A survives as saved history
+    let afterClose = (applyBrowser 0.0 (TabClosed { tabId: 71 }) reopened).model
+    Map.lookup "n6" afterClose.nodes `shouldEqual` Nothing
+    (_.url <$> Map.lookup "n5" afterClose.nodes) `shouldEqual` Just (Just "http://a")
+
+  -- A restored tab (re-opened from saved history) that the BROWSER then closes is
+  -- dropped, not re-saved — restoring is for using the tab, not re-accumulating it.
+  -- An OUTLINER close ("save & close") of the very same tab still keeps it. The
+  -- never-restored case keeps history as ever (Reconcile "keeps a closed tab...").
+  describe "browser-close of a restored tab" do
+    -- A(n2) under window n1, closed once (history), then restored and reopened as
+    -- browser tab 99. Shared by the cases below.
+    let
+      restored =
+        let
+          closed = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
+          activated = applyCommand 0.0 (Activate "n2") closed
+        in
+          (applyBrowser 0.0 (openTab 99 1 0 "A" true) activated.model).model
+
+    it "drops the node on a browser-initiated close (does not re-save it)" do
+      -- sanity: the reopened tab is flagged as restored
+      (_.restoredFromClosed <$> Map.lookup "n2" restored.nodes) `shouldEqual` Just true
+      let afterClose = (applyBrowser 0.0 (TabClosed { tabId: 99 }) restored).model
+      -- the restored tab is gone, not kept as crossed-out history...
+      Map.lookup "n2" afterClose.nodes `shouldEqual` Nothing
+      -- ...and its now-empty, un-renamed window is pruned away with it
+      Map.lookup "n1" afterClose.nodes `shouldEqual` Nothing
+      afterClose.roots `shouldEqual` []
+
+    it "keeps the node when the outliner closes it (save & close)" do
+      -- CloseNode removes the live tab AND marks it as an outliner-initiated close
+      let closing = applyCommand 0.0 (CloseNode "n2") restored
+      closing.actions `shouldEqual` [ RemoveTab 99 ]
+      Set.member 99 closing.model.closingTabs `shouldEqual` true
+      let afterClose = (applyBrowser 0.0 (TabClosed { tabId: 99 }) closing.model).model
+      -- kept as closed history under its window, and the marker is consumed
+      (isLive <$> Map.lookup "n2" afterClose.nodes) `shouldEqual` Just false
+      (_.tabId <$> Map.lookup "n2" afterClose.nodes) `shouldEqual` Just Nothing
+      (_.children <$> Map.lookup "n1" afterClose.nodes) `shouldEqual` Just [ "n2" ]
+      (_.restoredFromClosed <$> Map.lookup "n2" afterClose.nodes) `shouldEqual` Just false
+      Set.member 99 afterClose.closingTabs `shouldEqual` false
+
+    it "drops only the closed tab, keeping its siblings and window" do
+      -- window n1 holds restored A(n2, tab 99) and a fresh live B(n3, tab 12);
+      -- browser-closing A drops just A, leaving B and the window intact
+      let
+        withSibling = (applyBrowser 0.0 (openTab 12 1 1 "B" false) restored).model
+        afterClose = (applyBrowser 0.0 (TabClosed { tabId: 99 }) withSibling).model
+      Map.lookup "n2" afterClose.nodes `shouldEqual` Nothing
+      (isLive <$> Map.lookup "n3" afterClose.nodes) `shouldEqual` Just true
+      (_.children <$> Map.lookup "n1" afterClose.nodes) `shouldEqual` Just [ "n3" ]
+      afterClose.roots `shouldEqual` [ "n1" ]
 
   -- Dragging a LIVE tab to a new owning container drives the real browser tab; the
   -- tree is left untouched and re-settles from the resulting onAttached/onCreated.
@@ -266,7 +345,10 @@ spec = describe "Model.Command" do
         withGroup = (applyCommand 0.0 (NewGroup Nothing 0) base2).model -- group n6 at root
         r = applyCommand 0.0 (Move "n2" (Just "n6") 0) withGroup
       r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
-      r.model.pendingRestoreWindows `shouldEqual` [ "n6" ] -- n6 binds when its window opens
+      -- n6 binds when its window opens; it carries no tabs to rebind (the dragged
+      -- live tab arrives via onAttached, and n6's own saved tabs stay put)
+      (map _.node r.model.pendingRestoreWindows) `shouldEqual` [ "n6" ]
+      (map _.tabs r.model.pendingRestoreWindows) `shouldEqual` [ Nil ]
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
 
     it "out to the root: detaches into a brand-new window" do
