@@ -66,6 +66,23 @@ spec = describe "Model.Rematch" do
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
 
+  it "does not drop an orphan from a window whose url is shared (ambiguous match)" do
+    -- two prior windows both hold X; only one reopens. The duplicate url can bind the
+    -- wrong window node, so Y (fresh, in the other window) must be kept, never dropped.
+    let
+      prior2 = runEvents [ openTab 11 1 0 "X" true, openTab 21 2 0 "X" true, openTab 22 2 1 "Y" false ]
+      m = rematch [ rw 5 [ rt 51 5 0 "X" ] ] prior2
+    (_.title <$> Map.lookup "n5" m.nodes) `shouldEqual` Just "Y"
+    (isLive <$> Map.lookup "n5" m.nodes) `shouldEqual` Just false
+
+  it "does not drop an orphan when its window gained a fresh tab (url may have changed)" do
+    -- A reopens; B reopens under a changed url, so it can't be url-matched and lands as
+    -- a fresh node. B's old node may be that reopened tab, so it is kept, not dropped.
+    let m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "B2" ] ] prior
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
+    (_.title <$> Map.lookup "n3" m.nodes) `shouldEqual` Just "B"
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
+
   it "a genuinely new tab gets a new node under its window" do
     let m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "B", rt 53 5 2 "C" ] ] prior
     Map.size m.nodes `shouldEqual` 4

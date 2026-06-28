@@ -37,6 +37,7 @@ type Acc =
   , consumedWindows :: Set NodeId
   , touched :: Set NodeId
   , removed :: Set NodeId -- prior-live tabs dropped (fresh, orphaned in a reopened window)
+  , windowsWithFresh :: Set NodeId -- window nodes that gained a brand-new tab this run
   , nextId :: Int
   }
 
@@ -50,6 +51,23 @@ rematchOnStartup now current model0 =
     pool0 = foldl addToPool Map.empty priorTabs
     urlToWin = foldl addUrlWindow Map.empty priorTabs
 
+    -- Window nodes whose match is too ambiguous to safely DROP an orphan from. A url
+    -- shared across more than one prior window can bind the wrong window node at
+    -- re-match (url matching is approximate), so a tab is never dropped from such a
+    -- window — only from one whose urls are all unique. Dropping is conservative on
+    -- purpose: when unsure, keep (the prior behaviour), never delete.
+    urlWins = foldl addUrlWin Map.empty priorTabs
+    addUrlWin m n = case n.url, n.parent of
+      Just u, Just p -> Map.insertWith Set.union u (Set.singleton p) m
+      _, _ -> m
+    sharedUrl u = maybe false (\s -> Set.size s >= 2) (Map.lookup u urlWins)
+    windowsWithSharedUrl = foldl
+      (\acc n -> case n.url, n.parent of
+        Just u, Just p | sharedUrl u -> Set.insert p acc
+        _, _ -> acc)
+      Set.empty
+      priorTabs
+
     acc0 =
       { nodes: model0.nodes
       , roots: model0.roots
@@ -60,6 +78,7 @@ rematchOnStartup now current model0 =
       , consumedWindows: Set.empty
       , touched: Set.empty
       , removed: Set.empty
+      , windowsWithFresh: Set.empty
       , nextId: model0.nextId
       }
     acc1 = foldl (processWindow now urlToWin) acc0 current
@@ -68,11 +87,19 @@ rematchOnStartup now current model0 =
     -- page was suspended (it matches the original, which deletes such orphans). A
     -- restored tab is kept (it belongs in the tree); and a tab whose whole window did
     -- not reopen is kept too, preserving that window as a recoverable previous session.
+    -- Drop a prior-live tab only when we are SURE it was a fresh tab orphaned in a
+    -- window that genuinely reopened: never-restored, its window reopened, that window
+    -- has unambiguous (unique) urls, and it did not gain a brand-new tab (which might
+    -- be this one reopened with a changed/absent url). Anything less → keep, in place.
+    dropsClean a n =
+      not n.restoredFromClosed
+        && windowReopened a n
+        && maybe false (\p -> not (Set.member p windowsWithSharedUrl)) n.parent
+        && maybe false (\p -> not (Set.member p a.windowsWithFresh)) n.parent
     acc2 = foldl
       ( \a n ->
           if Set.member n.id a.consumedTabs then a
-          else if windowReopened a n then
-            (if n.restoredFromClosed then closeInAcc now a n.id else removeInAcc a n.id)
+          else if dropsClean a n then removeInAcc a n.id
           else closeInAcc now a n.id
       )
       acc1
@@ -215,6 +242,7 @@ freshTab now winId acc ct =
       { nodes = nodes'
       , byTab = Map.insert ct.tabId nid acc.byTab
       , touched = Set.insert nid (Set.insert winId acc.touched)
+      , windowsWithFresh = Set.insert winId acc.windowsWithFresh
       , nextId = acc.nextId + 1
       }
 

@@ -20,21 +20,20 @@ test("startup re-match reuses nodes across a restart (no duplication)", async ({
   await expect.poll(() => readNodes(p1).then((n) => n.length)).toBe(3);
   await p1.close();
 
-  // restart: fresh browser ids; Beta did not reopen, a new tab Gamma did
+  // restart: fresh browser ids; the window reopens cleanly with Alpha only (Beta did not)
   const p2 = await boot(context, {
-    windows: [{ id: 99, tabs: [{ id: 91, url: "http://a", title: "Alpha" }, { id: 93, url: "http://c", title: "Gamma" }] }],
+    windows: [{ id: 99, tabs: [{ id: 91, url: "http://a", title: "Alpha" }] }],
   });
 
-  // Alpha re-bound, Beta dropped (a fresh tab orphaned in the reopened window),
-  // Gamma created => window + 2 tabs = 3
-  await expect.poll(() => readNodes(p2).then((n) => n.length)).toBe(3);
+  // Alpha re-bound (same node, fresh id); Beta was a fresh tab orphaned in the
+  // reopened window, so it is dropped, not kept => window + 1 tab = 2
+  await expect.poll(() => readNodes(p2).then((n) => n.length)).toBe(2);
   const nodes = await readNodes(p2);
   const byTitle = (t: string) => nodes.find((n) => n.title === t);
 
   expect(isLive(byTitle("Alpha"))).toBe(true);
   expect(byTitle("Alpha").tabId).toBe(91); // same node, fresh browser id
   expect(byTitle("Beta")).toBeUndefined(); // never restored + didn't reopen -> dropped, not kept
-  expect(isLive(byTitle("Gamma"))).toBe(true); // genuinely new
 });
 
 test("startup consolidates a window whose tabs came from different prior windows", async ({ context }) => {
