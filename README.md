@@ -1,13 +1,14 @@
 # Tabs Outliner (PureScript rewrite)
 
-A Firefox sidebar extension that keeps a durable, editable outline of your live and
-recently-closed tabs and windows — a clean-slate rewrite aimed at the smallest design
-that still delivers the essential product.
+A Firefox sidebar extension that keeps a durable, editable outline of your live tabs and
+windows, plus the ones you save or restore — a clean-slate rewrite aimed at the smallest
+design that still delivers the essential product.
 
 ## What it does
 
 - Shows windows and tabs as a nested, live-updating sidebar outline.
-- Keeps recently-closed tabs/windows in the outline as greyed-out, **restorable** history.
+- Keeps the tabs/windows you **save** (close-to-keep) or have restored as greyed-out,
+  **restorable** history; a freshly-opened tab you just close is discarded, not auto-saved.
 - Click a live tab to focus it; click a closed one to restore it (re-binding the same
   node — no duplicate).
 - On open, and as you switch tabs, the sidebar **scrolls to the active tab** of its own
