@@ -90,9 +90,15 @@ rematchOnStartup now current model0 =
     -- restored tab is kept (it belongs in the tree); and a tab whose whole window did
     -- not reopen is kept too, preserving that window as a recoverable previous session.
     -- Drop a prior-live tab only when we are SURE it was a fresh tab orphaned in a
-    -- window that genuinely reopened: never-restored, its window reopened, that window
-    -- has unambiguous (unique) urls, and it did not gain a brand-new tab (which might
-    -- be this one reopened with a changed/absent url). Anything less → keep, in place.
+    -- window that genuinely reopened: never-restored, no unmatched/fresh tab appeared
+    -- anywhere this run (a changed-url reopen would land as one, and could be any
+    -- orphan), its window reopened, that window has unambiguous (unique) urls, and it
+    -- gained no tab moved in from another window. Anything less → keep, in place.
+    -- WAIVED (inherent to url matching, like the module header's edge stance): a tab
+    -- that BOTH moves to another window AND changes its url to exactly match a tab
+    -- that was closed there is indistinguishable from a real close, so the orphan it
+    -- leaves behind is dropped. A multi-coincidence, on par with two same-url tabs in
+    -- one window; ruling it out would mean never dropping (the url is all we have).
     dropsClean a n =
       not n.restoredFromClosed
         && not a.anyFreshTab
