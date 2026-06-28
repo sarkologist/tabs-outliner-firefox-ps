@@ -259,7 +259,16 @@ test.describe("move to top level / bottom", () => {
       .toEqual([["http://a"], ["http://b"]]);
   });
 
-  test("move to top level pulls a nested node out, just after its window", async ({ page }) => {
+  // a closed tab can't sit bare at the root, so promoting one wraps it in a fresh
+  // top-level group (closing the parentless-root-tab restore gap).
+  const wrappedAtTopLevel = async (page: Page, title: string): Promise<boolean> => {
+    const nodes = await readNodes(page);
+    const node = nodes.find((n) => n.title === title);
+    const parent = node?.parent ? nodes.find((n) => n.id === node.parent) : null;
+    return parent != null && (parent.parent ?? null) === null; // parent is a top-level group
+  };
+
+  test("move to top level pulls a nested node out, just after its window (tab wrapped)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, twoWindows);
     await fake(page, "closeWindow", 1); // Alpha + Beta become closed history under the closed window
     await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
@@ -267,21 +276,21 @@ test.describe("move to top level / bottom", () => {
 
     await clickAction(page, "Beta", ".btn-to-top-level");
 
-    // Beta is now a top-level node, landing just after its old window — so the live
-    // "Keep" window stays last; Beta did not go to the very bottom.
-    await expect.poll(() => parentOf(page, "Beta")).toBeNull();
+    // Beta is wrapped in a new top-level group landing just after its old window — so
+    // the live "Keep" window stays last; Beta did not go to the very bottom.
+    await expect.poll(() => wrappedAtTopLevel(page, "Beta")).toBe(true);
     expect((await titles(page)).at(-1)).toBe("Keep");
   });
 
-  test("move to bottom pulls a nested node to the very end", async ({ page }) => {
+  test("move to bottom pulls a nested node to the very end (tab wrapped)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, twoWindows);
     await fake(page, "closeWindow", 1);
     await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
 
     await clickAction(page, "Beta", ".btn-to-bottom");
 
-    // top-level now, and the last visible row
-    await expect.poll(() => parentOf(page, "Beta")).toBeNull();
+    // wrapped in a top-level group at the very end, so Beta is the last visible row
+    await expect.poll(() => wrappedAtTopLevel(page, "Beta")).toBe(true);
     expect((await titles(page)).at(-1)).toBe("Beta");
   });
 

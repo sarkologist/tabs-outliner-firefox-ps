@@ -75,8 +75,34 @@ derive instance eqRestoreTarget :: Eq RestoreTarget
 
 type CmdResult = { model :: Model, patch :: Patch, actions :: Array BrowserAction }
 
+-- | Run a command, then restore the invariant that a tab never sits bare at the
+-- | root (every KTab has a container parent). Wrapping is centralized here so it
+-- | covers every way a tab can reach the root — a move/drag/move-to-top/bottom, a
+-- | flatten of a root group, an import of the original's portable format — and so a
+-- | restore always routes a tab through a window/group (never the unflagged
+-- | reopen-into-current path that a parentless tab would have taken).
 applyCommand :: Number -> Command -> Model -> CmdResult
-applyCommand now cmd model = case cmd of
+applyCommand now cmd model = wrapRootTabs now (applyCommandRaw now cmd model)
+
+-- | A tab that ended up at the root is wrapped in a fresh group in place. Cheap:
+-- | scans only the root list and only allocates when a tab actually reached it.
+wrapRootTabs :: Number -> CmdResult -> CmdResult
+wrapRootTabs now r =
+  let
+    wrap a rootId = case Map.lookup rootId r.model.nodes of
+      Just n | n.kind == KTab ->
+        let g = (defaultNode ("n" <> show a.nid) KGroup now) { title = "New group", children = [ rootId ] }
+        in { roots: Array.snoc a.roots g.id, ups: a.ups <> [ g, n { parent = Just g.id } ], nid: a.nid + 1 }
+      _ -> a { roots = Array.snoc a.roots rootId }
+    acc = foldl wrap { roots: [], ups: [], nid: r.model.nextId } r.model.roots
+  in
+    if acc.nid == r.model.nextId then r
+    else
+      let patch = { upserts: acc.ups, removes: [], roots: Just acc.roots }
+      in r { model = (applyPatch patch r.model) { nextId = acc.nid }, patch = mergePatch r.patch patch }
+
+applyCommandRaw :: Number -> Command -> Model -> CmdResult
+applyCommandRaw now cmd model = case cmd of
   Collapse nid value -> withNode nid \n -> upsertOnly (n { collapsed = value })
 
   Rename nid title -> withNode nid \n -> upsertOnly (n { customTitle = Just title })

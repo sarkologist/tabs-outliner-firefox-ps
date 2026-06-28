@@ -392,22 +392,36 @@ spec = describe "Model.Command" do
         }
         emptyModel
 
-    it "move to top level pulls a nested node out, just after its root ancestor" do
+    it "move to top level pulls a nested node out, just after its root ancestor (tab wrapped)" do
       let r = applyCommand 0.0 (MoveTopLevel "B") closed
-      -- B lands at root index 1 (right after R1), not at the very end
-      r.model.roots `shouldEqual` [ "R1", "B", "R2" ]
-      (_.parent <$> Map.lookup "B" r.model.nodes) `shouldEqual` Just Nothing
+      -- B is a tab, which can't sit bare at the root, so it lands wrapped in a fresh
+      -- group at index 1 (right after R1), not at the very end
+      r.model.roots `shouldEqual` [ "R1", "n1", "R2" ]
+      (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "B" ]
+      (_.parent <$> Map.lookup "B" r.model.nodes) `shouldEqual` Just (Just "n1")
       -- pulling out G's only child prunes the now-empty group; R1 keeps its other child
       Map.lookup "G" r.model.nodes `shouldEqual` Nothing
       (_.children <$> Map.lookup "R1" r.model.nodes) `shouldEqual` Just [ "A" ]
       r.actions `shouldEqual` [] -- tree-only, never touches the browser
 
-    it "move to bottom pulls a nested node to the very end of the root list" do
+    it "move to bottom pulls a nested node to the very end of the root list (tab wrapped)" do
       let r = applyCommand 0.0 (MoveBottom "B") closed
-      r.model.roots `shouldEqual` [ "R1", "R2", "B" ]
-      (_.parent <$> Map.lookup "B" r.model.nodes) `shouldEqual` Just Nothing
+      r.model.roots `shouldEqual` [ "R1", "R2", "n1" ]
+      (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "B" ]
+      (_.parent <$> Map.lookup "B" r.model.nodes) `shouldEqual` Just (Just "n1")
       Map.lookup "G" r.model.nodes `shouldEqual` Nothing
       r.actions `shouldEqual` []
+
+    it "a tab wrapped at the root restores through its group (flagged), not into the current window" do
+      -- move closed tab B to the root: it wraps in group n1. Restoring B now routes via
+      -- that group (a new window) and flags it, so a later browser close KEEPS it —
+      -- closing the parentless-root-tab gap (a bare root tab would reopen unflagged).
+      let
+        wrapped = run (MoveTopLevel "B") closed
+        activated = applyCommand 0.0 (Activate "B") wrapped
+      activated.actions `shouldEqual` [ CreateWindow [ "http://b" ] ]
+      (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "B" Nil ]
+      (_.restoredFromClosed <$> Map.lookup "B" activated.model.nodes) `shouldEqual` Just true
 
     it "move to bottom reorders a non-last top-level node to the end" do
       let m = run (MoveBottom "R1") closed
