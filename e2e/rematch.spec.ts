@@ -25,14 +25,15 @@ test("startup re-match reuses nodes across a restart (no duplication)", async ({
     windows: [{ id: 99, tabs: [{ id: 91, url: "http://a", title: "Alpha" }, { id: 93, url: "http://c", title: "Gamma" }] }],
   });
 
-  // Alpha re-bound, Beta closed-in-place, Gamma created => window + 3 tabs = 4
-  await expect.poll(() => readNodes(p2).then((n) => n.length)).toBe(4);
+  // Alpha re-bound, Beta dropped (a fresh tab orphaned in the reopened window),
+  // Gamma created => window + 2 tabs = 3
+  await expect.poll(() => readNodes(p2).then((n) => n.length)).toBe(3);
   const nodes = await readNodes(p2);
   const byTitle = (t: string) => nodes.find((n) => n.title === t);
 
   expect(isLive(byTitle("Alpha"))).toBe(true);
   expect(byTitle("Alpha").tabId).toBe(91); // same node, fresh browser id
-  expect(isLive(byTitle("Beta"))).toBe(false); // didn't reopen, kept as history
+  expect(byTitle("Beta")).toBeUndefined(); // never restored + didn't reopen -> dropped, not kept
   expect(isLive(byTitle("Gamma"))).toBe(true); // genuinely new
 });
 

@@ -47,11 +47,23 @@ spec = describe "Model.Rematch" do
     Map.lookup 51 m.byTab `shouldEqual` Just "n2"
     Map.lookup 5 m.byWindow `shouldEqual` Just "n1"
 
-  it "a tab that did not reopen closes in place" do
+  it "a fresh tab orphaned in a reopened window is dropped (not kept)" do
+    -- B (n3) was never restored, and its window reopened without it: drop it, closing
+    -- the close-rule gap for a tab closed while the event page was suspended
     let m = rematch [ rw 5 [ rt 51 5 0 "A" ] ] prior
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
-    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
+    Map.lookup "n3" m.nodes `shouldEqual` Nothing
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
+
+  it "a restored tab orphaned in a reopened window is kept (a fresh one would drop)" do
+    -- mark A (n2) as restored-from-history; only B (n3) reopens in the window
+    let
+      priorR = prior { nodes = Map.update (\n -> Just (n { restoredFromClosed = true })) "n2" prior.nodes }
+      m = rematch [ rw 5 [ rt 52 5 0 "B" ] ] priorR
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just true
+    -- A (n2) did not reopen but is restored, so it is kept as closed history
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
 
   it "a genuinely new tab gets a new node under its window" do

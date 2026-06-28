@@ -36,6 +36,7 @@ type Acc =
   , consumedTabs :: Set NodeId
   , consumedWindows :: Set NodeId
   , touched :: Set NodeId
+  , removed :: Set NodeId -- prior-live tabs dropped (fresh, orphaned in a reopened window)
   , nextId :: Int
   }
 
@@ -58,11 +59,24 @@ rematchOnStartup now current model0 =
       , consumedTabs: Set.empty
       , consumedWindows: Set.empty
       , touched: Set.empty
+      , removed: Set.empty
       , nextId: model0.nextId
       }
     acc1 = foldl (processWindow now urlToWin) acc0 current
-    -- close prior-live tabs that did not reopen, in place
-    acc2 = foldl (\a n -> if Set.member n.id a.consumedTabs then a else closeInAcc now a n.id) acc1 priorTabs
+    -- prior-live tabs that did not reopen. A fresh (never-restored) tab orphaned in
+    -- a window that DID reopen is dropped — closing the tab rule's gap when the event
+    -- page was suspended (it matches the original, which deletes such orphans). A
+    -- restored tab is kept (it belongs in the tree); and a tab whose whole window did
+    -- not reopen is kept too, preserving that window as a recoverable previous session.
+    acc2 = foldl
+      ( \a n ->
+          if Set.member n.id a.consumedTabs then a
+          else if windowReopened a n then
+            (if n.restoredFromClosed then closeInAcc now a n.id else removeInAcc a n.id)
+          else closeInAcc now a n.id
+      )
+      acc1
+      priorTabs
     -- close prior-live windows that did not reopen
     acc3 = foldl (\a n -> if Set.member n.id a.consumedWindows then a else closeInAcc now a n.id) acc2 priorWindows
 
@@ -73,10 +87,13 @@ rematchOnStartup now current model0 =
       , byWindow = acc3.byWindow
       , nextId = acc3.nextId
       }
-    upserts = Array.mapMaybe (\i -> Map.lookup i acc3.nodes) (Array.fromFoldable (Set.toUnfoldable acc3.touched :: List NodeId))
+    upserts = Array.mapMaybe
+      (\i -> if Set.member i acc3.removed then Nothing else Map.lookup i acc3.nodes)
+      (Array.fromFoldable (Set.toUnfoldable acc3.touched :: List NodeId))
+    removes = Array.fromFoldable (Set.toUnfoldable acc3.removed :: List NodeId)
     roots = if acc3.roots == model0.roots then Nothing else Just acc3.roots
   in
-    { model: model', patch: { upserts, removes: [], roots } }
+    { model: model', patch: { upserts, removes, roots } }
 
 addToPool :: Map String (List NodeId) -> Node -> Map String (List NodeId)
 addToPool m n = case n.url of
@@ -220,4 +237,32 @@ closeInAcc now acc nid = case Map.lookup nid acc.nodes of
     { nodes = Map.insert nid (n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now, restoredFromClosed = false }) acc.nodes
     , touched = Set.insert nid acc.touched
     }
+  Nothing -> acc
+
+-- Did this tab's owning window reopen (its window node bound to a current browser
+-- window)? If so, the tab is orphaned in a still-open window; if not, its whole
+-- window is gone and the tab is preserved with it.
+windowReopened :: Acc -> Node -> Boolean
+windowReopened acc n = case n.parent of
+  Just pid -> Set.member pid acc.consumedWindows
+  Nothing -> false
+
+-- Drop a prior-live tab node entirely (a fresh, never-restored tab that did not
+-- reopen): unlink it from its window's child list and the node map, and record the
+-- removal so the patch deletes the persisted record (else it would reload next boot).
+removeInAcc :: Acc -> NodeId -> Acc
+removeInAcc acc nid = case Map.lookup nid acc.nodes of
+  Just n ->
+    let
+      nodes1 = Map.delete nid acc.nodes
+      nodes2 = case n.parent >>= (\pid -> Map.lookup pid nodes1) of
+        Just p -> Map.insert p.id (p { children = Array.delete nid p.children }) nodes1
+        Nothing -> nodes1
+    in
+      acc
+        { nodes = nodes2
+        , roots = Array.delete nid acc.roots
+        , removed = Set.insert nid acc.removed
+        , touched = maybe acc.touched (\pid -> Set.insert pid acc.touched) n.parent
+        }
   Nothing -> acc
