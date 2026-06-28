@@ -77,15 +77,14 @@ type Node =
   , windowId :: Maybe Int
   , sessionId :: Maybe String -- for browser.sessions restore of closed items
   -- | True when this node was reopened out of saved/closed history by a user
-  -- | restore (set in `Model.Command.restore`, on exactly the tabs it reopens),
-  -- | as opposed to a tab the browser opened fresh. It governs one thing: a
-  -- | *browser*-initiated close of such a tab drops the node instead of re-saving
-  -- | it (the restored copy has served its purpose). Cleared the moment the node
-  -- | goes closed again (`closeNode`), so it tracks only the live session in
-  -- | flight. NOT persisted (re-derived `false` on load): restore state is
-  -- | transient here, like `pendingRestore`. The deliberate consequence is that a
-  -- | restored tab closed after the event page has suspended/reloaded is *kept*,
-  -- | not dropped — a safe degradation (it never wrongly drops, only wrongly keeps).
+  -- | restore (set in `Model.Command.restore`, on exactly the tabs it reopens), as
+  -- | opposed to a tab the browser opened fresh. It governs one thing: on a
+  -- | *browser*-initiated close, a tab keeps its place in the tree as closed history
+  -- | ONLY if this is true (a restored tab belongs in the tree); a freshly-opened
+  -- | tab is dropped, not auto-saved. Cleared when the node goes closed again
+  -- | (`closeNode`). PERSISTED (unlike the pending-restore queues): because the
+  -- | default is now "drop on close", losing this across an event-page suspend would
+  -- | wrongly DROP a restored tab — data loss — so it must survive a reload.
   , restoredFromClosed :: Boolean
   }
 

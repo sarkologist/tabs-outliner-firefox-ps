@@ -272,12 +272,12 @@ applyCommand now cmd model = case cmd of
         _ -> m
       pending' = foldl queueIntoWindow model.pendingRestore tagged
 
-      -- Mark every closed tab we are reopening: if the *browser* later closes it,
-      -- the restored copy is dropped instead of re-saved (Reconcile.TabClosed). The
-      -- flag is set HERE — where we know a genuine user restore is happening — and
-      -- not in `rebindRestored`, because a live tab rehomed into a saved group also
-      -- rebinds via `pendingRestore`; flagging at the rebind would mistake that
-      -- (and any later tab in that window) for a restore and wrongly drop it.
+      -- Mark every closed tab we are reopening so a later *browser* close keeps it as
+      -- history (a restored tab belongs in the tree), whereas a freshly-opened tab is
+      -- dropped (Reconcile.TabClosed). The flag is set HERE — where we know a genuine
+      -- user restore is happening — and not in `rebindRestored`, because a live tab
+      -- rehomed into a saved group also rebinds via `pendingRestore`; flagging at the
+      -- rebind would mistake that (and any later tab in that window) for a restore.
       flagged = Array.mapMaybe
         (\x -> (\n -> n { restoredFromClosed = true }) <$> Map.lookup x.id model.nodes) tagged
       patch = { upserts: flagged, removes: [], roots: Nothing }

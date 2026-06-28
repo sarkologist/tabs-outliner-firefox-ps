@@ -103,13 +103,13 @@ applyBrowser now ev model = case ev of
       model' = model { closingTabs = Set.delete tabId model.closingTabs }
     in
       withTab tabId model' \nid n ->
-        if n.restoredFromClosed && not outlinerInitiated
-        -- a browser-initiated close of a tab the user had restored from history:
-        -- the restored copy has served its purpose, so drop the node rather than
-        -- re-saving it as closed history (the whole point of restoring was to use
-        -- it, not to re-accumulate it). An outliner-initiated close still keeps it.
-        then dropNode nid n model'
-        else commit model'.nextId { upserts: [ closeNode now n ], removes: [], roots: Nothing } model'
+        if n.restoredFromClosed || outlinerInitiated
+        -- keep as closed history only when it earns a place: a tab the user restored
+        -- from history (it belongs in the tree), or one the outliner itself is
+        -- closing ("save & close"). A freshly-opened tab the user just closes is
+        -- dropped, not auto-saved — the tree holds curated tabs, not every close.
+        then commit model'.nextId { upserts: [ closeNode now n ], removes: [], roots: Nothing } model'
+        else dropNode nid n model'
 
   TabChanged c -> withTab c.tabId model \_ n ->
     let
@@ -156,11 +156,11 @@ closeNode now n
   | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now, restoredFromClosed = false }
   | otherwise = n
 
--- | Remove a single browser-closed tab node from the tree entirely (used only when
--- | a *restored* tab is closed by the browser): unlink it from its parent and the
--- | node map, drop it from the roots if it sat there, then prune a parent left
--- | empty. This is `Command.Delete`'s structural removal for the one closing tab —
--- | a tab carries no children, so the subtree is just the node itself.
+-- | Remove a single browser-closed tab node from the tree entirely (used when a
+-- | freshly-opened, never-restored tab is closed by the browser): unlink it from
+-- | its parent and the node map, drop it from the roots if it sat there, then prune
+-- | a parent left empty. This is `Command.Delete`'s structural removal for the one
+-- | closing tab — a tab carries no children, so the subtree is just the node itself.
 dropNode :: NodeId -> Node -> Model -> Step
 dropNode nid n model =
   let

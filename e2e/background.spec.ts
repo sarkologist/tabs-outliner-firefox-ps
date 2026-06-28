@@ -86,18 +86,16 @@ test.describe("background owner", () => {
       .toEqual({ soloLive: true, parentWindowId: 2, hasWindow1: false });
   });
 
-  test("a live tab close keeps the node as closed history", async ({ page }) => {
+  test("a live tab close drops the node (never restored)", async ({ page }) => {
     await bootBackground(page, {
       windows: [{ id: 1, tabs: [{ id: 11, url: "http://a", title: "Alpha" }, { id: 12, url: "http://b", title: "Beta" }] }],
     });
     await expect.poll(() => readNodes(page).then((n) => n.length)).toBe(3);
 
     await fake(page, "closeTab", 11);
-    // node count unchanged; the closed node is still present, now closed history
-    // (its tab binding dropped, so no longer live)
-    await expect
-      .poll(async () => isLive((await readNodes(page)).find((n) => n.title === "Alpha")))
-      .toBe(false);
-    expect(await readNodes(page).then((n) => n.length)).toBe(3);
+    // a freshly-opened tab closed in the browser is dropped, not kept as history:
+    // Alpha's node is gone and the record count falls (window + Beta remain)
+    await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.title === "Alpha"))).toBe(false);
+    expect(await readNodes(page).then((n) => n.length)).toBe(2);
   });
 });

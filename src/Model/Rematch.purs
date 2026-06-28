@@ -217,7 +217,7 @@ popPoolFor winId u acc = do
 closeInAcc :: Number -> Acc -> NodeId -> Acc
 closeInAcc now acc nid = case Map.lookup nid acc.nodes of
   Just n -> acc
-    { nodes = Map.insert nid (n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }) acc.nodes
+    { nodes = Map.insert nid (n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now, restoredFromClosed = false }) acc.nodes
     , touched = Set.insert nid acc.touched
     }
   Nothing -> acc

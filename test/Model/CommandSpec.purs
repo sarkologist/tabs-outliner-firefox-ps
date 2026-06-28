@@ -11,7 +11,7 @@ import Model.Command (BrowserAction(..), Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch)
-import Model.Types (Kind(..), Model, defaultNode, emptyModel, isLive)
+import Model.Types (Kind(..), Model, NodeId, defaultNode, emptyModel, isLive)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -38,6 +38,15 @@ base2 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false, openTab 2
 
 run :: Command -> Model -> Model
 run c m = (applyCommand 0.0 c m).model
+
+-- Close a live tab the way the outliner's "Close (keep history)" does: emit the
+-- removal, then feed the resulting browser onRemoved back as an outliner-initiated
+-- close, so the node is KEPT as closed history. (A plain browser close of a fresh,
+-- never-restored tab now drops it, so this is how a test makes a closed entry.)
+outlinerClose :: NodeId -> Int -> Model -> Model
+outlinerClose nid tabId m =
+  let saved = (applyCommand 0.0 (CloseNode nid) m).model
+  in (applyBrowser 0.0 (TabClosed { tabId }) saved).model
 
 spec :: Spec Unit
 spec = describe "Model.Command" do
@@ -141,7 +150,7 @@ spec = describe "Model.Command" do
 
   it "restore re-binds the existing node when the tab re-opens (no duplicate)" do
     let
-      closed = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
+      closed = outlinerClose "n2" 11 (runEvents [ openTab 11 1 0 "A" true ])
       activated = applyCommand 0.0 (Activate "n2") closed
       reopened = (applyBrowser 0.0 (openTab 99 1 0 "A" true) activated.model).model
     -- the window is still live, so the tab reopens back into it (not a new window)
@@ -153,7 +162,7 @@ spec = describe "Model.Command" do
 
   it "restoring rebinds the clicked node even when the recreated tab reports a different url" do
     let
-      closed = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
+      closed = outlinerClose "n2" 11 (runEvents [ openTab 11 1 0 "A" true ])
       activated = applyCommand 0.0 (Activate "n2") closed
       -- the browser recreates the tab, but onCreated reports a normalized/redirected
       -- url ("http://A/" with a trailing slash, not the stored "http://A")
@@ -277,59 +286,60 @@ spec = describe "Model.Command" do
     (isLive <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just false
     (_.restoredFromClosed <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just false
     (_.url <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just "http://a")
-    -- browser-closing the restored B drops it; A survives as saved history
+    -- browser-closing the restored B keeps it as history (it belongs in the tree);
+    -- A is likewise untouched
     let afterClose = (applyBrowser 0.0 (TabClosed { tabId: 71 }) reopened).model
-    Map.lookup "n6" afterClose.nodes `shouldEqual` Nothing
+    (isLive <$> Map.lookup "n6" afterClose.nodes) `shouldEqual` Just false
+    (_.url <$> Map.lookup "n6" afterClose.nodes) `shouldEqual` Just (Just "http://b")
     (_.url <$> Map.lookup "n5" afterClose.nodes) `shouldEqual` Just (Just "http://a")
 
-  -- A restored tab (re-opened from saved history) that the BROWSER then closes is
-  -- dropped, not re-saved — restoring is for using the tab, not re-accumulating it.
-  -- An OUTLINER close ("save & close") of the very same tab still keeps it. The
-  -- never-restored case keeps history as ever (Reconcile "keeps a closed tab...").
-  describe "browser-close of a restored tab" do
-    -- A(n2) under window n1, closed once (history), then restored and reopened as
-    -- browser tab 99. Shared by the cases below.
+  -- The close rule: a browser-closed tab keeps its place as closed history ONLY if
+  -- it was restored from history (it belongs in the tree) or the outliner itself
+  -- closed it ("save & close"); a freshly-opened tab the user just closes is dropped,
+  -- not auto-saved.
+  describe "browser-close keeps only restored tabs" do
+    -- A(n2) under window n1, saved as history, then restored and reopened as tab 99.
+    -- `restored` has nodes n1 (live window) + n2 (restored A, tab 99); nextId = 3.
     let
       restored =
         let
-          closed = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
+          closed = outlinerClose "n2" 11 (runEvents [ openTab 11 1 0 "A" true ])
           activated = applyCommand 0.0 (Activate "n2") closed
         in
           (applyBrowser 0.0 (openTab 99 1 0 "A" true) activated.model).model
 
-    it "drops the node on a browser-initiated close (does not re-save it)" do
+    it "keeps a restored tab as history on a browser close" do
       -- sanity: the reopened tab is flagged as restored
       (_.restoredFromClosed <$> Map.lookup "n2" restored.nodes) `shouldEqual` Just true
       let afterClose = (applyBrowser 0.0 (TabClosed { tabId: 99 }) restored).model
-      -- the restored tab is gone, not kept as crossed-out history...
-      Map.lookup "n2" afterClose.nodes `shouldEqual` Nothing
-      -- ...and its now-empty, un-renamed window is pruned away with it
-      Map.lookup "n1" afterClose.nodes `shouldEqual` Nothing
-      afterClose.roots `shouldEqual` []
-
-    it "keeps the node when the outliner closes it (save & close)" do
-      -- CloseNode removes the live tab AND marks it as an outliner-initiated close
-      let closing = applyCommand 0.0 (CloseNode "n2") restored
-      closing.actions `shouldEqual` [ RemoveTab 99 ]
-      Set.member 99 closing.model.closingTabs `shouldEqual` true
-      let afterClose = (applyBrowser 0.0 (TabClosed { tabId: 99 }) closing.model).model
-      -- kept as closed history under its window, and the marker is consumed
+      -- kept as closed history under its window (it belongs in the tree)...
       (isLive <$> Map.lookup "n2" afterClose.nodes) `shouldEqual` Just false
-      (_.tabId <$> Map.lookup "n2" afterClose.nodes) `shouldEqual` Just Nothing
       (_.children <$> Map.lookup "n1" afterClose.nodes) `shouldEqual` Just [ "n2" ]
+      -- ...with the restore flag cleared now that it is closed again
       (_.restoredFromClosed <$> Map.lookup "n2" afterClose.nodes) `shouldEqual` Just false
-      Set.member 99 afterClose.closingTabs `shouldEqual` false
 
-    it "drops only the closed tab, keeping its siblings and window" do
-      -- window n1 holds restored A(n2, tab 99) and a fresh live B(n3, tab 12);
-      -- browser-closing A drops just A, leaving B and the window intact
+    it "drops a freshly-opened tab on a browser close" do
+      -- a brand-new tab (n3, tab 50) the user opens then closes, never restored
       let
-        withSibling = (applyBrowser 0.0 (openTab 12 1 1 "B" false) restored).model
-        afterClose = (applyBrowser 0.0 (TabClosed { tabId: 99 }) withSibling).model
-      Map.lookup "n2" afterClose.nodes `shouldEqual` Nothing
-      (isLive <$> Map.lookup "n3" afterClose.nodes) `shouldEqual` Just true
-      (_.children <$> Map.lookup "n1" afterClose.nodes) `shouldEqual` Just [ "n3" ]
-      afterClose.roots `shouldEqual` [ "n1" ]
+        fresh = (applyBrowser 0.0 (openTab 50 1 1 "Fresh" false) restored).model
+        afterClose = (applyBrowser 0.0 (TabClosed { tabId: 50 }) fresh).model
+      -- the fresh tab is gone; the restored A (n2) and the window remain
+      Map.lookup "n3" afterClose.nodes `shouldEqual` Nothing
+      (_.tabId <$> Map.lookup "n2" afterClose.nodes) `shouldEqual` Just (Just 99)
+      (_.children <$> Map.lookup "n1" afterClose.nodes) `shouldEqual` Just [ "n2" ]
+
+    it "keeps a fresh tab when the outliner closes it (save & close)" do
+      -- the same fresh tab, closed via the outliner, IS kept — an explicit save,
+      -- unlike a browser close of an identical tab
+      let
+        fresh = (applyBrowser 0.0 (openTab 50 1 1 "Fresh" false) restored).model
+        closing = applyCommand 0.0 (CloseNode "n3") fresh
+        afterClose = (applyBrowser 0.0 (TabClosed { tabId: 50 }) closing.model).model
+      closing.actions `shouldEqual` [ RemoveTab 50 ]
+      Set.member 50 closing.model.closingTabs `shouldEqual` true
+      (isLive <$> Map.lookup "n3" afterClose.nodes) `shouldEqual` Just false
+      (_.children <$> Map.lookup "n1" afterClose.nodes) `shouldEqual` Just [ "n2", "n3" ]
+      Set.member 50 afterClose.closingTabs `shouldEqual` false
 
   -- Dragging a LIVE tab to a new owning container drives the real browser tab; the
   -- tree is left untouched and re-settles from the resulting onAttached/onCreated.

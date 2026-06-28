@@ -66,7 +66,8 @@ test.describe("commands", () => {
 
   test("clicking a closed tab restores it (re-binds the node, no duplicate)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await fake(page, "closeTab", 11);
+    // save Alpha as closed history via the outliner (a browser close would drop it)
+    await clickAction(page, "Alpha", ".btn-close");
     await expect(page.locator('[data-status="closed"]')).toHaveCount(1);
     // click the (now closed) Alpha row -> Activate -> Restore
     await rowOf(page, "Alpha").locator(".title").click();
@@ -77,7 +78,7 @@ test.describe("commands", () => {
 
   test("restore rebinds the node even when the recreated tab's url differs (redirect)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, { ...seed, redirectCreatedTabs: true });
-    await fake(page, "closeTab", 11); // close Alpha -> closed history
+    await clickAction(page, "Alpha", ".btn-close"); // save Alpha as closed history
     await expect(page.locator('[data-status="closed"]')).toHaveCount(1);
     // restore it; the recreated tab's onCreated reports a different url than stored
     await rowOf(page, "Alpha").locator(".title").click();
@@ -86,32 +87,36 @@ test.describe("commands", () => {
     await expect(page.locator("[role=treeitem]")).toHaveCount(3);
   });
 
-  test("a browser close of a restored tab drops it (does not re-save it)", async ({ page }) => {
+  test("a browser close of a fresh tab drops it (never saved)", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    // Beta was never restored or saved; closing it in the browser discards it
+    await fake(page, "closeTab", 12);
+    await expect.poll(() => page.locator("[role=treeitem]").count()).toBe(2); // window + Alpha
+    await expect(page.getByText("Beta")).toHaveCount(0);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+  });
+
+  test("a browser close of a restored tab keeps it as history", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     // node id is stable across the close/restore round-trip (the SAME node rebinds)
     const alphaId = (await readNodes(page)).find((n) => n.title === "Alpha")!.id;
-    await fake(page, "closeTab", 11); // close Alpha -> closed history
-    await expect(page.locator('[data-status="closed"]')).toHaveCount(1);
-    // restore it (re-binds the node, now flagged as restored-from-closed)
-    await rowOf(page, "Alpha").locator(".title").click();
+    await clickAction(page, "Alpha", ".btn-close"); // save Alpha as closed history
+    await rowOf(page, "Alpha").locator(".title").click(); // restore -> live, flagged
     await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
-    await expect(page.locator("[role=treeitem]")).toHaveCount(3);
-    // the BROWSER now closes the restored tab -> the node is dropped, not re-saved
+    // the BROWSER now closes the restored tab -> kept as history (it belongs in the tree)
     const alphaTabId = (await readNodes(page)).find((n) => n.id === alphaId)!.tabId;
     await fake(page, "closeTab", alphaTabId);
-    await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(false);
-    // Beta keeps window 1 alive, so only Alpha is gone: window + Beta remain
-    await expect(page.locator("[role=treeitem]")).toHaveCount(2);
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
+    await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(true);
   });
 
-  test("the outliner's own close still keeps a restored tab as history", async ({ page }) => {
+  test("the outliner's own close keeps a tab as history (save & close)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     const alphaId = (await readNodes(page)).find((n) => n.title === "Alpha")!.id;
-    await fake(page, "closeTab", 11);
-    await rowOf(page, "Alpha").locator(".title").click(); // restore
+    await clickAction(page, "Alpha", ".btn-close"); // save Alpha
+    await rowOf(page, "Alpha").locator(".title").click(); // restore (row title becomes its url)
     await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
-    // close it from the outliner ("save & close"): kept as closed history, NOT dropped
-    // (the restored row's title mirrors its url under the fake browser)
+    // close it from the outliner again ("save & close"): kept as closed history
     await clickAction(page, "http://a", ".btn-close");
     await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
     await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(true);
