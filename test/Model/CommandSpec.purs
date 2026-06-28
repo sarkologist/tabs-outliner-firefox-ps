@@ -7,7 +7,7 @@ import Data.List (List(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Set as Set
-import Model.Command (BrowserAction(..), Command(..), applyCommand)
+import Model.Command (BrowserAction(..), Command(..), applyCommand, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch)
@@ -99,6 +99,10 @@ spec = describe "Model.Command" do
     let r = applyCommand 0.0 (Flatten "n1") base -- n1 is the live window (windowId 1) at root
     Map.lookup "n1" r.model.nodes `shouldEqual` Nothing -- the window node is gone...
     r.actions `shouldEqual` [ NewWindowWithTabs [ 11, 12 ] ] -- ...its tabs re-homed into one fresh window
+    -- the promoted LIVE tabs sit at the root transiently (the browser action moves the
+    -- real tabs; events re-home them) — they must NOT be wrapped in stray groups
+    r.model.roots `shouldEqual` [ "n2", "n3" ]
+    (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just Nothing
 
   it "flatten of a nested live window merges its tabs into the parent window" do
     let
@@ -422,6 +426,28 @@ spec = describe "Model.Command" do
       activated.actions `shouldEqual` [ CreateWindow [ "http://b" ] ]
       (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "B" Nil ]
       (_.restoredFromClosed <$> Map.lookup "B" activated.model.nodes) `shouldEqual` Just true
+
+    -- wrapRootTabsModel is the shared enforcer (used per-command and at boot to
+    -- normalize loaded data). It wraps a bare root CLOSED tab, but leaves a live tab
+    -- (transient at root during a move/flatten) and a container alone.
+    it "wrapRootTabsModel wraps a bare root closed tab only" do
+      let
+        m = applyPatch
+          { upserts:
+              [ (defaultNode "ct" KTab 0.0) { url = Just "http://c", title = "C", closedAt = Just 0.0 }
+              , (defaultNode "lt" KTab 0.0) { tabId = Just 9, url = Just "http://l", title = "L" }
+              , (defaultNode "grp" KGroup 0.0) { title = "G" }
+              ]
+          , removes: []
+          , roots: Just [ "ct", "lt", "grp" ]
+          }
+          emptyModel
+        w = wrapRootTabsModel 0.0 m
+      -- closed tab "ct" wrapped in a fresh group "n1"; live "lt" and group "grp" untouched
+      w.model.roots `shouldEqual` [ "n1", "lt", "grp" ]
+      (_.children <$> Map.lookup "n1" w.model.nodes) `shouldEqual` Just [ "ct" ]
+      (_.parent <$> Map.lookup "ct" w.model.nodes) `shouldEqual` Just (Just "n1")
+      (_.parent <$> Map.lookup "lt" w.model.nodes) `shouldEqual` Just Nothing
 
     it "move to bottom reorders a non-last top-level node to the end" do
       let m = run (MoveBottom "R1") closed

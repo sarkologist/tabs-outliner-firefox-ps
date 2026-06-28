@@ -84,22 +84,34 @@ type CmdResult = { model :: Model, patch :: Patch, actions :: Array BrowserActio
 applyCommand :: Number -> Command -> Model -> CmdResult
 applyCommand now cmd model = wrapRootTabs now (applyCommandRaw now cmd model)
 
--- | A tab that ended up at the root is wrapped in a fresh group in place. Cheap:
--- | scans only the root list and only allocates when a tab actually reached it.
+-- | A tab that ended up at the root is wrapped in a fresh group in place.
 wrapRootTabs :: Number -> CmdResult -> CmdResult
 wrapRootTabs now r =
+  let w = wrapRootTabsModel now r.model
+  in r { model = w.model, patch = mergePatch r.patch w.patch }
+
+-- | Wrap every root-level CLOSED tab in a fresh group (the no-bare-root-tab
+-- | invariant). A LIVE tab momentarily at the root is left alone — e.g. flattening a
+-- | top-level live window promotes its tabs to root, but a browser action
+-- | (`NewWindowWithTabs`) is already moving them into a new window, and the resulting
+-- | events re-home them; wrapping them would spawn stray groups. Cheap: scans only
+-- | the root list, allocates only when a closed tab actually reached it. Returns the
+-- | new model and the patch (empty if nothing wrapped); reused at boot to normalize
+-- | loaded data so a pre-existing bare root tab is fixed before its first restore.
+wrapRootTabsModel :: Number -> Model -> { model :: Model, patch :: Patch }
+wrapRootTabsModel now model =
   let
-    wrap a rootId = case Map.lookup rootId r.model.nodes of
-      Just n | n.kind == KTab ->
+    wrap a rootId = case Map.lookup rootId model.nodes of
+      Just n | n.kind == KTab && not (isLiveTab n) ->
         let g = (defaultNode ("n" <> show a.nid) KGroup now) { title = "New group", children = [ rootId ] }
         in { roots: Array.snoc a.roots g.id, ups: a.ups <> [ g, n { parent = Just g.id } ], nid: a.nid + 1 }
       _ -> a { roots = Array.snoc a.roots rootId }
-    acc = foldl wrap { roots: [], ups: [], nid: r.model.nextId } r.model.roots
+    acc = foldl wrap { roots: [], ups: [], nid: model.nextId } model.roots
   in
-    if acc.nid == r.model.nextId then r
+    if acc.nid == model.nextId then { model, patch: emptyPatch }
     else
       let patch = { upserts: acc.ups, removes: [], roots: Just acc.roots }
-      in r { model = (applyPatch patch r.model) { nextId = acc.nid }, patch = mergePatch r.patch patch }
+      in { model: (applyPatch patch model) { nextId = acc.nid }, patch }
 
 applyCommandRaw :: Number -> Command -> Model -> CmdResult
 applyCommandRaw now cmd model = case cmd of
