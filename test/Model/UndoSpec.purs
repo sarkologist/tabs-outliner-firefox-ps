@@ -133,6 +133,18 @@ spec = describe "Model.Undo" do
     -- the rest of the tree is intact (its sibling stays under the window)
     (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n3" ]
 
+  it "undo of a reorder does not resurrect a tab dropped meanwhile (no dangling child)" do
+    let
+      -- reorder n2 after n3 within window n1 (a tree edit, so it records an undo entry)
+      reordered = applyCommand 0.0 (Move "n2" (Just "n1") 1) base
+      entry = inversePatch 0.0 base reordered.patch
+      -- n2 (fresh) is browser-closed before the undo -> dropped
+      closed = (applyBrowser 0.0 (TabClosed { tabId: 11 }) reordered.model).model
+      back = (applyEntry 0.0 entry closed).model
+    -- the dropped tab is neither resurrected nor left dangling in its parent's children
+    Map.lookup "n2" back.nodes `shouldEqual` Nothing
+    (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n3" ]
+
   it "undo of a move keeps a tab opened in the parent meanwhile (no orphan)" do
     let
       m0 = (applyCommand 0.0 (NewGroup (Just "n1") 0) base).model -- group n4 first under n1: [n4, n2, n3]

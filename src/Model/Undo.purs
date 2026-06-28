@@ -73,7 +73,7 @@ inversePatch now before p =
 -- | unchanged.
 downgradeBrowser :: Number -> Node -> Node
 downgradeBrowser now n
-  | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }
+  | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now, restoredFromClosed = false }
   | otherwise = n
 
 -- | Append the "concurrent additions" to a restored sibling list: ids in the
@@ -132,9 +132,21 @@ applyEntry now entry model =
     -- the browser closed) is NOT re-linked, so it is skipped: re-adding it would
     -- orphan it (its parent no longer lists it) and it must never come back live.
     linked = Set.fromFoldable (Array.concatMap _.children entry.upserts <> fromMaybe [] entry.roots)
-    keep snap = Map.member snap.id model.nodes || Set.member snap.id linked
-    upserts' = map (reconcileNode now known model) (Array.filter keep entry.upserts)
-    roots' = map (\rs -> mergeSiblings known rs model.roots) entry.roots
+    -- A gone node is re-added only if it is a removal-restore: those were downgraded
+    -- to non-live by `inversePatch`, so `not (isLive snap)` tells them apart from an
+    -- overwrite-restore whose live node a browser close dropped meanwhile (its
+    -- snapshot is still live). Without the liveness guard, undoing a move/reorder
+    -- would resurrect such a dropped tab via its restored parent's child list.
+    keep snap = Map.member snap.id model.nodes || (Set.member snap.id linked && not (isLive snap))
+    kept = Array.filter keep entry.upserts
+    -- after this entry applies, exactly these ids exist: the nodes we (re-)add, plus
+    -- current nodes the entry doesn't remove. Prune child/root refs to anything else
+    -- so a restored parent never lists a node a live event dropped meanwhile.
+    keptIds = Set.fromFoldable (map _.id kept)
+    removedSet = Set.fromFoldable entry.removes
+    survives i = Set.member i keptIds || (Map.member i model.nodes && not (Set.member i removedSet))
+    upserts' = map (\snap -> let n = reconcileNode now known model snap in n { children = Array.filter survives n.children }) kept
+    roots' = map (\rs -> Array.filter survives (mergeSiblings known rs model.roots)) entry.roots
     applied = entry { upserts = upserts', roots = roots' }
     actions = map RemoveTab (Array.mapMaybe (liveTab model) entry.removes)
     inverse = inversePatch now model applied
