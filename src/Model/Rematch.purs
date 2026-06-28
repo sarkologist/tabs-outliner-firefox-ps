@@ -37,7 +37,8 @@ type Acc =
   , consumedWindows :: Set NodeId
   , touched :: Set NodeId
   , removed :: Set NodeId -- prior-live tabs dropped (fresh, orphaned in a reopened window)
-  , windowsGainedTab :: Set NodeId -- window nodes that gained a tab not originally their own (a fresh tab, or one moved in from another window) — too ambiguous to drop an orphan from
+  , windowsGainedTab :: Set NodeId -- window nodes that gained a tab moved in from another window — too ambiguous to drop an orphan from
+  , anyFreshTab :: Boolean -- a brand-new (unmatched) tab appeared anywhere: it could be ANY orphan reopened under a changed url, so suppress all drops this run
   , nextId :: Int
   }
 
@@ -79,6 +80,7 @@ rematchOnStartup now current model0 =
       , touched: Set.empty
       , removed: Set.empty
       , windowsGainedTab: Set.empty
+      , anyFreshTab: false
       , nextId: model0.nextId
       }
     acc1 = foldl (processWindow now urlToWin) acc0 current
@@ -93,6 +95,7 @@ rematchOnStartup now current model0 =
     -- be this one reopened with a changed/absent url). Anything less → keep, in place.
     dropsClean a n =
       not n.restoredFromClosed
+        && not a.anyFreshTab
         && windowReopened a n
         && maybe false (\p -> not (Set.member p windowsWithSharedUrl)) n.parent
         && maybe false (\p -> not (Set.member p a.windowsGainedTab)) n.parent
@@ -246,7 +249,7 @@ freshTab now winId acc ct =
       { nodes = nodes'
       , byTab = Map.insert ct.tabId nid acc.byTab
       , touched = Set.insert nid (Set.insert winId acc.touched)
-      , windowsGainedTab = Set.insert winId acc.windowsGainedTab
+      , anyFreshTab = true
       , nextId = acc.nextId + 1
       }
 
