@@ -83,6 +83,15 @@ spec = describe "Model.Rematch" do
     (_.title <$> Map.lookup "n3" m.nodes) `shouldEqual` Just "B"
     (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
 
+  it "does not drop an orphan when a sibling moved in from another window (changed url)" do
+    -- W1 [A,B], W2 [C]; W1 reopens as [A,C] where B's url changed to C. C is moved in
+    -- from W2 (not a fresh tab), so the window is ambiguous and B must be kept, not dropped.
+    let
+      prior3 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false, openTab 21 2 0 "C" true ]
+      m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "C" ] ] prior3
+    (_.title <$> Map.lookup "n3" m.nodes) `shouldEqual` Just "B"
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
+
   it "a genuinely new tab gets a new node under its window" do
     let m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "B", rt 53 5 2 "C" ] ] prior
     Map.size m.nodes `shouldEqual` 4

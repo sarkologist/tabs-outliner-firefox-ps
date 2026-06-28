@@ -37,7 +37,7 @@ type Acc =
   , consumedWindows :: Set NodeId
   , touched :: Set NodeId
   , removed :: Set NodeId -- prior-live tabs dropped (fresh, orphaned in a reopened window)
-  , windowsWithFresh :: Set NodeId -- window nodes that gained a brand-new tab this run
+  , windowsGainedTab :: Set NodeId -- window nodes that gained a tab not originally their own (a fresh tab, or one moved in from another window) — too ambiguous to drop an orphan from
   , nextId :: Int
   }
 
@@ -78,7 +78,7 @@ rematchOnStartup now current model0 =
       , consumedWindows: Set.empty
       , touched: Set.empty
       , removed: Set.empty
-      , windowsWithFresh: Set.empty
+      , windowsGainedTab: Set.empty
       , nextId: model0.nextId
       }
     acc1 = foldl (processWindow now urlToWin) acc0 current
@@ -95,7 +95,7 @@ rematchOnStartup now current model0 =
       not n.restoredFromClosed
         && windowReopened a n
         && maybe false (\p -> not (Set.member p windowsWithSharedUrl)) n.parent
-        && maybe false (\p -> not (Set.member p a.windowsWithFresh)) n.parent
+        && maybe false (\p -> not (Set.member p a.windowsGainedTab)) n.parent
     acc2 = foldl
       ( \a n ->
           if Set.member n.id a.consumedTabs then a
@@ -206,7 +206,11 @@ matchTab now winId acc ct = case ct.url >>= \u -> popPoolFor winId u acc of
               Nothing -> nodes2
             touched' = Set.insert winId (maybe acc.touched (\pid -> Set.insert pid acc.touched) n.parent)
           in
-            consume nid nodes3 (Array.delete nid acc.roots) pool' touched'
+            -- this window gained a tab moved in from another window: mark it ambiguous
+            -- so an orphan here is not dropped (the moved-in tab might be that orphan
+            -- reopened under a changed url that happened to match the other window's tab)
+            (consume nid nodes3 (Array.delete nid acc.roots) pool' touched')
+              { windowsGainedTab = Set.insert winId acc.windowsGainedTab }
     Nothing -> freshTab now winId acc ct
   Nothing -> freshTab now winId acc ct
   where
@@ -242,7 +246,7 @@ freshTab now winId acc ct =
       { nodes = nodes'
       , byTab = Map.insert ct.tabId nid acc.byTab
       , touched = Set.insert nid (Set.insert winId acc.touched)
-      , windowsWithFresh = Set.insert winId acc.windowsWithFresh
+      , windowsGainedTab = Set.insert winId acc.windowsGainedTab
       , nextId = acc.nextId + 1
       }
 
