@@ -90,6 +90,14 @@ spec = describe "Model.Rematch" do
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
     (_.tabId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 52)
 
+  it "chooseWindow ignores a stale stamp that points at a freshly-created node" do
+    -- empty prior; window 5 gets a fresh node n2, and window 6's tab is stamped "n2".
+    -- chooseWindow must NOT merge window 6 into window 5 (n1) — they're separate.
+    let m = rematch [ rw 5 [ rt 51 5 0 "X" ], rw 6 [ rtKeyed 61 6 0 "Y" "n2" ] ] emptyModel
+    (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5)
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
+    (_.windowId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 6) -- window 6 is its own fresh window
+
   it "a fresh tab orphaned in a reopened window is dropped (not kept)" do
     -- B (n3) was never restored, and its window reopened without it: drop it, closing
     -- the close-rule gap for a tab closed while the event page was suspended

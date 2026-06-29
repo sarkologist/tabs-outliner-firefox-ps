@@ -195,7 +195,9 @@ chooseWindow urlToWin acc cw =
       )
       Map.empty
       cw.tabs
-    byStamp = tally (\ct -> ct.nodeKey >>= \k -> Map.lookup k acc.nodes >>= _.parent)
+    -- only a stamp naming a genuine PRIOR-live tab counts (its parent is a real
+    -- prior window); a stale key pointing at a node created this run must not vote.
+    byStamp = tally (\ct -> ct.nodeKey >>= \k -> if Set.member k acc.priorTabIds then Map.lookup k acc.nodes >>= _.parent else Nothing)
     byUrl = tally (\ct -> ct.url >>= \u -> Map.lookup u urlToWin)
     best t = map fst (Array.head (Array.sortBy (\a b -> compare (snd b) (snd a)) (Map.toUnfoldable t :: Array (Tuple NodeId Int))))
   in
