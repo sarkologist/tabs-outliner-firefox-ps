@@ -3,7 +3,7 @@
   "name": "Tabs Outliner (PS rewrite)",
   "version": "0.1.0",
   "description": "A durable sidebar outline of your live and saved tabs and windows (PureScript rewrite).",
-  "permissions": ["tabs", "storage", "unlimitedStorage"],
+  "permissions": ["tabs", "sessions", "storage", "unlimitedStorage"],
   "icons": {
     "48": "icons/icon.svg",
     "96": "icons/icon.svg"

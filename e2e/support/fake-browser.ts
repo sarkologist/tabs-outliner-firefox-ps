@@ -21,6 +21,8 @@ export type Seed = {
 export function installFakeBrowser(seed: Seed) {
   const wins = new Map<number, { id: number; tabIds: number[] }>();
   const tabs = new Map<number, any>();
+  // browser.sessions per-tab values, keyed "tabId\0key" (in-memory, per page)
+  const tabValues = new Map<string, unknown>();
   const msgListeners: Array<(msg: any, sender: any) => any> = [];
   let tabSeq = 100000;
   let winSeq = 900000;
@@ -182,7 +184,14 @@ export function installFakeBrowser(seed: Seed) {
       onAttached: ev.tabAttached,
       onDetached: ev.tabDetached,
     },
-    sessions: { restore: () => Promise.resolve({}) },
+    sessions: {
+      restore: () => Promise.resolve({}),
+      setTabValue: (tabId: number, key: string, value: unknown) => {
+        tabValues.set(`${tabId}\0${key}`, value);
+        return Promise.resolve();
+      },
+      getTabValue: (tabId: number, key: string) => Promise.resolve(tabValues.get(`${tabId}\0${key}`)),
+    },
     runtime: {
       // real Firefox structured-clones messages across contexts; mirror that so
       // the harness reflects real serialization cost and no accidental aliasing
@@ -253,6 +262,8 @@ export function installFakeBrowser(seed: Seed) {
         id: w.id,
         tabs: w.tabIds.map((id) => ({ url: tabs.get(id).url, title: tabs.get(id).title })),
       })),
+    // read a browser.sessions tab value (the node id the outliner stamped on a tab)
+    tabValue: (tabId: number, key: string) => tabValues.get(`${tabId}\0${key}`) ?? null,
     openWindow: (id: number) => {
       if (!wins.has(id)) wins.set(id, { id, tabIds: [] });
       ev.winCreated._emit({ id });

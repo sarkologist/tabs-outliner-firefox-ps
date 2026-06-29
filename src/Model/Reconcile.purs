@@ -8,7 +8,6 @@ module Model.Reconcile where
 import Prelude
 
 import Data.Array as Array
-import Data.List (List)
 import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)

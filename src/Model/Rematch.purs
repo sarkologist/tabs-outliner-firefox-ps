@@ -184,7 +184,12 @@ chooseWindow :: Map String NodeId -> Acc -> RuntimeWindow -> Maybe NodeId
 chooseWindow urlToWin acc cw =
   let
     tally = foldl bump Map.empty cw.tabs
-    bump m ct = case ct.url >>= \u -> Map.lookup u urlToWin of
+    -- prefer the window a tab's STAMPED node belongs to (stable across a url change);
+    -- fall back to the window that owned a tab with this url.
+    windowOf ct = case ct.nodeKey >>= \k -> Map.lookup k acc.nodes >>= _.parent of
+      Just w -> Just w
+      Nothing -> ct.url >>= \u -> Map.lookup u urlToWin
+    bump m ct = case windowOf ct of
       Just wid | not (Set.member wid acc.consumedWindows), Map.member wid acc.nodes ->
         Map.insertWith (+) wid 1 m
       _ -> m
@@ -198,8 +203,25 @@ chooseWindow urlToWin acc cw =
 -- moved into this window — otherwise one live window's tabs would stay scattered
 -- across the separate prior windows they happened to come from.
 matchTab :: Number -> NodeId -> Acc -> RuntimeTab -> Acc
-matchTab now winId acc ct = case ct.url >>= \u -> popPoolFor winId u acc of
-  Just (Tuple nid pool') -> case Map.lookup nid acc.nodes of
+matchTab now winId acc ct = case sessionMatch of
+  -- a tab Firefox session-restored carries the node id we stamped on it: bind that
+  -- EXACT node — no url guessing — which is what eliminates the url-collision
+  -- re-match edge cases (duplicate urls, a tab that changed url and/or window).
+  Just nid -> bind nid (poolWithout nid)
+  Nothing -> case ct.url >>= \u -> popPoolFor winId u acc of
+    Just (Tuple nid pool') -> bind nid pool'
+    Nothing -> freshTab now winId acc ct
+  where
+  -- the stamped node id, if it points at an as-yet-unconsumed prior-live tab
+  sessionMatch = ct.nodeKey >>= \k -> case Map.lookup k acc.nodes of
+    Just n | n.kind == KTab && isLiveTab n && not (Set.member k acc.consumedTabs) -> Just k
+    _ -> Nothing
+  -- drop a session-matched node from the url pool too, so a later same-url tab can't
+  -- re-pop it
+  poolWithout nid = case Map.lookup nid acc.nodes >>= _.url of
+    Just u -> Map.alter (map (List.delete nid)) u acc.pool
+    Nothing -> acc.pool
+  bind nid pool' = case Map.lookup nid acc.nodes of
     Just n
       | n.parent == Just winId -> consume nid (Map.insert nid (rebind n) acc.nodes) acc.roots pool' acc.touched
       | otherwise ->
@@ -221,8 +243,6 @@ matchTab now winId acc ct = case ct.url >>= \u -> popPoolFor winId u acc of
             (consume nid nodes3 (Array.delete nid acc.roots) pool' touched')
               { windowsGainedTab = Set.insert winId acc.windowsGainedTab }
     Nothing -> freshTab now winId acc ct
-  Nothing -> freshTab now winId acc ct
-  where
   consume nid nodes roots pool' touched = acc
     { nodes = nodes
     , roots = roots

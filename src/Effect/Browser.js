@@ -5,21 +5,48 @@
 
 export const getBrowser = () => globalThis.browser;
 
+// Key under which we stash a tab's outliner node id via browser.sessions. The
+// value survives a browser restart for any tab Firefox session-restores, giving
+// startup re-match a STABLE identity to bind by (instead of guessing by url).
+const NODE_KEY = "outlinerNode";
+
+// Read a tab's stashed node id, tolerating a missing sessions API (older fakes)
+// or a per-tab read failure — either yields null (re-match falls back to url).
+const getTabKey = (api, tabId) => {
+  const s = api && api.sessions;
+  if (!s || typeof s.getTabValue !== "function") return Promise.resolve(null);
+  return Promise.resolve(s.getTabValue(tabId, NODE_KEY)).then((v) => v ?? null, () => null);
+};
+
 export const getAllWindowsImpl = (api) => () =>
   Promise.resolve(api.windows.getAll({ populate: true })).then((wins) =>
-    wins.map((w) => ({
-      windowId: w.id,
-      tabs: (w.tabs ?? []).map((t) => ({
-        tabId: t.id,
-        windowId: t.windowId,
-        index: t.index,
-        url: t.url ?? null,
-        title: t.title ?? "",
-        active: !!t.active,
-        favIconUrl: t.favIconUrl ?? null,
-      })),
-    }))
+    Promise.all(
+      wins.map((w) =>
+        Promise.all(
+          (w.tabs ?? []).map((t) =>
+            getTabKey(api, t.id).then((nodeKey) => ({
+              tabId: t.id,
+              windowId: t.windowId,
+              index: t.index,
+              url: t.url ?? null,
+              title: t.title ?? "",
+              active: !!t.active,
+              favIconUrl: t.favIconUrl ?? null,
+              nodeKey,
+            }))
+          )
+        ).then((tabs) => ({ windowId: w.id, tabs }))
+      )
+    )
   );
+
+// Stamp a tab with its outliner node id (best-effort; a missing sessions API or a
+// failed write is swallowed — re-match degrades to url matching for that tab).
+export const tagTabImpl = (api) => (tabId) => (value) => () => {
+  const s = api && api.sessions;
+  if (!s || typeof s.setTabValue !== "function") return Promise.resolve();
+  return Promise.resolve(s.setTabValue(tabId, NODE_KEY, value)).catch(() => {});
+};
 
 // The window hosting this sidebar (`windows.getCurrent`). Guarded so a missing
 // API (older test fakes) yields null rather than throwing during boot.

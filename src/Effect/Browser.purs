@@ -13,6 +13,7 @@ module Effect.Browser
   , moveTabToWindow
   , newWindowWithTabs
   , removeTab
+  , tagTab
   ) where
 
 import Prelude
@@ -37,6 +38,7 @@ type RawTab =
   , title :: String
   , active :: Boolean
   , favIconUrl :: Nullable String
+  , nodeKey :: Nullable String
   }
 
 type RawWindow = { windowId :: Int, tabs :: Array RawTab }
@@ -56,6 +58,7 @@ getAllWindows api = map (map cleanWindow) (toAffE (getAllWindowsImpl api))
     , title: t.title
     , active: t.active
     , favIconUrl: toMaybe t.favIconUrl
+    , nodeKey: toMaybe t.nodeKey
     }
 
 foreign import getCurrentWindowIdImpl :: BrowserApi -> Effect (Promise (Nullable Int))
@@ -126,6 +129,7 @@ foreign import createWindowImpl :: BrowserApi -> Array String -> Effect (Promise
 foreign import moveTabToWindowImpl :: BrowserApi -> Int -> Int -> Int -> Effect (Promise Unit)
 foreign import newWindowWithTabsImpl :: BrowserApi -> Array Int -> Effect (Promise Unit)
 foreign import removeTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
+foreign import tagTabImpl :: BrowserApi -> Int -> String -> Effect (Promise Unit)
 
 -- | Activate a tab and focus its window (the FFI resolves the window from the tab).
 focusTab :: BrowserApi -> Int -> Aff Unit
@@ -152,3 +156,9 @@ newWindowWithTabs api tabIds = toAffE (newWindowWithTabsImpl api tabIds)
 
 removeTab :: BrowserApi -> Int -> Aff Unit
 removeTab api tabId = toAffE (removeTabImpl api tabId)
+
+-- | Stamp a live tab with its outliner node id (via `browser.sessions`), so a
+-- | restart's re-match can re-bind it by that stable id instead of guessing by url.
+-- | Best-effort: a missing API or failed write is swallowed in the FFI.
+tagTab :: BrowserApi -> Int -> String -> Aff Unit
+tagTab api tabId nodeId = toAffE (tagTabImpl api tabId nodeId)

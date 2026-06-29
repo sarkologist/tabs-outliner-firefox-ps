@@ -25,6 +25,10 @@ type RuntimeTab =
   , title :: String
   , active :: Boolean
   , favIconUrl :: Maybe String
+  -- the outliner node id previously stamped on this tab via browser.sessions, if it
+  -- survived a restart — startup re-match binds by this stable id before falling
+  -- back to url (see `Model.Rematch`).
+  , nodeKey :: Maybe String
   }
 
 type RuntimeWindow = { windowId :: Int, tabs :: Array RuntimeTab }

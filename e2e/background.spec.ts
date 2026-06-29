@@ -98,4 +98,21 @@ test.describe("background owner", () => {
     await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.title === "Alpha"))).toBe(false);
     expect(await readNodes(page).then((n) => n.length)).toBe(2);
   });
+
+  test("stamps each tab with its node id via browser.sessions", async ({ page }) => {
+    const tabValue = (p: import("@playwright/test").Page, tabId: number) =>
+      p.evaluate((id) => (globalThis as any).__fake.tabValue(id, "outlinerNode"), tabId);
+    await bootBackground(page, { windows: [{ id: 1, tabs: [{ id: 11, url: "http://a", title: "Alpha" }] }] });
+    await expect.poll(() => readNodes(page).then((n) => n.length)).toBe(2);
+
+    // boot stamps the seeded tab with the node id re-match bound it to
+    const alpha = (await readNodes(page)).find((n) => n.title === "Alpha")!;
+    await expect.poll(() => tabValue(page, 11)).toBe(alpha.id);
+
+    // a newly-opened tab is stamped too (so it survives the next restart by identity)
+    await fake(page, "openTab", { id: 12, windowId: 1, url: "http://b", title: "Beta" });
+    await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.title === "Beta"))).toBe(true);
+    const beta = (await readNodes(page)).find((n) => n.title === "Beta")!;
+    await expect.poll(() => tabValue(page, 12)).toBe(beta.id);
+  });
 });

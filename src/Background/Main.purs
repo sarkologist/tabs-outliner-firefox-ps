@@ -12,6 +12,7 @@ import Data.Array as Array
 import Data.DateTime.Instant (unInstant)
 import Data.Either (Either(..))
 import Data.Foldable (traverse_)
+import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing)
 import Data.Newtype (unwrap)
 import Effect (Effect)
@@ -28,7 +29,7 @@ import Effect.Persist as Persist
 import Effect.Profile as Profile
 import Model.Codec (encodeSnapshot)
 import Model.Command (BrowserAction(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
-import Model.Event (BrowserEvent)
+import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
 import Model.Tree (mergePatch)
@@ -85,6 +86,16 @@ main = launchAff_ do
   -- message woke this (possibly suspended) page must hear its refetch ping only
   -- once we can answer it.
   unless (isEmptyPatch bootPatch) (Persist.writePatch db bootPatch)
+  -- Stamp each live tab with the node id re-match bound it to (via browser.sessions),
+  -- so the NEXT restart can re-bind by that stable id instead of guessing by url.
+  -- Only write where the existing stamp is missing or stale, so a clean restart
+  -- (every tab already correctly tagged) writes nothing.
+  traverse_
+    ( \rt -> case Map.lookup rt.tabId bootModel.byTab of
+        Just nid | rt.nodeKey /= Just nid -> Browser.tagTab api rt.tabId nid
+        _ -> pure unit
+    )
+    (wins >>= _.tabs)
   -- Undo/redo are background-only state (not part of the shared, persisted Model):
   -- stacks of inverse patches. Browser events never touch them — you don't undo a
   -- tab the browser opened — so they survive arbitrary live activity between a
@@ -104,6 +115,13 @@ main = launchAff_ do
       let s = applyBrowser t ev m
       liftEffect (Ref.write s.model ref)
       persistAndBroadcast api db versionRef s.patch
+      -- stamp a newly-opened (or restored) tab with its node id, so it survives the
+      -- next restart with a stable identity (see boot + Model.Rematch). Idempotent.
+      case ev of
+        TabOpened ot -> case Map.lookup ot.tabId s.model.byTab of
+          Just nid -> Browser.tagTab api ot.tabId nid
+          Nothing -> pure unit
+        _ -> pure unit
 
     -- Undo/redo step: pop one inverse patch off `from`, apply it (reusing the
     -- command persist/broadcast path), and push the resulting inverse onto `to`.
