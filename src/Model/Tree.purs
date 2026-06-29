@@ -49,9 +49,15 @@ applyPatch p model =
 -- | a moment before its first tab node lands. Used to state and verify the
 -- | window/group correspondence (a node's owning window is its immediate parent).
 isLiveWindow :: Model -> Node -> Boolean
-isLiveWindow model n = n.kind == KGroup && Array.any childIsLiveTab n.children
-  where
-  childIsLiveTab cid = maybe false isLiveTab (Map.lookup cid model.nodes)
+isLiveWindow model n = n.kind == KGroup && Array.any (liveTabChild model) n.children
+
+-- | Is child id `cid` a LIVE TAB in `model`? This is the membership that defines
+-- | browser tab order among a container's children: a window's live-tab children,
+-- | filtered in array order, are required to match the browser's tab order (see
+-- | `insertAtLive`/`liveInsertIndex`). Closed/history tab nodes and sub-groups are
+-- | not live tabs.
+liveTabChild :: Model -> NodeId -> Boolean
+liveTabChild model cid = maybe false isLiveTab (Map.lookup cid model.nodes)
 
 -- | Combine two patches applied in sequence (`b` after `a`): later upserts win
 -- | (folded last), removes accumulate, and `b`'s roots — if it set them — win.
@@ -209,7 +215,36 @@ insertAtClamped i x xs =
   in
     fromMaybe (Array.snoc xs x) (Array.insertAt i' x xs)
 
--- | Move `x` to `toIdx` among its siblings (array-index, clamped). Exact when
--- | no closed nodes are interleaved; approximate otherwise (a waived edge case).
-moveWithin :: forall a. Eq a => a -> Int -> Array a -> Array a
-moveWithin x toIdx xs = insertAtClamped toIdx x (Array.delete x xs)
+-- | The array position at which to insert so that the new element becomes the
+-- | `liveIdx`-th element satisfying `p`. Elements that fail `p` — the closed /
+-- | history nodes interleaved among a window's live tabs — keep their relative
+-- | order: the new element lands immediately before the live element currently at
+-- | `liveIdx`, or at the very end when `liveIdx` is at/after the live count (a
+-- | negative `liveIdx` clamps to before the first live element). This is what maps
+-- | a browser tab `index` — a position counted among LIVE tabs only — to a
+-- | children-array index, so inserting or moving a live tab keeps the invariant
+-- | `filter p children == browser tab order`. O(scanned siblings).
+liveInsertIndex :: forall a. (a -> Boolean) -> Int -> Array a -> Int
+liveInsertIndex p liveIdx xs = go 0 0
+  where
+  n = Array.length xs
+  go i live
+    | i >= n = n -- ran out of live elements: append (covers liveIdx >= live count)
+    | otherwise = case Array.index xs i of
+        Just x | p x -> if live >= liveIdx then i else go (i + 1) (live + 1)
+        _ -> go (i + 1) live -- a non-live (closed) node: keep it before the new element
+
+-- | Insert `x` so it becomes the `liveIdx`-th element satisfying `p`, mapping a
+-- | browser (live-only) index to the array position via `liveInsertIndex`.
+insertAtLive :: forall a. (a -> Boolean) -> Int -> a -> Array a -> Array a
+insertAtLive p liveIdx x xs = insertAtClamped (liveInsertIndex p liveIdx xs) x xs
+
+-- | Move `x` to live-index `toIdx` among the siblings satisfying `p`: `x` is
+-- | removed, then re-inserted just before the live element now at `toIdx` (or at
+-- | the end). Exact even when closed/history nodes are interleaved — the live
+-- | subsequence ends up in browser order. (`p` need not exclude `x` itself; it is
+-- | removed first regardless.)
+moveWithin :: forall a. Eq a => (a -> Boolean) -> a -> Int -> Array a -> Array a
+moveWithin p x toIdx xs =
+  let xs' = Array.delete x xs
+  in insertAtClamped (liveInsertIndex p toIdx xs') x xs'
