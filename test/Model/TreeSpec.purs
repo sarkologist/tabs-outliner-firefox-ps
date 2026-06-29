@@ -5,7 +5,7 @@ import Prelude
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Model.Tree (applyPatch, insertAtClamped, isLiveWindow, moveWithin, rootAncestor, searchVisible, subtreeIds, visible)
+import Model.Tree (applyPatch, insertAtClamped, insertAtLive, isLiveWindow, liveInsertIndex, moveWithin, rootAncestor, searchVisible, subtreeIds, visible)
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -124,12 +124,34 @@ spec = describe "Model.Tree" do
       (isLiveWindow m <$> Map.lookup "t" m.nodes) `shouldEqual` Just false -- a tab is never a window
 
   describe "array helpers" do
+    -- the live-index mapping that keeps `filter live children` in browser order
+    -- when closed nodes (here encoded as 0) are interleaved among live ones (> 0)
+    let
+      live :: Int -> Boolean
+      live i = i > 0
     it "insertAtClamped clamps out-of-range indices" do
       insertAtClamped 99 "x" [ "a", "b" ] `shouldEqual` [ "a", "b", "x" ]
       insertAtClamped (-5) "x" [ "a", "b" ] `shouldEqual` [ "x", "a", "b" ]
-    it "moveWithin relocates an element" do
-      moveWithin "a" 2 [ "a", "b", "c" ] `shouldEqual` [ "b", "c", "a" ]
-      moveWithin "c" 0 [ "a", "b", "c" ] `shouldEqual` [ "c", "a", "b" ]
+    it "moveWithin relocates an element (all live: live-index == array-index)" do
+      moveWithin (const true) "a" 2 [ "a", "b", "c" ] `shouldEqual` [ "b", "c", "a" ]
+      moveWithin (const true) "c" 0 [ "a", "b", "c" ] `shouldEqual` [ "c", "a", "b" ]
+    it "liveInsertIndex maps a live index past interleaved closed nodes" do
+      -- [0, 1, 0, 2]: live elements 1, 2 sit at array indices 1 and 3
+      liveInsertIndex live 0 [ 0, 1, 0, 2 ] `shouldEqual` 1 -- before the 1st live
+      liveInsertIndex live 1 [ 0, 1, 0, 2 ] `shouldEqual` 3 -- before the 2nd live
+      liveInsertIndex live 2 [ 0, 1, 0, 2 ] `shouldEqual` 4 -- past the last live -> append
+      liveInsertIndex live 0 [ 0, 0 ] `shouldEqual` 2 -- no live element: append after the closed ones
+      liveInsertIndex live 5 [ 1, 2 ] `shouldEqual` 2 -- index past the end clamps to append
+      liveInsertIndex live (-1) [ 0, 1 ] `shouldEqual` 1 -- negative clamps to before the 1st live
+    it "insertAtLive lands a value at the given live index, closed nodes fixed" do
+      insertAtLive live 0 9 [ 0, 1, 0, 2 ] `shouldEqual` [ 0, 9, 1, 0, 2 ]
+      insertAtLive live 1 9 [ 0, 1, 0, 2 ] `shouldEqual` [ 0, 1, 0, 9, 2 ]
+      insertAtLive live 2 9 [ 0, 1, 0, 2 ] `shouldEqual` [ 0, 1, 0, 2, 9 ]
+    it "moveWithin keeps the live subsequence ordered across interleaved closed nodes" do
+      -- live 1,2,3 interleaved with a closed 0; move live 1 to live-index 2
+      moveWithin live 1 2 [ 1, 0, 2, 3 ] `shouldEqual` [ 0, 2, 3, 1 ]
+      -- move live 3 to the front of the live order (live-index 0)
+      moveWithin live 3 0 [ 1, 0, 2, 3 ] `shouldEqual` [ 3, 1, 0, 2 ]
 
   describe "applyPatch" do
     it "upserts, removes, and updates roots + indexes" do

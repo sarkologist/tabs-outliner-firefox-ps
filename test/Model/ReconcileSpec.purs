@@ -6,13 +6,15 @@ import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.List as List
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Tree (applyPatch)
-import Model.Types (Kind(..), Model, defaultNode, emptyModel, isLive)
+import Model.Tree (applyPatch, insertAtClamped)
+import Model.Types (Kind(..), Model, Node, NodeId, defaultNode, emptyModel, isLive, isLiveTab)
+import Test.QuickCheck ((===))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
+import Test.Spec.QuickCheck (quickCheck)
 
 step :: BrowserEvent -> Model -> Model
 step e m = (applyBrowser 0.0 e m).model
@@ -23,6 +25,90 @@ runEvents = foldl (flip step) emptyModel
 openTab :: Int -> Int -> Int -> String -> Boolean -> BrowserEvent
 openTab tabId windowId index title active =
   TabOpened { tabId, windowId, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
+
+-- Fixture builders for models with closed/history nodes interleaved among a
+-- window's live tabs. `nextId` is set past the listed ids so the first
+-- event-created node gets a fresh id (events allocate "n" <> show nextId).
+modelOf :: Array Node -> Array NodeId -> Int -> Model
+modelOf nodes roots nextId =
+  (applyPatch { upserts: nodes, removes: [], roots: Just roots } emptyModel) { nextId = nextId }
+
+win :: NodeId -> Int -> Array NodeId -> Node
+win id windowId children = (defaultNode id KGroup 0.0) { windowId = Just windowId, title = "Window", children = children }
+
+liveTab :: NodeId -> NodeId -> Int -> String -> Node
+liveTab id parent tabId title =
+  (defaultNode id KTab 0.0) { parent = Just parent, tabId = Just tabId, title = title, url = Just ("http://" <> title) }
+
+closedTab :: NodeId -> NodeId -> String -> Node
+closedTab id parent title =
+  (defaultNode id KTab 0.0) { parent = Just parent, title = title, url = Just ("http://" <> title), closedAt = Just 0.0 }
+
+-- the children array of a window node, unchanged (live tabs + interleaved closed nodes)
+childrenOf :: Model -> NodeId -> Array NodeId
+childrenOf m wid = fromMaybe [] (_.children <$> Map.lookup wid m.nodes)
+
+-- the live-tab subsequence of a window's children, by title (must equal browser order)
+liveTitles :: Model -> NodeId -> Array String
+liveTitles m wid = Array.mapMaybe titleIfLive (childrenOf m wid)
+  where
+  titleIfLive cid = Map.lookup cid m.nodes >>= \n -> if isLiveTab n then Just n.title else Nothing
+
+-- Property-test harness: drive one window (id 1) through a stream of open/move
+-- events while keeping a plain browser-order oracle (`order` — the live tab ids in
+-- index order). The model starts with closed nodes interleaved among the live
+-- tabs; the live subsequence of its children must stay equal to `order`.
+type SimState = { model :: Model, order :: Array Int, nextTab :: Int }
+
+-- window 1 holds a live tab (browser id 100) flanked by two closed history nodes
+simInit :: SimState
+simInit =
+  { model: modelOf
+      [ win "n1" 1 [ "nc1", "n2", "nc2" ]
+      , closedTab "nc1" "n1" "closed1"
+      , liveTab "n2" "n1" 100 "t100"
+      , closedTab "nc2" "n1" "closed2"
+      ]
+      [ "n1" ]
+      3
+  , order: [ 100 ]
+  , nextTab: 101
+  }
+
+-- non-negative modulo (Arbitrary Int can be negative; keep indices in range)
+pmod :: Int -> Int -> Int
+pmod a b = if b <= 0 then 0 else ((a `mod` b) + b) `mod` b
+
+-- Interpret one op. Odd first parameter (when there is a live tab to move) => a
+-- move; otherwise an open. Indices are taken modulo the live count so every op is
+-- valid. The oracle `order` is updated with the same browser semantics.
+simStep :: SimState -> Array Int -> SimState
+simStep s a =
+  let
+    len = Array.length s.order
+    g i = fromMaybe 0 (Array.index a i)
+  in
+    if len > 0 && pmod (g 0) 2 == 1 then
+      let
+        from = fromMaybe 0 (Array.index s.order (pmod (g 1) len))
+        toIndex = pmod (g 2) len
+        model' = (applyBrowser 0.0 (TabMoved { tabId: from, windowId: 1, toIndex }) s.model).model
+      in
+        s { model = model', order = insertAtClamped toIndex from (Array.delete from s.order) }
+    else
+      let
+        tabId = s.nextTab
+        idx = pmod (g 1) (len + 1)
+        ev = TabOpened
+          { tabId, windowId: 1, index: idx, url: Just ("http://t" <> show tabId), title: "t" <> show tabId, active: false, favIconUrl: Nothing }
+        model' = (applyBrowser 0.0 ev s.model).model
+      in
+        { model: model', order: insertAtClamped idx tabId s.order, nextTab: s.nextTab + 1 }
+
+-- the live tabs of window 1, in children-array order, as their browser tab ids
+liveOrder :: Model -> Array Int
+liveOrder m = Array.mapMaybe (\cid -> Map.lookup cid m.nodes >>= \n -> if isLiveTab n then n.tabId else Nothing)
+  (childrenOf m "n1")
 
 spec :: Spec Unit
 spec = describe "Model.Reconcile" do
@@ -152,6 +238,84 @@ spec = describe "Model.Reconcile" do
     Map.lookup "n2" m.nodes `shouldEqual` Nothing
     (isLive <$> Map.lookup "n4" m.nodes) `shouldEqual` Just true
     Map.lookup 11 m.byTab `shouldEqual` Just "n4"
+
+  describe "live tab order is kept across interleaved closed nodes" do
+    -- The invariant: for a window node, `filter isLiveTab children` (in array
+    -- order) equals the window's browser tabs in `index` order. A browser tab
+    -- index counts LIVE tabs only, so it must be mapped past any interleaved
+    -- closed/history nodes when a tab opens / moves / attaches.
+
+    it "opens a fresh tab at its browser index, past an interleaved closed node" do
+      let
+        -- browser order is A(0), B(1); a closed node C sits between them
+        m0 = modelOf
+          [ win "n1" 1 [ "n2", "nc", "n3" ]
+          , liveTab "n2" "n1" 11 "A"
+          , closedTab "nc" "n1" "C"
+          , liveTab "n3" "n1" 12 "B"
+          ]
+          [ "n1" ]
+          4
+        -- open D at browser index 1 (between A and B)
+        m = (applyBrowser 0.0 (openTab 13 1 1 "D" false) m0).model
+      liveTitles m "n1" `shouldEqual` [ "A", "D", "B" ] -- D became the 2nd live tab
+      childrenOf m "n1" `shouldEqual` [ "n2", "nc", "n4", "n3" ] -- closed C unmoved
+
+    it "appends a fresh tab after the last live tab and trailing closed nodes" do
+      let
+        m0 = modelOf
+          [ win "n1" 1 [ "n2", "nc" ]
+          , liveTab "n2" "n1" 11 "A"
+          , closedTab "nc" "n1" "C"
+          ]
+          [ "n1" ]
+          4
+        -- open B at browser index 1 (the end of the single live tab)
+        m = (applyBrowser 0.0 (openTab 12 1 1 "B" false) m0).model
+      liveTitles m "n1" `shouldEqual` [ "A", "B" ]
+      childrenOf m "n1" `shouldEqual` [ "n2", "nc", "n4" ]
+
+    it "moves a live tab to a browser index, keeping live order across a closed node" do
+      let
+        m0 = modelOf
+          [ win "n1" 1 [ "n2", "n3", "nc", "n4" ]
+          , liveTab "n2" "n1" 11 "A"
+          , liveTab "n3" "n1" 12 "B"
+          , closedTab "nc" "n1" "X"
+          , liveTab "n4" "n1" 13 "C"
+          ]
+          [ "n1" ]
+          5
+        -- browser order A(0), B(1), C(2); move A to index 2 -> B, C, A
+        m = (applyBrowser 0.0 (TabMoved { tabId: 11, windowId: 1, toIndex: 2 }) m0).model
+      liveTitles m "n1" `shouldEqual` [ "B", "C", "A" ]
+      childrenOf m "n1" `shouldEqual` [ "n3", "nc", "n4", "n2" ] -- closed X stays put
+
+    it "attaches a tab at its browser index in the destination window, past a closed node" do
+      let
+        m0 = modelOf
+          [ win "n1" 1 [ "n2" ]
+          , liveTab "n2" "n1" 11 "A"
+          , win "n3" 2 [ "n4", "nc", "n5" ]
+          , liveTab "n4" "n3" 21 "B"
+          , closedTab "nc" "n3" "X"
+          , liveTab "n5" "n3" 22 "C"
+          ]
+          [ "n1", "n3" ]
+          6
+        -- move A into window 2 at browser index 1 (between B and C)
+        m = (applyBrowser 0.0 (TabAttached { tabId: 11, windowId: 2, index: 1 }) m0).model
+      liveTitles m "n3" `shouldEqual` [ "B", "A", "C" ]
+      childrenOf m "n3" `shouldEqual` [ "n4", "nc", "n2", "n5" ]
+      Map.lookup "n1" m.nodes `shouldEqual` Nothing -- window 1 emptied and was pruned
+
+    it "property: the live subsequence equals browser order after random opens/moves" $
+      -- Each generated op is an `Array Int` (parameters, padded with 0). A model
+      -- that starts with closed nodes interleaved is driven by the same op stream
+      -- as a plain browser-order oracle; the live subsequence must track it.
+      quickCheck \(ops :: Array (Array Int)) ->
+        let s = foldl simStep simInit ops
+        in liveOrder s.model === s.order
 
   describe "patch is O(change)" do
     it "a tab change touches exactly one node" do
