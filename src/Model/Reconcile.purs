@@ -231,6 +231,18 @@ openFresh now t model =
 -- | A restored closed tab re-using its existing node (no duplicate). Position in
 -- | the tree is unchanged; the node just goes Live again. The pending-restore
 -- | queue was already advanced by `popPendingRestore`.
+-- |
+-- | WAIVED (the module header's edge stance), re the live-order-matches-browser
+-- | invariant: the node keeps its saved tree slot rather than being re-seated at
+-- | the browser's `t.index`. A whole window/group restore stays exact — its tabs
+-- | are recreated in saved order into a fresh window, so the live subsequence
+-- | already matches the browser. But restoring a single closed tab back into an
+-- | ALREADY-LIVE window appends the real tab at the end (`CreateTab` passes no
+-- | index), so a tab whose saved slot was mid-window leaves the live subsequence
+-- | out of browser order until the next move. Re-seating here can't fix it
+-- | cheaply: in a multi-tab restore the siblings are still closed as each arrives,
+-- | so a live-index re-seat would reorder them. The real fix is to honor the saved
+-- | slot at the browser (a create index), left as follow-up.
 rebindRestored :: Number -> OpenedTab -> NodeId -> Node -> Model -> Step
 rebindRestored _ t _ n model =
   let
