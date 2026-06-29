@@ -33,6 +33,7 @@ type Acc =
   , byTab :: Map Int NodeId
   , byWindow :: Map Int NodeId
   , pool :: Map String (List NodeId) -- prior-live tab nodes by url, to consume
+  , priorTabIds :: Set NodeId -- ids of the prior-live tab nodes (fixed at start), so a session-key match can only land on one of THEM, never a node freshly created this run
   , consumedTabs :: Set NodeId
   , consumedWindows :: Set NodeId
   , touched :: Set NodeId
@@ -75,6 +76,7 @@ rematchOnStartup now current model0 =
       , byTab: Map.empty
       , byWindow: Map.empty
       , pool: pool0
+      , priorTabIds: Set.fromFoldable (map _.id priorTabs)
       , consumedTabs: Set.empty
       , consumedWindows: Set.empty
       , touched: Set.empty
@@ -183,19 +185,23 @@ freshWindow now acc cw =
 chooseWindow :: Map String NodeId -> Acc -> RuntimeWindow -> Maybe NodeId
 chooseWindow urlToWin acc cw =
   let
-    tally = foldl bump Map.empty cw.tabs
-    -- prefer the window a tab's STAMPED node belongs to (stable across a url change);
-    -- fall back to the window that owned a tab with this url.
-    windowOf ct = case ct.nodeKey >>= \k -> Map.lookup k acc.nodes >>= _.parent of
-      Just w -> Just w
-      Nothing -> ct.url >>= \u -> Map.lookup u urlToWin
-    bump m ct = case windowOf ct of
-      Just wid | not (Set.member wid acc.consumedWindows), Map.member wid acc.nodes ->
-        Map.insertWith (+) wid 1 m
-      _ -> m
-    ranked = Array.sortBy (\a b -> compare (snd b) (snd a)) (Map.toUnfoldable tally :: Array (Tuple NodeId Int))
+    -- Tally window votes by STAMP (a tab's stamped node's window) and by URL
+    -- separately. A stamp is authoritative, so any window with stamp votes wins over
+    -- url-only guesses — never let a url tie or beat a stamp.
+    tally pick = foldl
+      ( \m ct -> case pick ct of
+          Just wid | not (Set.member wid acc.consumedWindows), Map.member wid acc.nodes -> Map.insertWith (+) wid 1 m
+          _ -> m
+      )
+      Map.empty
+      cw.tabs
+    byStamp = tally (\ct -> ct.nodeKey >>= \k -> Map.lookup k acc.nodes >>= _.parent)
+    byUrl = tally (\ct -> ct.url >>= \u -> Map.lookup u urlToWin)
+    best t = map fst (Array.head (Array.sortBy (\a b -> compare (snd b) (snd a)) (Map.toUnfoldable t :: Array (Tuple NodeId Int))))
   in
-    map fst (Array.head ranked)
+    case best byStamp of
+      Just w -> Just w
+      Nothing -> best byUrl
 
 -- Re-bind a reopened tab to its existing node, or create a new one. A tab matched
 -- to a node already under the chosen window stays in place (preserving the user's
@@ -212,10 +218,11 @@ matchTab now winId acc ct = case sessionMatch of
     Just (Tuple nid pool') -> bind nid pool'
     Nothing -> freshTab now winId acc ct
   where
-  -- the stamped node id, if it points at an as-yet-unconsumed prior-live tab
-  sessionMatch = ct.nodeKey >>= \k -> case Map.lookup k acc.nodes of
-    Just n | n.kind == KTab && isLiveTab n && not (Set.member k acc.consumedTabs) -> Just k
-    _ -> Nothing
+  -- the stamped node id, if it names an as-yet-unconsumed PRIOR-live tab. Checking
+  -- the fixed priorTabIds set (not the mutable acc.nodes) means a stale stamp can
+  -- never latch onto a node freshly created earlier in this same run.
+  sessionMatch = ct.nodeKey >>= \k ->
+    if Set.member k acc.priorTabIds && not (Set.member k acc.consumedTabs) then Just k else Nothing
   -- drop a session-matched node from the url pool too, so a later same-url tab can't
   -- re-pop it
   poolWithout nid = case Map.lookup nid acc.nodes >>= _.url of

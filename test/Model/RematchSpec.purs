@@ -73,6 +73,23 @@ spec = describe "Model.Rematch" do
     (_.tabId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 51) -- the stamped one binds
     Map.lookup "n2" m.nodes `shouldEqual` Nothing -- the other A did not reopen -> dropped
 
+  it "chooseWindow prefers the stamped node's window over a url tie" do
+    -- two prior windows W1=[A], W2=[B]; a new window holds a tab stamped for A (W1)
+    -- and a tab whose url is B (W2). The stamp must win: the window binds to W1 (n1).
+    let
+      prior2 = runEvents [ openTab 11 1 0 "A" true, openTab 21 2 0 "B" true ]
+      m = rematch [ rw 5 [ rtKeyed 51 5 0 "whatever" "n2", rt 52 5 1 "B" ] ] prior2
+    (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5)
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
+
+  it "a stale nodeKey does not hijack a freshly-created node (prior-live only)" do
+    -- empty prior (e.g. the data was reset); two new tabs, the second stamped with
+    -- the id the first will be allocated. The stamp must NOT latch onto that fresh
+    -- node — both tabs get distinct fresh nodes.
+    let m = rematch [ rw 5 [ rt 51 5 0 "X", rtKeyed 52 5 1 "Y" "n2" ] ] emptyModel
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
+    (_.tabId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 52)
+
   it "a fresh tab orphaned in a reopened window is dropped (not kept)" do
     -- B (n3) was never restored, and its window reopened without it: drop it, closing
     -- the close-rule gap for a tab closed while the event page was suspended
