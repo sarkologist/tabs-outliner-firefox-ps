@@ -187,7 +187,12 @@ chooseWindow urlToWin acc cw =
   let
     -- Tally window votes by STAMP (a tab's stamped node's window) and by URL
     -- separately. A stamp is authoritative, so any window with stamp votes wins over
-    -- url-only guesses — never let a url tie or beat a stamp.
+    -- url-only guesses — never let a url tie or beat a stamp. This is a best-effort
+    -- GROUPING heuristic (per-tab votes, as the url path always was): duplicate tabs
+    -- sharing a url/stamp can skew which prior window a runtime window binds to. That
+    -- only affects grouping — each TAB still binds to its exact node (sessionMatch /
+    -- the url pool) and nothing is lost — so the skew is waived, like the rest of
+    -- re-match's edges.
     tally pick = foldl
       ( \m ct -> case pick ct of
           Just wid | not (Set.member wid acc.consumedWindows), Map.member wid acc.nodes -> Map.insertWith (+) wid 1 m
