@@ -195,9 +195,15 @@ chooseWindow urlToWin acc cw =
       )
       Map.empty
       cw.tabs
-    -- only a stamp naming a genuine PRIOR-live tab counts (its parent is a real
-    -- prior window); a stale key pointing at a node created this run must not vote.
-    byStamp = tally (\ct -> ct.nodeKey >>= \k -> if Set.member k acc.priorTabIds then Map.lookup k acc.nodes >>= _.parent else Nothing)
+    -- only a stamp naming a genuine, as-yet-unconsumed PRIOR-live tab counts: its
+    -- parent is then a real prior window, still its ORIGINAL one (an unconsumed tab
+    -- hasn't been moved this run). This rejects a stale key pointing at a node created
+    -- this run, and a duplicate key (e.g. a duplicated tab) for an already-bound tab.
+    byStamp = tally
+      ( \ct -> ct.nodeKey >>= \k ->
+          if Set.member k acc.priorTabIds && not (Set.member k acc.consumedTabs) then Map.lookup k acc.nodes >>= _.parent
+          else Nothing
+      )
     byUrl = tally (\ct -> ct.url >>= \u -> Map.lookup u urlToWin)
     best t = map fst (Array.head (Array.sortBy (\a b -> compare (snd b) (snd a)) (Map.toUnfoldable t :: Array (Tuple NodeId Int))))
   in

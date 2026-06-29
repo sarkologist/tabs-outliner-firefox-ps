@@ -98,6 +98,16 @@ spec = describe "Model.Rematch" do
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
     (_.windowId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 6) -- window 6 is its own fresh window
 
+  it "a duplicate stamp (a duplicated tab) does not merge a second window" do
+    -- W1=[A@n2]; both window 5 and window 6 carry a tab stamped "n2" (a duplicated tab
+    -- inherits the stamp). The first binds n2; the second must NOT merge into n1.
+    let
+      prior1 = runEvents [ openTab 11 1 0 "A" true ]
+      m = rematch [ rw 5 [ rtKeyed 51 5 0 "A" "n2" ], rw 6 [ rtKeyed 61 6 0 "Adup" "n2" ] ] prior1
+    (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5) -- n1 stays window 5
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51) -- bound to the first
+    (_.windowId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 6) -- window 6 is its own window
+
   it "a fresh tab orphaned in a reopened window is dropped (not kept)" do
     -- B (n3) was never restored, and its window reopened without it: drop it, closing
     -- the close-rule gap for a tab closed while the event page was suspended
