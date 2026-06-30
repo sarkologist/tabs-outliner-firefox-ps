@@ -4,12 +4,13 @@ import Prelude
 
 import Data.Array as Array
 import Data.Foldable (foldl)
+import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch)
-import Model.Types (Model, emptyModel, isLive)
+import Model.Types (Kind(..), Model, defaultNode, emptyModel, isLive)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -39,12 +40,15 @@ spec = describe "Model.Reconcile" do
     Array.length m.roots `shouldEqual` 1
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
 
-  it "keeps a closed tab in place as history" do
-    let m = runEvents [ openTab 11 1 0 "A" true, TabClosed { tabId: 11 } ]
-    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
-    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just Nothing
-    -- still a child of its window (not detached)
-    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
+  it "drops a freshly-opened tab closed by the browser (never restored)" do
+    -- the close rule: a browser-closed tab is kept only if it was restored from
+    -- history; a fresh tab the user just opens and closes is discarded, not saved
+    let m = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false, TabClosed { tabId: 11 } ]
+    -- A (n2) is removed entirely, not kept as crossed-out history
+    Map.lookup "n2" m.nodes `shouldEqual` Nothing
+    -- its sibling B (n3) and the window remain
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just true
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n3" ]
 
   it "updates title/url on change" do
     let m = runEvents [ openTab 11 1 0 "A" true, TabChanged { tabId: 11, title: Just "A2", url: Just "http://a2", favIconUrl: Nothing } ]
@@ -114,16 +118,40 @@ spec = describe "Model.Reconcile" do
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
 
+  it "a pending-queue rebind is not itself marked restored (only Command.restore marks)" do
+    -- a closed tab n2 under a live window n1, plus a pending-restore slot for it that
+    -- did NOT come from Command.restore (e.g. a live-tab rehome). The rebind itself
+    -- must NOT set restoredFromClosed; unflagged, a later browser close then drops it.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "n1" KGroup 0.0) { windowId = Just 1, title = "Window", children = [ "n2" ] }
+            , (defaultNode "n2" KTab 0.0) { parent = Just "n1", url = Just "http://A", title = "A", closedAt = Just 0.0 }
+            ]
+        , removes: []
+        , roots: Just [ "n1" ]
+        }
+        emptyModel
+      m1 = m0 { pendingRestore = Map.singleton 1 (List.singleton "n2") }
+      reopened = (applyBrowser 0.0 (openTab 99 1 0 "A" true) m1).model
+    -- n2 rebound to the new browser tab, but NOT flagged restored
+    (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
+    (_.restoredFromClosed <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just false
+    -- unflagged, so the browser close drops it (it was never a user restore)
+    let closedAgain = (applyBrowser 0.0 (TabClosed { tabId: 99 }) reopened).model
+    Map.lookup "n2" closedAgain.nodes `shouldEqual` Nothing
+
   it "a reused browser tab id creates a fresh node (no stale-index no-op)" do
     let
       m = runEvents
         [ openTab 11 1 0 "A" true -- n2 bound to tab 11
-        , TabClosed { tabId: 11 } -- byTab[11] now points at a closed node (stale)
+        , TabClosed { tabId: 11 } -- fresh tab dropped; byTab[11] now stale
         , openTab 11 1 0 "C" true -- browser reuses id 11 for a brand-new tab
         ]
-    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
-    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just true
-    Map.lookup 11 m.byTab `shouldEqual` Just "n3"
+    -- the dropped node is gone, not resurrected by the reused id
+    Map.lookup "n2" m.nodes `shouldEqual` Nothing
+    (isLive <$> Map.lookup "n4" m.nodes) `shouldEqual` Just true
+    Map.lookup 11 m.byTab `shouldEqual` Just "n4"
 
   describe "patch is O(change)" do
     it "a tab change touches exactly one node" do

@@ -38,7 +38,8 @@ import Prelude
 
 import Data.Array as Array
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Set as Set
 import Model.Command (BrowserAction(..), Command(..))
 import Model.Tree (applyPatch)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, isLive)
@@ -72,7 +73,7 @@ inversePatch now before p =
 -- | unchanged.
 downgradeBrowser :: Number -> Node -> Node
 downgradeBrowser now n
-  | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }
+  | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now, restoredFromClosed = false }
   | otherwise = n
 
 -- | Append the "concurrent additions" to a restored sibling list: ids in the
@@ -93,9 +94,13 @@ mergeSiblings known snap cur =
 -- | restored parent keeps any child opened in it meanwhile. A node that no longer
 -- | exists (an entry re-adding a removed subtree) uses the snapshot as-is (already
 -- | downgraded by `inversePatch`).
-reconcileNode :: Array NodeId -> Model -> Node -> Node
-reconcileNode known model snap = case Map.lookup snap.id model.nodes of
-  Nothing -> snap
+reconcileNode :: Number -> Array NodeId -> Model -> Node -> Node
+reconcileNode now known model snap = case Map.lookup snap.id model.nodes of
+  -- the node is gone from the current model — e.g. a live event dropped a tab the
+  -- snapshot still shows live (a fresh tab browser-closed is now removed, not kept).
+  -- Bring it back as closed history, never as a live ghost claiming a dead tabId.
+  -- (Removal-restores were already downgraded by `inversePatch`; this is idempotent.)
+  Nothing -> downgradeBrowser now snap
   Just cur -> cur
     { customTitle = snap.customTitle
     , collapsed = snap.collapsed
@@ -120,8 +125,28 @@ applyEntry :: Number -> Patch -> Model -> Applied
 applyEntry now entry model =
   let
     known = map _.id entry.upserts <> entry.removes
-    upserts' = map (reconcileNode known model) entry.upserts
-    roots' = map (\rs -> mergeSiblings known rs model.roots) entry.roots
+    -- nodes this entry re-links somewhere (a restored parent's child list, or the
+    -- roots). A removed node is brought back only when something re-links it — a
+    -- removal-restore (Delete/Flatten undo) carries its parent, so it does. An
+    -- overwrite-restore whose node a live event has since DROPPED (e.g. a fresh tab
+    -- the browser closed) is NOT re-linked, so it is skipped: re-adding it would
+    -- orphan it (its parent no longer lists it) and it must never come back live.
+    linked = Set.fromFoldable (Array.concatMap _.children entry.upserts <> fromMaybe [] entry.roots)
+    -- A gone node is re-added only if it is a removal-restore: those were downgraded
+    -- to non-live by `inversePatch`, so `not (isLive snap)` tells them apart from an
+    -- overwrite-restore whose live node a browser close dropped meanwhile (its
+    -- snapshot is still live). Without the liveness guard, undoing a move/reorder
+    -- would resurrect such a dropped tab via its restored parent's child list.
+    keep snap = Map.member snap.id model.nodes || (Set.member snap.id linked && not (isLive snap))
+    kept = Array.filter keep entry.upserts
+    -- after this entry applies, exactly these ids exist: the nodes we (re-)add, plus
+    -- current nodes the entry doesn't remove. Prune child/root refs to anything else
+    -- so a restored parent never lists a node a live event dropped meanwhile.
+    keptIds = Set.fromFoldable (map _.id kept)
+    removedSet = Set.fromFoldable entry.removes
+    survives i = Set.member i keptIds || (Map.member i model.nodes && not (Set.member i removedSet))
+    upserts' = map (\snap -> let n = reconcileNode now known model snap in n { children = Array.filter survives n.children }) kept
+    roots' = map (\rs -> Array.filter survives (mergeSiblings known rs model.roots)) entry.roots
     applied = entry { upserts = upserts', roots = roots' }
     actions = map RemoveTab (Array.mapMaybe (liveTab model) entry.removes)
     inverse = inversePatch now model applied

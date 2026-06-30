@@ -29,11 +29,13 @@ test.describe("sidebar view", () => {
     await expect(page.getByText("Gamma")).toBeVisible();
   });
 
-  test("greys out a tab closed live (kept as history)", async ({ page }) => {
+  test("a browser-closed fresh tab is removed from the view", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
     await fake(page, "closeTab", 11);
-    await expect(page.locator('[data-status="closed"]').filter({ hasText: "Alpha" })).toBeVisible();
+    // never restored, so a browser close discards it rather than greying it out
+    // (the greyed "save & close" rendering is covered in commands.spec)
+    await expect(page.getByText("Alpha")).toHaveCount(0);
   });
 
   test("hovering a row draws subtree guide lines, cleared on leave", async ({ page }) => {

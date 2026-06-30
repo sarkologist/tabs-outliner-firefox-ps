@@ -26,7 +26,13 @@ prior = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false ]
 
 rt :: Int -> Int -> Int -> String -> RuntimeTab
 rt tabId windowId index title =
-  { tabId, windowId, index, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing }
+  { tabId, windowId, index, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing, nodeKey: Nothing }
+
+-- a runtime tab carrying a stamped node id (browser.sessions value), as it would
+-- appear after a restart that session-restored the tab
+rtKeyed :: Int -> Int -> Int -> String -> String -> RuntimeTab
+rtKeyed tabId windowId index title nodeKey =
+  { tabId, windowId, index, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing, nodeKey: Just nodeKey }
 
 rw :: Int -> Array RuntimeTab -> RuntimeWindow
 rw windowId tabs = { windowId, tabs }
@@ -47,12 +53,114 @@ spec = describe "Model.Rematch" do
     Map.lookup 51 m.byTab `shouldEqual` Just "n2"
     Map.lookup 5 m.byWindow `shouldEqual` Just "n1"
 
-  it "a tab that did not reopen closes in place" do
+  it "matches a tab by its stamped node id even when the url changed" do
+    -- A (n2) reopens under a DIFFERENT url but still carries its stamped node id "n2"
+    -- (browser.sessions survived the restart). It binds to the same node, by id — no
+    -- url guessing, no fresh duplicate — and stays in its window (matched by the key).
+    let m = rematch [ rw 5 [ rtKeyed 51 5 0 "changed" "n2" ] ] prior
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
+    (_.parent <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just "n1")
+    -- no fresh node was created (n1 + n2 only; B/n3 genuinely didn't reopen -> dropped)
+    Map.size m.nodes `shouldEqual` 2
+
+  it "a stamped node id beats a colliding url (no mis-bind to a duplicate)" do
+    -- two tabs share http://A; only one reopens, carrying the stamp for n3 (the
+    -- SECOND A). It must bind to n3, not n2, despite both matching by url.
+    let
+      priorDup = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "A" false ]
+      m = rematch [ rw 5 [ rtKeyed 51 5 0 "A" "n3" ] ] priorDup
+    (_.tabId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 51) -- the stamped one binds
+    Map.lookup "n2" m.nodes `shouldEqual` Nothing -- the other A did not reopen -> dropped
+
+  it "chooseWindow prefers the stamped node's window over a url tie" do
+    -- two prior windows W1=[A], W2=[B]; a new window holds a tab stamped for A (W1)
+    -- and a tab whose url is B (W2). The stamp must win: the window binds to W1 (n1).
+    let
+      prior2 = runEvents [ openTab 11 1 0 "A" true, openTab 21 2 0 "B" true ]
+      m = rematch [ rw 5 [ rtKeyed 51 5 0 "whatever" "n2", rt 52 5 1 "B" ] ] prior2
+    (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5)
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
+
+  it "a stale nodeKey does not hijack a freshly-created node (prior-live only)" do
+    -- empty prior (e.g. the data was reset); two new tabs, the second stamped with
+    -- the id the first will be allocated. The stamp must NOT latch onto that fresh
+    -- node — both tabs get distinct fresh nodes.
+    let m = rematch [ rw 5 [ rt 51 5 0 "X", rtKeyed 52 5 1 "Y" "n2" ] ] emptyModel
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
+    (_.tabId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 52)
+
+  it "chooseWindow ignores a stale stamp that points at a freshly-created node" do
+    -- empty prior; window 5 gets a fresh node n2, and window 6's tab is stamped "n2".
+    -- chooseWindow must NOT merge window 6 into window 5 (n1) — they're separate.
+    let m = rematch [ rw 5 [ rt 51 5 0 "X" ], rw 6 [ rtKeyed 61 6 0 "Y" "n2" ] ] emptyModel
+    (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5)
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
+    (_.windowId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 6) -- window 6 is its own fresh window
+
+  it "a duplicate stamp (a duplicated tab) does not merge a second window" do
+    -- W1=[A@n2]; both window 5 and window 6 carry a tab stamped "n2" (a duplicated tab
+    -- inherits the stamp). The first binds n2; the second must NOT merge into n1.
+    let
+      prior1 = runEvents [ openTab 11 1 0 "A" true ]
+      m = rematch [ rw 5 [ rtKeyed 51 5 0 "A" "n2" ], rw 6 [ rtKeyed 61 6 0 "Adup" "n2" ] ] prior1
+    (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5) -- n1 stays window 5
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51) -- bound to the first
+    (_.windowId <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just 6) -- window 6 is its own window
+
+  it "a fresh tab orphaned in a reopened window is dropped (not kept)" do
+    -- B (n3) was never restored, and its window reopened without it: drop it, closing
+    -- the close-rule gap for a tab closed while the event page was suspended
     let m = rematch [ rw 5 [ rt 51 5 0 "A" ] ] prior
     (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 51)
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
-    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
+    Map.lookup "n3" m.nodes `shouldEqual` Nothing
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
+
+  it "a restored tab orphaned in a reopened window is kept (a fresh one would drop)" do
+    -- mark A (n2) as restored-from-history; only B (n3) reopens in the window
+    let
+      priorR = prior { nodes = Map.update (\n -> Just (n { restoredFromClosed = true })) "n2" prior.nodes }
+      m = rematch [ rw 5 [ rt 52 5 0 "B" ] ] priorR
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just true
+    -- A (n2) did not reopen but is restored, so it is kept as closed history
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
+
+  it "does not drop an orphan from a window whose url is shared (ambiguous match)" do
+    -- two prior windows both hold X; only one reopens. The duplicate url can bind the
+    -- wrong window node, so Y (fresh, in the other window) must be kept, never dropped.
+    let
+      prior2 = runEvents [ openTab 11 1 0 "X" true, openTab 21 2 0 "X" true, openTab 22 2 1 "Y" false ]
+      m = rematch [ rw 5 [ rt 51 5 0 "X" ] ] prior2
+    (_.title <$> Map.lookup "n5" m.nodes) `shouldEqual` Just "Y"
+    (isLive <$> Map.lookup "n5" m.nodes) `shouldEqual` Just false
+
+  it "does not drop an orphan when its window gained a fresh tab (url may have changed)" do
+    -- A reopens; B reopens under a changed url, so it can't be url-matched and lands as
+    -- a fresh node. B's old node may be that reopened tab, so it is kept, not dropped.
+    let m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "B2" ] ] prior
+    (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
+    (_.title <$> Map.lookup "n3" m.nodes) `shouldEqual` Just "B"
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
+
+  it "does not drop an orphan when a sibling moved in from another window (changed url)" do
+    -- W1 [A,B], W2 [C]; W1 reopens as [A,C] where B's url changed to C. C is moved in
+    -- from W2 (not a fresh tab), so the window is ambiguous and B must be kept, not dropped.
+    let
+      prior3 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false, openTab 21 2 0 "C" true ]
+      m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "C" ] ] prior3
+    (_.title <$> Map.lookup "n3" m.nodes) `shouldEqual` Just "B"
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
+
+  it "does not drop an orphan when a fresh tab appeared in another window (moved + changed url)" do
+    -- W1 [A,B], W2 [C]; current W1 [A], W2 [C, B2] (B moved to W2 and changed url to B2).
+    -- B2 is a fresh tab elsewhere, so it might BE B reopened — keep B (n3), don't drop it.
+    let
+      prior4 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false, openTab 21 2 0 "C" true ]
+      m = rematch [ rw 5 [ rt 51 5 0 "A" ], rw 6 [ rt 61 6 0 "C", rt 62 6 1 "B2" ] ] prior4
+    (_.title <$> Map.lookup "n3" m.nodes) `shouldEqual` Just "B"
+    (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
 
   it "a genuinely new tab gets a new node under its window" do
     let m = rematch [ rw 5 [ rt 51 5 0 "A", rt 52 5 1 "B", rt 53 5 2 "C" ] ] prior

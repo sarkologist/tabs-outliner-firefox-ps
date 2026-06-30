@@ -24,7 +24,7 @@ import Data.Array as Array
 import Data.Bifunctor (lmap)
 import Data.Either (Either)
 import Data.Map as Map
-import Data.Maybe (Maybe)
+import Data.Maybe (Maybe(..))
 import Model.Types (Kind(..), Model, Node, NodeId)
 
 type NodeRec =
@@ -43,6 +43,9 @@ type NodeRec =
   , tabId :: Maybe Int
   , windowId :: Maybe Int
   , sessionId :: Maybe String
+  -- optional so records written before this field still decode (absent -> Nothing
+  -- -> false); written only when true to keep the common record lean.
+  , restoredFromClosed :: Maybe Boolean
   }
 
 type Snapshot = { nodes :: Array Node, roots :: Array NodeId }
@@ -85,6 +88,7 @@ toRec n =
   , tabId: n.tabId
   , windowId: n.windowId
   , sessionId: n.sessionId
+  , restoredFromClosed: if n.restoredFromClosed then Just true else Nothing
   }
 
 fromRec :: NodeRec -> Node
@@ -104,6 +108,7 @@ fromRec r =
   , tabId: r.tabId
   , windowId: r.windowId
   , sessionId: r.sessionId
+  , restoredFromClosed: r.restoredFromClosed == Just true
   }
 
 kindStr :: Kind -> String

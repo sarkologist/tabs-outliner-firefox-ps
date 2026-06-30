@@ -66,7 +66,8 @@ test.describe("commands", () => {
 
   test("clicking a closed tab restores it (re-binds the node, no duplicate)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await fake(page, "closeTab", 11);
+    // save Alpha as closed history via the outliner (a browser close would drop it)
+    await clickAction(page, "Alpha", ".btn-close");
     await expect(page.locator('[data-status="closed"]')).toHaveCount(1);
     // click the (now closed) Alpha row -> Activate -> Restore
     await rowOf(page, "Alpha").locator(".title").click();
@@ -77,12 +78,48 @@ test.describe("commands", () => {
 
   test("restore rebinds the node even when the recreated tab's url differs (redirect)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, { ...seed, redirectCreatedTabs: true });
-    await fake(page, "closeTab", 11); // close Alpha -> closed history
+    await clickAction(page, "Alpha", ".btn-close"); // save Alpha as closed history
     await expect(page.locator('[data-status="closed"]')).toHaveCount(1);
     // restore it; the recreated tab's onCreated reports a different url than stored
     await rowOf(page, "Alpha").locator(".title").click();
     // the SAME node is rebound (matched by window, not url): no closed row, no dup
     await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    await expect(page.locator("[role=treeitem]")).toHaveCount(3);
+  });
+
+  test("a browser close of a fresh tab drops it (never saved)", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    // Beta was never restored or saved; closing it in the browser discards it
+    await fake(page, "closeTab", 12);
+    await expect.poll(() => page.locator("[role=treeitem]").count()).toBe(2); // window + Alpha
+    await expect(page.getByText("Beta")).toHaveCount(0);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+  });
+
+  test("a browser close of a restored tab keeps it as history", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    // node id is stable across the close/restore round-trip (the SAME node rebinds)
+    const alphaId = (await readNodes(page)).find((n) => n.title === "Alpha")!.id;
+    await clickAction(page, "Alpha", ".btn-close"); // save Alpha as closed history
+    await rowOf(page, "Alpha").locator(".title").click(); // restore -> live, flagged
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    // the BROWSER now closes the restored tab -> kept as history (it belongs in the tree)
+    const alphaTabId = (await readNodes(page)).find((n) => n.id === alphaId)!.tabId;
+    await fake(page, "closeTab", alphaTabId);
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
+    await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(true);
+  });
+
+  test("the outliner's own close keeps a tab as history (save & close)", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    const alphaId = (await readNodes(page)).find((n) => n.title === "Alpha")!.id;
+    await clickAction(page, "Alpha", ".btn-close"); // save Alpha
+    await rowOf(page, "Alpha").locator(".title").click(); // restore (row title becomes its url)
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    // close it from the outliner again ("save & close"): kept as closed history
+    await clickAction(page, "http://a", ".btn-close");
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
+    await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(true);
     await expect(page.locator("[role=treeitem]")).toHaveCount(3);
   });
 
@@ -222,7 +259,16 @@ test.describe("move to top level / bottom", () => {
       .toEqual([["http://a"], ["http://b"]]);
   });
 
-  test("move to top level pulls a nested node out, just after its window", async ({ page }) => {
+  // a closed tab can't sit bare at the root, so promoting one wraps it in a fresh
+  // top-level group (closing the parentless-root-tab restore gap).
+  const wrappedAtTopLevel = async (page: Page, title: string): Promise<boolean> => {
+    const nodes = await readNodes(page);
+    const node = nodes.find((n) => n.title === title);
+    const parent = node?.parent ? nodes.find((n) => n.id === node.parent) : null;
+    return parent != null && (parent.parent ?? null) === null; // parent is a top-level group
+  };
+
+  test("move to top level pulls a nested node out, just after its window (tab wrapped)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, twoWindows);
     await fake(page, "closeWindow", 1); // Alpha + Beta become closed history under the closed window
     await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
@@ -230,21 +276,21 @@ test.describe("move to top level / bottom", () => {
 
     await clickAction(page, "Beta", ".btn-to-top-level");
 
-    // Beta is now a top-level node, landing just after its old window — so the live
-    // "Keep" window stays last; Beta did not go to the very bottom.
-    await expect.poll(() => parentOf(page, "Beta")).toBeNull();
+    // Beta is wrapped in a new top-level group landing just after its old window — so
+    // the live "Keep" window stays last; Beta did not go to the very bottom.
+    await expect.poll(() => wrappedAtTopLevel(page, "Beta")).toBe(true);
     expect((await titles(page)).at(-1)).toBe("Keep");
   });
 
-  test("move to bottom pulls a nested node to the very end", async ({ page }) => {
+  test("move to bottom pulls a nested node to the very end (tab wrapped)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, twoWindows);
     await fake(page, "closeWindow", 1);
     await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
 
     await clickAction(page, "Beta", ".btn-to-bottom");
 
-    // top-level now, and the last visible row
-    await expect.poll(() => parentOf(page, "Beta")).toBeNull();
+    // wrapped in a top-level group at the very end, so Beta is the last visible row
+    await expect.poll(() => wrappedAtTopLevel(page, "Beta")).toBe(true);
     expect((await titles(page)).at(-1)).toBe("Beta");
   });
 

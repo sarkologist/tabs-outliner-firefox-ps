@@ -120,18 +120,30 @@ spec = describe "Model.Undo" do
     Map.member "n5" undoStep.model.nodes `shouldEqual` true
 
   -- applyEntry reconciles against live state that changed since the command
-  it "undo of a rename keeps a since-closed tab closed (no resurrection)" do
+  it "undo of a rename does not resurrect a since-dropped tab" do
     let
       renamed = applyCommand 0.0 (Rename "n2" "X") base
       entry = inversePatch 0.0 base renamed.patch
-      -- the tab closes (a live browser event) before the user undoes the rename
+      -- the tab closes (a browser event) before the undo; a fresh, never-restored
+      -- tab is DROPPED, not kept as history
       closed = (applyBrowser 0.0 (TabClosed { tabId: 11 }) renamed.model).model
       back = (applyEntry 0.0 entry closed).model
-    -- the rename is undone...
-    (_.customTitle <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Nothing
-    -- ...but the tab stays Closed history; it is NOT resurrected as a live tab
-    (isLive <$> Map.lookup "n2" back.nodes) `shouldEqual` Just false
-    (_.tabId <$> Map.lookup "n2" back.nodes) `shouldEqual` Just Nothing
+    -- undoing the rename does not bring the dropped tab back (orphaned or live)
+    Map.lookup "n2" back.nodes `shouldEqual` Nothing
+    -- the rest of the tree is intact (its sibling stays under the window)
+    (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n3" ]
+
+  it "undo of a reorder does not resurrect a tab dropped meanwhile (no dangling child)" do
+    let
+      -- reorder n2 after n3 within window n1 (a tree edit, so it records an undo entry)
+      reordered = applyCommand 0.0 (Move "n2" (Just "n1") 1) base
+      entry = inversePatch 0.0 base reordered.patch
+      -- n2 (fresh) is browser-closed before the undo -> dropped
+      closed = (applyBrowser 0.0 (TabClosed { tabId: 11 }) reordered.model).model
+      back = (applyEntry 0.0 entry closed).model
+    -- the dropped tab is neither resurrected nor left dangling in its parent's children
+    Map.lookup "n2" back.nodes `shouldEqual` Nothing
+    (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n3" ]
 
   it "undo of a move keeps a tab opened in the parent meanwhile (no orphan)" do
     let

@@ -69,3 +69,7 @@ spec = describe "Model.Codec" do
     it "round-trips a node through encode/decode" do
       let n = (defaultNode "n5" KTab 0.0) { title = "X", url = Just "http://x", tabId = Just 9 }
       decodeNode (encodeNode n) `shouldEqual` Right n
+
+    it "round-trips the restoredFromClosed flag (persisted so a suspend can't lose it)" do
+      let n = (defaultNode "n6" KTab 0.0) { url = Just "http://y", tabId = Just 7, restoredFromClosed = true }
+      (_.restoredFromClosed <$> decodeNode (encodeNode n)) `shouldEqual` Right true

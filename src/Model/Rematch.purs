@@ -33,9 +33,13 @@ type Acc =
   , byTab :: Map Int NodeId
   , byWindow :: Map Int NodeId
   , pool :: Map String (List NodeId) -- prior-live tab nodes by url, to consume
+  , priorTabIds :: Set NodeId -- ids of the prior-live tab nodes (fixed at start), so a session-key match can only land on one of THEM, never a node freshly created this run
   , consumedTabs :: Set NodeId
   , consumedWindows :: Set NodeId
   , touched :: Set NodeId
+  , removed :: Set NodeId -- prior-live tabs dropped (fresh, orphaned in a reopened window)
+  , windowsGainedTab :: Set NodeId -- window nodes that gained a tab moved in from another window — too ambiguous to drop an orphan from
+  , anyFreshTab :: Boolean -- a brand-new (unmatched) tab appeared anywhere: it could be ANY orphan reopened under a changed url, so suppress all drops this run
   , nextId :: Int
   }
 
@@ -49,20 +53,68 @@ rematchOnStartup now current model0 =
     pool0 = foldl addToPool Map.empty priorTabs
     urlToWin = foldl addUrlWindow Map.empty priorTabs
 
+    -- Window nodes whose match is too ambiguous to safely DROP an orphan from. A url
+    -- shared across more than one prior window can bind the wrong window node at
+    -- re-match (url matching is approximate), so a tab is never dropped from such a
+    -- window — only from one whose urls are all unique. Dropping is conservative on
+    -- purpose: when unsure, keep (the prior behaviour), never delete.
+    urlWins = foldl addUrlWin Map.empty priorTabs
+    addUrlWin m n = case n.url, n.parent of
+      Just u, Just p -> Map.insertWith Set.union u (Set.singleton p) m
+      _, _ -> m
+    sharedUrl u = maybe false (\s -> Set.size s >= 2) (Map.lookup u urlWins)
+    windowsWithSharedUrl = foldl
+      (\acc n -> case n.url, n.parent of
+        Just u, Just p | sharedUrl u -> Set.insert p acc
+        _, _ -> acc)
+      Set.empty
+      priorTabs
+
     acc0 =
       { nodes: model0.nodes
       , roots: model0.roots
       , byTab: Map.empty
       , byWindow: Map.empty
       , pool: pool0
+      , priorTabIds: Set.fromFoldable (map _.id priorTabs)
       , consumedTabs: Set.empty
       , consumedWindows: Set.empty
       , touched: Set.empty
+      , removed: Set.empty
+      , windowsGainedTab: Set.empty
+      , anyFreshTab: false
       , nextId: model0.nextId
       }
     acc1 = foldl (processWindow now urlToWin) acc0 current
-    -- close prior-live tabs that did not reopen, in place
-    acc2 = foldl (\a n -> if Set.member n.id a.consumedTabs then a else closeInAcc now a n.id) acc1 priorTabs
+    -- prior-live tabs that did not reopen. A fresh (never-restored) tab orphaned in
+    -- a window that DID reopen is dropped — closing the tab rule's gap when the event
+    -- page was suspended (it matches the original, which deletes such orphans). A
+    -- restored tab is kept (it belongs in the tree); and a tab whose whole window did
+    -- not reopen is kept too, preserving that window as a recoverable previous session.
+    -- Drop a prior-live tab only when we are SURE it was a fresh tab orphaned in a
+    -- window that genuinely reopened: never-restored, no unmatched/fresh tab appeared
+    -- anywhere this run (a changed-url reopen would land as one, and could be any
+    -- orphan), its window reopened, that window has unambiguous (unique) urls, and it
+    -- gained no tab moved in from another window. Anything less → keep, in place.
+    -- WAIVED (inherent to url matching, like the module header's edge stance): a tab
+    -- that BOTH moves to another window AND changes its url to exactly match a tab
+    -- that was closed there is indistinguishable from a real close, so the orphan it
+    -- leaves behind is dropped. A multi-coincidence, on par with two same-url tabs in
+    -- one window; ruling it out would mean never dropping (the url is all we have).
+    dropsClean a n =
+      not n.restoredFromClosed
+        && not a.anyFreshTab
+        && windowReopened a n
+        && maybe false (\p -> not (Set.member p windowsWithSharedUrl)) n.parent
+        && maybe false (\p -> not (Set.member p a.windowsGainedTab)) n.parent
+    acc2 = foldl
+      ( \a n ->
+          if Set.member n.id a.consumedTabs then a
+          else if dropsClean a n then removeInAcc a n.id
+          else closeInAcc now a n.id
+      )
+      acc1
+      priorTabs
     -- close prior-live windows that did not reopen
     acc3 = foldl (\a n -> if Set.member n.id a.consumedWindows then a else closeInAcc now a n.id) acc2 priorWindows
 
@@ -73,10 +125,13 @@ rematchOnStartup now current model0 =
       , byWindow = acc3.byWindow
       , nextId = acc3.nextId
       }
-    upserts = Array.mapMaybe (\i -> Map.lookup i acc3.nodes) (Array.fromFoldable (Set.toUnfoldable acc3.touched :: List NodeId))
+    upserts = Array.mapMaybe
+      (\i -> if Set.member i acc3.removed then Nothing else Map.lookup i acc3.nodes)
+      (Array.fromFoldable (Set.toUnfoldable acc3.touched :: List NodeId))
+    removes = Array.fromFoldable (Set.toUnfoldable acc3.removed :: List NodeId)
     roots = if acc3.roots == model0.roots then Nothing else Just acc3.roots
   in
-    { model: model', patch: { upserts, removes: [], roots } }
+    { model: model', patch: { upserts, removes, roots } }
 
 addToPool :: Map String (List NodeId) -> Node -> Map String (List NodeId)
 addToPool m n = case n.url of
@@ -130,14 +185,36 @@ freshWindow now acc cw =
 chooseWindow :: Map String NodeId -> Acc -> RuntimeWindow -> Maybe NodeId
 chooseWindow urlToWin acc cw =
   let
-    tally = foldl bump Map.empty cw.tabs
-    bump m ct = case ct.url >>= \u -> Map.lookup u urlToWin of
-      Just wid | not (Set.member wid acc.consumedWindows), Map.member wid acc.nodes ->
-        Map.insertWith (+) wid 1 m
-      _ -> m
-    ranked = Array.sortBy (\a b -> compare (snd b) (snd a)) (Map.toUnfoldable tally :: Array (Tuple NodeId Int))
+    -- Tally window votes by STAMP (a tab's stamped node's window) and by URL
+    -- separately. A stamp is authoritative, so any window with stamp votes wins over
+    -- url-only guesses — never let a url tie or beat a stamp. This is a best-effort
+    -- GROUPING heuristic (per-tab votes, as the url path always was): duplicate tabs
+    -- sharing a url/stamp can skew which prior window a runtime window binds to. That
+    -- only affects grouping — each TAB still binds to its exact node (sessionMatch /
+    -- the url pool) and nothing is lost — so the skew is waived, like the rest of
+    -- re-match's edges.
+    tally pick = foldl
+      ( \m ct -> case pick ct of
+          Just wid | not (Set.member wid acc.consumedWindows), Map.member wid acc.nodes -> Map.insertWith (+) wid 1 m
+          _ -> m
+      )
+      Map.empty
+      cw.tabs
+    -- only a stamp naming a genuine, as-yet-unconsumed PRIOR-live tab counts: its
+    -- parent is then a real prior window, still its ORIGINAL one (an unconsumed tab
+    -- hasn't been moved this run). This rejects a stale key pointing at a node created
+    -- this run, and a duplicate key (e.g. a duplicated tab) for an already-bound tab.
+    byStamp = tally
+      ( \ct -> ct.nodeKey >>= \k ->
+          if Set.member k acc.priorTabIds && not (Set.member k acc.consumedTabs) then Map.lookup k acc.nodes >>= _.parent
+          else Nothing
+      )
+    byUrl = tally (\ct -> ct.url >>= \u -> Map.lookup u urlToWin)
+    best t = map fst (Array.head (Array.sortBy (\a b -> compare (snd b) (snd a)) (Map.toUnfoldable t :: Array (Tuple NodeId Int))))
   in
-    map fst (Array.head ranked)
+    case best byStamp of
+      Just w -> Just w
+      Nothing -> best byUrl
 
 -- Re-bind a reopened tab to its existing node, or create a new one. A tab matched
 -- to a node already under the chosen window stays in place (preserving the user's
@@ -145,8 +222,26 @@ chooseWindow urlToWin acc cw =
 -- moved into this window — otherwise one live window's tabs would stay scattered
 -- across the separate prior windows they happened to come from.
 matchTab :: Number -> NodeId -> Acc -> RuntimeTab -> Acc
-matchTab now winId acc ct = case ct.url >>= \u -> popPoolFor winId u acc of
-  Just (Tuple nid pool') -> case Map.lookup nid acc.nodes of
+matchTab now winId acc ct = case sessionMatch of
+  -- a tab Firefox session-restored carries the node id we stamped on it: bind that
+  -- EXACT node — no url guessing — which is what eliminates the url-collision
+  -- re-match edge cases (duplicate urls, a tab that changed url and/or window).
+  Just nid -> bind nid (poolWithout nid)
+  Nothing -> case ct.url >>= \u -> popPoolFor winId u acc of
+    Just (Tuple nid pool') -> bind nid pool'
+    Nothing -> freshTab now winId acc ct
+  where
+  -- the stamped node id, if it names an as-yet-unconsumed PRIOR-live tab. Checking
+  -- the fixed priorTabIds set (not the mutable acc.nodes) means a stale stamp can
+  -- never latch onto a node freshly created earlier in this same run.
+  sessionMatch = ct.nodeKey >>= \k ->
+    if Set.member k acc.priorTabIds && not (Set.member k acc.consumedTabs) then Just k else Nothing
+  -- drop a session-matched node from the url pool too, so a later same-url tab can't
+  -- re-pop it
+  poolWithout nid = case Map.lookup nid acc.nodes >>= _.url of
+    Just u -> Map.alter (map (List.delete nid)) u acc.pool
+    Nothing -> acc.pool
+  bind nid pool' = case Map.lookup nid acc.nodes of
     Just n
       | n.parent == Just winId -> consume nid (Map.insert nid (rebind n) acc.nodes) acc.roots pool' acc.touched
       | otherwise ->
@@ -162,10 +257,12 @@ matchTab now winId acc ct = case ct.url >>= \u -> popPoolFor winId u acc of
               Nothing -> nodes2
             touched' = Set.insert winId (maybe acc.touched (\pid -> Set.insert pid acc.touched) n.parent)
           in
-            consume nid nodes3 (Array.delete nid acc.roots) pool' touched'
+            -- this window gained a tab moved in from another window: mark it ambiguous
+            -- so an orphan here is not dropped (the moved-in tab might be that orphan
+            -- reopened under a changed url that happened to match the other window's tab)
+            (consume nid nodes3 (Array.delete nid acc.roots) pool' touched')
+              { windowsGainedTab = Set.insert winId acc.windowsGainedTab }
     Nothing -> freshTab now winId acc ct
-  Nothing -> freshTab now winId acc ct
-  where
   consume nid nodes roots pool' touched = acc
     { nodes = nodes
     , roots = roots
@@ -198,6 +295,7 @@ freshTab now winId acc ct =
       { nodes = nodes'
       , byTab = Map.insert ct.tabId nid acc.byTab
       , touched = Set.insert nid (Set.insert winId acc.touched)
+      , anyFreshTab = true
       , nextId = acc.nextId + 1
       }
 
@@ -217,7 +315,35 @@ popPoolFor winId u acc = do
 closeInAcc :: Number -> Acc -> NodeId -> Acc
 closeInAcc now acc nid = case Map.lookup nid acc.nodes of
   Just n -> acc
-    { nodes = Map.insert nid (n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }) acc.nodes
+    { nodes = Map.insert nid (n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now, restoredFromClosed = false }) acc.nodes
     , touched = Set.insert nid acc.touched
     }
+  Nothing -> acc
+
+-- Did this tab's owning window reopen (its window node bound to a current browser
+-- window)? If so, the tab is orphaned in a still-open window; if not, its whole
+-- window is gone and the tab is preserved with it.
+windowReopened :: Acc -> Node -> Boolean
+windowReopened acc n = case n.parent of
+  Just pid -> Set.member pid acc.consumedWindows
+  Nothing -> false
+
+-- Drop a prior-live tab node entirely (a fresh, never-restored tab that did not
+-- reopen): unlink it from its window's child list and the node map, and record the
+-- removal so the patch deletes the persisted record (else it would reload next boot).
+removeInAcc :: Acc -> NodeId -> Acc
+removeInAcc acc nid = case Map.lookup nid acc.nodes of
+  Just n ->
+    let
+      nodes1 = Map.delete nid acc.nodes
+      nodes2 = case n.parent >>= (\pid -> Map.lookup pid nodes1) of
+        Just p -> Map.insert p.id (p { children = Array.delete nid p.children }) nodes1
+        Nothing -> nodes1
+    in
+      acc
+        { nodes = nodes2
+        , roots = Array.delete nid acc.roots
+        , removed = Set.insert nid acc.removed
+        , touched = maybe acc.touched (\pid -> Set.insert pid acc.touched) n.parent
+        }
   Nothing -> acc

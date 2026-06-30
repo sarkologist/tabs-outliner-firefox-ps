@@ -8,10 +8,10 @@ module Model.Reconcile where
 import Prelude
 
 import Data.Array as Array
-import Data.List (List)
 import Data.List as List
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
 import Model.Tree (applyPatch, insertAtClamped, liveTabNode, liveWindowNode, mergePatch, moveWithin, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Step, defaultNode, emptyPatch, isLive)
@@ -59,15 +59,20 @@ applyBrowser now ev model = case ev of
       -- a window restore is pending: bind this new browser window to the closed
       -- window node being restored, so it goes live in place (its tabs rebind as
       -- their own onCreated events arrive) rather than a fresh node.
-      Just { head: wNid, tail } ->
+      Just { head: pw, tail } ->
         let model' = model { pendingRestoreWindows = tail }
-        in case Map.lookup wNid model'.nodes of
+        in case Map.lookup pw.node model'.nodes of
           Just wn | wn.kind == KGroup ->
             let
               wn' = wn { windowId = Just windowId, closedAt = Nothing }
-              -- queue this window's restorable tabs so each rebinds (in creation
-              -- order) as its onCreated arrives, instead of spawning a duplicate
-              model'' = model' { pendingRestore = Map.insert windowId (restorableTabs wNid model') model'.pendingRestore }
+              -- queue EXACTLY the tabs this restore opens into the window (carried on
+              -- the pending entry, in creation order), so each rebinds as its
+              -- onCreated arrives. A rehome carries none (its dragged tab arrives via
+              -- onAttached); a partial restore carries only the chosen tab(s) — so
+              -- neither hijacks the container's other saved closed tabs.
+              model'' =
+                if List.null pw.tabs then model'
+                else model' { pendingRestore = Map.insert windowId pw.tabs model'.pendingRestore }
               patch = { upserts: [ wn' ], removes: [], roots: Nothing }
             in
               commit model''.nextId patch model''
@@ -88,8 +93,22 @@ applyBrowser now ev model = case ev of
 
   TabOpened t -> openTab now t model
 
-  TabClosed { tabId } -> withTab tabId model \_ n ->
-    commit model.nextId { upserts: [ closeNode now n ], removes: [], roots: Nothing } model
+  TabClosed { tabId } ->
+    let
+      -- did the outliner ask for this close (a CloseNode "save & close"), or did
+      -- the browser? Consume the marker up front, so it never leaks even if the
+      -- node is already gone.
+      outlinerInitiated = Set.member tabId model.closingTabs
+      model' = model { closingTabs = Set.delete tabId model.closingTabs }
+    in
+      withTab tabId model' \nid n ->
+        if n.restoredFromClosed || outlinerInitiated
+        -- keep as closed history only when it earns a place: a tab the user restored
+        -- from history (it belongs in the tree), or one the outliner itself is
+        -- closing ("save & close"). A freshly-opened tab the user just closes is
+        -- dropped, not auto-saved — the tree holds curated tabs, not every close.
+        then commit model'.nextId { upserts: [ closeNode now n ], removes: [], roots: Nothing } model'
+        else dropNode nid n model'
 
   TabChanged c -> withTab c.tabId model \_ n ->
     let
@@ -128,11 +147,32 @@ freshWindow now windowId model =
 -- | tab loses its `tabId`, a live-window container loses its `windowId` (becoming
 -- | a plain saved group). Nodes with no binding (plain sub-groups, already-closed
 -- | tabs) are left untouched — closing a window thus turns it into a saved group
--- | holding closed tabs, with nested user groups preserved.
+-- | holding closed tabs, with nested user groups preserved. Going closed also
+-- | resets `restoredFromClosed`: the live binding is gone, so its restore origin
+-- | no longer applies (a fresh restore will set it again).
 closeNode :: Number -> Node -> Node
 closeNode now n
-  | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now }
+  | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now, restoredFromClosed = false }
   | otherwise = n
+
+-- | Remove a single browser-closed tab node from the tree entirely (used when a
+-- | freshly-opened, never-restored tab is closed by the browser): unlink it from
+-- | its parent and the node map, drop it from the roots if it sat there, then prune
+-- | a parent left empty. This is `Command.Delete`'s structural removal for the one
+-- | closing tab — a tab carries no children, so the subtree is just the node itself.
+dropNode :: NodeId -> Node -> Model -> Step
+dropNode nid n model =
+  let
+    parentUpsert = case n.parent >>= (\pid -> Map.lookup pid model.nodes) of
+      Just p -> [ p { children = Array.delete nid p.children } ]
+      Nothing -> []
+    rootsM = if Array.elem nid model.roots then Just (Array.delete nid model.roots) else Nothing
+    patch = { upserts: parentUpsert, removes: subtreeIds nid model, roots: rootsM }
+    base = commit model.nextId patch model
+  in
+    case n.parent of
+      Just pid -> let p = pruneFrom pid base.model in base { model = p.model, patch = mergePatch base.patch p.patch }
+      Nothing -> base
 
 orElse :: Maybe String -> Maybe String -> Maybe String
 orElse old new = case new of
@@ -162,20 +202,6 @@ popPendingRestore windowId model = do
       if List.null tail then Map.delete windowId model.pendingRestore
       else Map.insert windowId tail model.pendingRestore
   pure { node: head, model: model { pendingRestore = pr } }
-
--- | The window's own restorable tabs — its DIRECT closed tab children with a url,
--- | in child order. Only these are recreated in this window (`Command.restore`
--- | groups tabs by their immediate parent, so a nested group's tabs open in their
--- | own new window), so the rebind queue lines up with the onCreated events.
-restorableTabs :: NodeId -> Model -> List NodeId
-restorableTabs root model = List.fromFoldable (Array.filter isRestorable kids)
-  where
-  kids = case Map.lookup root model.nodes of
-    Just wn -> wn.children
-    Nothing -> []
-  isRestorable nid = case Map.lookup nid model.nodes of
-    Just n -> n.kind == KTab && isNothing n.tabId && isJust n.url
-    Nothing -> false
 
 -- | A brand-new tab: create a node under its (possibly new) window.
 openFresh :: Number -> OpenedTab -> Model -> Step

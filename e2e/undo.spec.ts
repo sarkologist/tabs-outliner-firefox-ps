@@ -92,7 +92,7 @@ test.describe("undo / redo", () => {
     await expect(groupRows(page)).toHaveCount(1);
   });
 
-  test("undo of a rename does not resurrect a tab closed in the meantime", async ({ page }) => {
+  test("undo of a rename does not resurrect a since-dropped tab", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await clickAction(rowOf(page, "Alpha"), ".btn-rename");
     const input = page.locator(".rename-input");
@@ -100,16 +100,16 @@ test.describe("undo / redo", () => {
     await input.press("Enter");
     await expect(page.getByText("Renamed")).toBeVisible();
 
-    // its browser tab closes (a live event) — the row greys out as history
+    // its browser tab closes (a live event) — a fresh, never-restored tab is dropped
     await fake(page, "closeTab", 11);
-    await expect(page.locator('.row[data-status="closed"]').filter({ hasText: "Renamed" })).toBeVisible();
+    await expect(page.getByText("Renamed")).toHaveCount(0);
 
-    // undo the rename: the title reverts, but the tab stays closed history —
-    // it must NOT come back as a live tab bound to the (now gone) browser tab
+    // undo the rename: nothing to revert (the tab is gone), so it stays gone — it
+    // must NOT reappear, least of all as a live tab bound to the dead browser tab
     await blur(page);
     await page.keyboard.press("Control+z");
-    await expect(page.locator('.row[data-status="closed"]').filter({ hasText: "Alpha" })).toBeVisible();
-    await expect(page.locator('.row[data-status="live"]').filter({ hasText: "Alpha" })).toHaveCount(0);
+    await expect(page.getByText("Alpha")).toHaveCount(0);
+    await expect(page.getByText("Renamed")).toHaveCount(0);
   });
 
   test("undo with an empty history is a harmless no-op", async ({ page }) => {
