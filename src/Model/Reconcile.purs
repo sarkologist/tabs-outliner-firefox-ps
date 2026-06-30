@@ -13,7 +13,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
-import Model.Tree (applyPatch, insertAtClamped, liveTabNode, liveWindowNode, mergePatch, moveWithin, pruneFrom, subtreeIds)
+import Model.Tree (applyPatch, insertAtLive, liveTabChild, liveTabNode, liveWindowNode, mergePatch, moveWithin, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Step, defaultNode, emptyPatch, isLive)
 
 mkId :: Int -> NodeId
@@ -128,7 +128,10 @@ applyBrowser now ev model = case ev of
       Nothing -> noop model
       Just p ->
         let
-          p' = p { children = moveWithin nid m.toIndex p.children }
+          -- m.toIndex is a browser tab index (counted among LIVE tabs); map it
+          -- through the interleaved closed nodes so the live subsequence stays in
+          -- browser order.
+          p' = p { children = moveWithin (liveTabChild model) nid m.toIndex p.children }
         in
           commit model.nextId { upserts: [ p' ], removes: [], roots: Nothing } model
 
@@ -217,7 +220,9 @@ openFresh now t model =
       , tabId = Just t.tabId
       , parent = Just rw.winId
       }
-    winNode' = rw.winNode { children = insertAtClamped t.index tabNodeId rw.winNode.children }
+    -- t.index is a browser tab index (counted among LIVE tabs only); map it past
+    -- any interleaved closed nodes so the live subsequence stays in browser order.
+    winNode' = rw.winNode { children = insertAtLive (liveTabChild model) t.index tabNodeId rw.winNode.children }
     roots' = if rw.isNew then Just (model.roots <> [ rw.winId ]) else Nothing
     patch = { upserts: [ winNode', tabNode ], removes: [], roots: roots' }
   in
@@ -226,6 +231,18 @@ openFresh now t model =
 -- | A restored closed tab re-using its existing node (no duplicate). Position in
 -- | the tree is unchanged; the node just goes Live again. The pending-restore
 -- | queue was already advanced by `popPendingRestore`.
+-- |
+-- | WAIVED (the module header's edge stance), re the live-order-matches-browser
+-- | invariant: the node keeps its saved tree slot rather than being re-seated at
+-- | the browser's `t.index`. A whole window/group restore stays exact — its tabs
+-- | are recreated in saved order into a fresh window, so the live subsequence
+-- | already matches the browser. But restoring a single closed tab back into an
+-- | ALREADY-LIVE window appends the real tab at the end (`CreateTab` passes no
+-- | index), so a tab whose saved slot was mid-window leaves the live subsequence
+-- | out of browser order until the next move. Re-seating here can't fix it
+-- | cheaply: in a multi-tab restore the siblings are still closed as each arrives,
+-- | so a live-index re-seat would reorder them. The real fix is to honor the saved
+-- | slot at the browser (a create index), left as follow-up.
 rebindRestored :: Number -> OpenedTab -> NodeId -> Node -> Model -> Step
 rebindRestored _ t _ n model =
   let
@@ -266,7 +283,10 @@ attachTab now tabId windowId index model = withTab tabId model \nid n ->
         Just p -> [ p { children = Array.delete nid p.children } ]
         Nothing -> []
       _ -> []
-    winNode' = rw.winNode { children = insertAtClamped index nid (Array.delete nid rw.winNode.children) }
+    -- index is a browser tab index in the destination window (counted among LIVE
+    -- tabs); map it past interleaved closed nodes to keep the live subsequence in
+    -- browser order. (Delete first in case nid already sits in the target list.)
+    winNode' = rw.winNode { children = insertAtLive (liveTabChild model) index nid (Array.delete nid rw.winNode.children) }
     n' = n { parent = Just rw.winId }
     roots' = if rw.isNew then Just (model.roots <> [ rw.winId ]) else Nothing
     patch = { upserts: oldParentUpsert <> [ winNode', n' ], removes: [], roots: roots' }
