@@ -310,18 +310,18 @@ applyCommandRaw now cmd model = case cmd of
         _ -> m
       pending' = foldl queueIntoWindow model.pendingRestore tagged
 
-      -- tabs.create's index is counted among live browser tabs. To keep
-      -- one-by-one restores in saved tree order, count siblings before this node
-      -- that are already live plus siblings this same restore command is also
-      -- creating into the window.
+      -- tabs.create's index is counted among live browser tabs. To keep restores
+      -- in saved tree order, count siblings before this node that are already live
+      -- plus siblings queued by this or an earlier not-yet-reconciled restore.
       restoreIndex :: Int -> NodeId -> Maybe Int
       restoreIndex wid id = do
         n <- Map.lookup id model.nodes
         pid <- n.parent
         p <- Map.lookup pid model.nodes
         let
+          queued = maybe [] Array.fromFoldable (Map.lookup wid model.pendingRestore)
           restoring = Set.fromFoldable
-            (map _.id (Array.filter (\x -> x.target == IntoWindow wid) tagged))
+            (queued <> map _.id (Array.filter (\x -> x.target == IntoWindow wid) tagged))
           before = Array.takeWhile (_ /= id) p.children
           counts cid = liveTabChild model cid || Set.member cid restoring
         pure (Array.length (Array.filter counts before))

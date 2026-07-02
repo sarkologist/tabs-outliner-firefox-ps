@@ -258,6 +258,14 @@ spec = describe "Model.Command" do
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
     Map.size reopened.nodes `shouldEqual` 2
 
+  it "restoring into a live window counts earlier pending siblings" do
+    let
+      closedBoth = outlinerClose "n3" 12 (outlinerClose "n2" 11 base)
+      withPending = closedBoth { pendingRestore = Map.insert 1 (Cons "n2" Nil) closedBoth.pendingRestore }
+      activated = applyCommand 0.0 (Activate "n3") withPending
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://B") ]
+    Map.lookup 1 activated.model.pendingRestore `shouldEqual` Just (Cons "n2" (Cons "n3" Nil))
+
   it "restoring rebinds the clicked node even when the recreated tab reports a different url" do
     let
       closed = outlinerClose "n2" 11 (runEvents [ openTab 11 1 0 "A" true ])

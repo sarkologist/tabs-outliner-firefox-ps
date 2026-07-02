@@ -157,7 +157,7 @@ test.describe("commands", () => {
     const kept = windows.find((w: any) => w.id === 1);
     expect(kept.tabs.map((t: any) => t.url)).toEqual(["http://keep"]);
     const restored = windows.find((w: any) => w.id !== 1);
-    expect(restored.tabs.map((t: any) => t.url).sort()).toEqual(["http://a", "http://b"]);
+    expect(restored.tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b"]);
   });
 
   test("drag reorders siblings", async ({ page }) => {
