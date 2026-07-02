@@ -5,6 +5,11 @@
 
 export const getBrowser = () => globalThis.browser;
 
+const BACKUP_ALARM = "tabs-outliner-automatic-backup";
+const BACKUP_ENABLED_KEY = "tabsOutlinerAutomaticBackupsEnabled";
+const BACKUP_LAST_SUCCESS_KEY = "tabsOutlinerAutomaticBackupLastSuccessfulAt";
+const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 // Key under which we stash a tab's outliner node id via browser.sessions. The
 // value survives a browser restart for any tab Firefox session-restores, giving
 // startup re-match a STABLE identity to bind by (instead of guessing by url).
@@ -145,3 +150,147 @@ export const newWindowWithTabsImpl = (api) => (tabIds) => () => {
 
 export const removeTabImpl = (api) => (tabId) => () =>
   Promise.resolve(api.tabs.remove(tabId));
+
+export const getAutomaticBackupsEnabledImpl = (api) => () => {
+  const local = api && api.storage && api.storage.local;
+  if (!local || typeof local.get !== "function") return Promise.resolve(false);
+  return Promise.resolve(local.get(BACKUP_ENABLED_KEY)).then(
+    (stored) => stored && stored[BACKUP_ENABLED_KEY] === true,
+    () => false
+  );
+};
+
+export const setAutomaticBackupsEnabledImpl = (api) => (enabled) => () => {
+  const local = api && api.storage && api.storage.local;
+  if (!local || typeof local.set !== "function") return Promise.resolve();
+  return Promise.resolve(local.set({ [BACKUP_ENABLED_KEY]: !!enabled })).then(() => undefined);
+};
+
+export const automaticBackupDueImpl = (api) => () => {
+  const local = api && api.storage && api.storage.local;
+  if (!local || typeof local.get !== "function") return Promise.resolve(true);
+  return Promise.resolve(local.get(BACKUP_LAST_SUCCESS_KEY)).then(
+    (stored) => {
+      const raw = stored && stored[BACKUP_LAST_SUCCESS_KEY];
+      const last = typeof raw === "string" ? Date.parse(raw) : NaN;
+      return !Number.isFinite(last) || Date.now() - last >= BACKUP_INTERVAL_MS;
+    },
+    () => true
+  );
+};
+
+export const recordAutomaticBackupSuccessImpl = (api) => () => {
+  const local = api && api.storage && api.storage.local;
+  if (!local || typeof local.set !== "function") return Promise.resolve();
+  return Promise.resolve(local.set({ [BACKUP_LAST_SUCCESS_KEY]: new Date().toISOString() })).then(
+    () => undefined
+  );
+};
+
+export const ensureBackupAlarmImpl = (api) => () => {
+  const alarms = api && api.alarms;
+  if (!alarms || typeof alarms.create !== "function") return Promise.resolve();
+  const create = () => Promise.resolve(
+    alarms.create(BACKUP_ALARM, { periodInMinutes: 24 * 60 })
+  ).then(() => undefined);
+  if (typeof alarms.get !== "function") return create();
+  return Promise.resolve(alarms.get(BACKUP_ALARM)).then(
+    (alarm) => (alarm ? undefined : create()),
+    () => create()
+  );
+};
+
+export const clearBackupAlarmImpl = (api) => () => {
+  const alarms = api && api.alarms;
+  if (!alarms || typeof alarms.clear !== "function") return Promise.resolve();
+  return Promise.resolve(alarms.clear(BACKUP_ALARM)).then(() => undefined);
+};
+
+export const onBackupAlarmImpl = (api) => (cb) => () => {
+  const alarms = api && api.alarms;
+  if (!alarms || !alarms.onAlarm || typeof alarms.onAlarm.addListener !== "function") return;
+  alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === BACKUP_ALARM) cb();
+  });
+};
+
+const localDateSlug = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+
+export const backupFilename = () =>
+  `tabs-outliner-backups/tabs-outliner-${localDateSlug(new Date())}.json`;
+
+export const downloadBackupImpl = (api) => (filename) => (content) => () => {
+  const downloads = api && api.downloads;
+  if (!downloads || typeof downloads.download !== "function") return Promise.resolve();
+  const blob = new Blob([content], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const changes = downloads.onChanged;
+  const canObserve =
+    changes &&
+    typeof changes.addListener === "function" &&
+    typeof changes.removeListener === "function";
+  let revoked = false;
+  const revoke = () => {
+    if (!revoked) {
+      revoked = true;
+      URL.revokeObjectURL(url);
+    }
+  };
+  if (!canObserve) {
+    return Promise.resolve(
+      downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
+    ).then(() => revoke(), (err) => {
+      revoke();
+      throw err;
+    });
+  }
+  return new Promise((resolve, reject) => {
+    let downloadId = null;
+    const pending = [];
+    let settled = false;
+    const cleanup = () => {
+      changes.removeListener(listener);
+      revoke();
+    };
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const finishFromDelta = (delta) => {
+      const state = delta && delta.state && delta.state.current;
+      if (!state) return false;
+      if (downloadId === null) {
+        pending.push(delta);
+        return false;
+      }
+      if (delta.id !== downloadId) return false;
+      if (state === "complete") {
+        settle(resolve, undefined);
+        return true;
+      }
+      if (state === "interrupted") {
+        const detail = delta.error && (delta.error.current || delta.error);
+        settle(reject, new Error("Automatic backup download interrupted" + (detail ? ": " + detail : "")));
+        return true;
+      }
+      return false;
+    };
+    const listener = (delta) => {
+      finishFromDelta(delta);
+    };
+    changes.addListener(listener);
+    Promise.resolve(
+      downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
+    ).then((id) => {
+      downloadId = id;
+      pending.slice().some(finishFromDelta);
+    }, (err) => settle(reject, err));
+  });
+};

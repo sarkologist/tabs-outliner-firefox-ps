@@ -6,7 +6,7 @@ module Background.Main where
 
 import Prelude
 
-import Data.Argonaut.Core (Json)
+import Data.Argonaut.Core (Json, stringify)
 import Data.Argonaut.Encode (encodeJson)
 import Data.Array as Array
 import Data.DateTime.Instant (unInstant)
@@ -56,9 +56,14 @@ main = launchAff_ do
   queueRef <- liftEffect (Ref.new ([] :: Array BrowserEvent))
   drainingRef <- liftEffect (Ref.new false)
   kickRef <- liftEffect (Ref.new (pure unit :: Effect Unit))
+  backupPendingRef <- liftEffect (Ref.new false)
+  backupKickRef <- liftEffect (Ref.new (pure unit :: Effect Unit))
   liftEffect $ Browser.subscribe api \ev -> do
     Ref.modify_ (\q -> Array.snoc q ev) queueRef
     join (Ref.read kickRef)
+  liftEffect $ Browser.onBackupAlarm api do
+    Ref.write true backupPendingRef
+    join (Ref.read backupKickRef)
   db <- Persist.open
   loaded <- Persist.load db
   t0 <- liftEffect nowMs
@@ -104,6 +109,27 @@ main = launchAff_ do
   redoRef <- liftEffect (Ref.new ([] :: Array Patch))
 
   let
+    -- Daily automatic backups are background-owned so they can run with no
+    -- sidebar open. The payload is the same flat snapshot manual Export returns.
+    runAutomaticBackup :: Aff Unit
+    runAutomaticBackup = do
+      m <- liftEffect (Ref.read ref)
+      filename <- liftEffect Browser.backupFilename
+      Browser.downloadBackup api filename (stringify (encodeSnapshot m))
+      Browser.recordAutomaticBackupSuccess api
+
+    runAutomaticBackupLogged :: Aff Unit
+    runAutomaticBackupLogged = attempt runAutomaticBackup >>= case _ of
+      Left err -> liftEffect (Console.error ("background: automatic backup failed: " <> message err))
+      Right _ -> pure unit
+
+    configureAutomaticBackups :: Boolean -> Boolean -> Aff Unit
+    configureAutomaticBackups enabled runNow =
+      if enabled then do
+        Browser.ensureBackupAlarm api
+        when runNow runAutomaticBackupLogged
+      else Browser.clearBackupAlarm api
+
     -- ATOMICITY: read -> applyX -> write is fully synchronous (no `await`
     -- between them), and Aff fibers are cooperatively scheduled, so two
     -- concurrent inputs can never interleave their read/compute/write. The
@@ -171,6 +197,24 @@ main = launchAff_ do
         Ref.write true drainingRef
         launchAff_ pump
 
+    backupKick :: Effect Unit
+    backupKick = do
+      pending <- Ref.read backupPendingRef
+      when pending do
+        Ref.write false backupPendingRef
+        launchAff_ runAutomaticBackupLogged
+
+  -- Recreate the browser alarm after a restart if the user enabled backups.
+  setupBackups <- attempt do
+    enabled <- Browser.getAutomaticBackupsEnabled api
+    when enabled do
+      Browser.ensureBackupAlarm api
+      due <- Browser.automaticBackupDue api
+      when due runAutomaticBackupLogged
+  case setupBackups of
+    Left err -> liftEffect (Console.error ("background: automatic backup setup failed: " <> message err))
+    Right _ -> pure unit
+
   -- Serve the sidebar. A command applies, persists, bumps the version, broadcasts
   -- `invalidate`, and runs its browser actions; a GetView returns one window of the
   -- visible order. The sidebar holds no model — it only ever renders the window it
@@ -223,6 +267,13 @@ main = launchAff_ do
     Right Export -> do
       m <- liftEffect (Ref.read ref)
       pure (encodeSnapshot m)
+    Right GetAutomaticBackups -> do
+      enabled <- Browser.getAutomaticBackupsEnabled api
+      pure (encodeJson { enabled })
+    Right (SetAutomaticBackups enabled) -> do
+      Browser.setAutomaticBackupsEnabled api enabled
+      configureAutomaticBackups enabled enabled
+      pure (encodeJson { enabled })
     _ -> pure ackJson
 
   -- We can now serve requests: ping every open sidebar to (re)fetch its window.
@@ -235,7 +286,9 @@ main = launchAff_ do
   -- future event flow through `dispatch`) and flush whatever arrived while booting.
   liftEffect do
     Ref.write kick kickRef
+    Ref.write backupKick backupKickRef
     kick
+    backupKick
 
 -- Bump the structural version, ping open sidebars to re-fetch, then persist.
 -- The version bump + broadcast are synchronous with the caller's model write (no

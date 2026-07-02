@@ -129,6 +129,29 @@ test.describe("toolbar", () => {
     await expect(page.locator('[data-status="closed"]').filter({ hasText: "OrigTab" })).toBeVisible();
   });
 
+  test("import accepts legacy Chrome Tabs Outliner record-array exports", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    const legacy = JSON.stringify([
+      { type: 2000, node: { type: "session", data: { treeId: "1483340179831.8303" } } },
+      [2001, { type: "savedwin", marks: { customTitle: "ChromeResearch" }, data: { type: "normal" } }, [0]],
+      [
+        2001,
+        { data: { title: "ChromeParent", url: "https://chrome-import.example/parent", favIconUrl: "https://chrome-import.example/favicon.ico" } },
+        [0, 0],
+      ],
+      [2001, { type: "tab", data: { title: "ChromeChild", url: "https://chrome-import.example/child" } }, [0, 0, 0]],
+    ]);
+    page.on("filechooser", (fc) =>
+      fc.setFiles({ name: "chrome-tabs-outliner.json", mimeType: "application/json", buffer: Buffer.from(legacy) })
+    );
+    await page.locator("#import").click();
+    await expect(page.getByText("Chrome Tab Outliner import")).toBeVisible();
+    await expect(page.getByText("ChromeResearch")).toBeVisible();
+    await expect(page.locator('[data-status="closed"]').filter({ hasText: "ChromeParent" })).toBeVisible();
+    await expect(page.locator('[data-status="closed"]').filter({ hasText: "ChromeChild" })).toBeVisible();
+  });
+
   test("imports a real ~26k-node portable export without choking", async ({ page }) => {
     test.skip(!existsSync(REAL_EXPORT), "real export file not present on this machine");
     test.setTimeout(90_000);

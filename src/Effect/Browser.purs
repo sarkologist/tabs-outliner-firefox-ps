@@ -14,6 +14,15 @@ module Effect.Browser
   , newWindowWithTabs
   , removeTab
   , tagTab
+  , getAutomaticBackupsEnabled
+  , setAutomaticBackupsEnabled
+  , automaticBackupDue
+  , recordAutomaticBackupSuccess
+  , ensureBackupAlarm
+  , clearBackupAlarm
+  , onBackupAlarm
+  , backupFilename
+  , downloadBackup
   ) where
 
 import Prelude
@@ -130,6 +139,15 @@ foreign import moveTabToWindowImpl :: BrowserApi -> Int -> Int -> Int -> Effect 
 foreign import newWindowWithTabsImpl :: BrowserApi -> Array Int -> Effect (Promise Unit)
 foreign import removeTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 foreign import tagTabImpl :: BrowserApi -> Int -> String -> Effect (Promise Unit)
+foreign import getAutomaticBackupsEnabledImpl :: BrowserApi -> Effect (Promise Boolean)
+foreign import setAutomaticBackupsEnabledImpl :: BrowserApi -> Boolean -> Effect (Promise Unit)
+foreign import automaticBackupDueImpl :: BrowserApi -> Effect (Promise Boolean)
+foreign import recordAutomaticBackupSuccessImpl :: BrowserApi -> Effect (Promise Unit)
+foreign import ensureBackupAlarmImpl :: BrowserApi -> Effect (Promise Unit)
+foreign import clearBackupAlarmImpl :: BrowserApi -> Effect (Promise Unit)
+foreign import onBackupAlarmImpl :: BrowserApi -> Effect Unit -> Effect Unit
+foreign import backupFilename :: Effect String
+foreign import downloadBackupImpl :: BrowserApi -> String -> String -> Effect (Promise Unit)
 
 -- | Activate a tab and focus its window (the FFI resolves the window from the tab).
 focusTab :: BrowserApi -> Int -> Aff Unit
@@ -162,3 +180,27 @@ removeTab api tabId = toAffE (removeTabImpl api tabId)
 -- | Best-effort: a missing API or failed write is swallowed in the FFI.
 tagTab :: BrowserApi -> Int -> String -> Aff Unit
 tagTab api tabId nodeId = toAffE (tagTabImpl api tabId nodeId)
+
+getAutomaticBackupsEnabled :: BrowserApi -> Aff Boolean
+getAutomaticBackupsEnabled api = toAffE (getAutomaticBackupsEnabledImpl api)
+
+setAutomaticBackupsEnabled :: BrowserApi -> Boolean -> Aff Unit
+setAutomaticBackupsEnabled api enabled = toAffE (setAutomaticBackupsEnabledImpl api enabled)
+
+automaticBackupDue :: BrowserApi -> Aff Boolean
+automaticBackupDue api = toAffE (automaticBackupDueImpl api)
+
+recordAutomaticBackupSuccess :: BrowserApi -> Aff Unit
+recordAutomaticBackupSuccess api = toAffE (recordAutomaticBackupSuccessImpl api)
+
+ensureBackupAlarm :: BrowserApi -> Aff Unit
+ensureBackupAlarm api = toAffE (ensureBackupAlarmImpl api)
+
+clearBackupAlarm :: BrowserApi -> Aff Unit
+clearBackupAlarm api = toAffE (clearBackupAlarmImpl api)
+
+onBackupAlarm :: BrowserApi -> Effect Unit -> Effect Unit
+onBackupAlarm = onBackupAlarmImpl
+
+downloadBackup :: BrowserApi -> String -> String -> Aff Unit
+downloadBackup api filename content = toAffE (downloadBackupImpl api filename content)

@@ -1,6 +1,7 @@
 // A fake `globalThis.browser` for tests, injected via addInitScript BEFORE any
 // app script runs. It implements the subset of the WebExtension API the app
-// uses (windows/tabs/sessions/runtime), plus a `globalThis.__fake` driver so a
+// uses (windows/tabs/sessions/runtime/alarms/downloads/storage), plus a
+// `globalThis.__fake` driver so a
 // test can emit live browser events. Because the app only ever touches
 // globalThis.browser, the exact same compiled code runs here and in Firefox.
 //
@@ -23,6 +24,9 @@ export function installFakeBrowser(seed: Seed) {
   const tabs = new Map<number, any>();
   // browser.sessions per-tab values, keyed "tabId\0key" (in-memory, per page)
   const tabValues = new Map<string, unknown>();
+  const storageLocal = new Map<string, unknown>();
+  const alarms = new Map<string, { name: string; scheduledTime: number; periodInMinutes?: number }>();
+  const downloads: any[] = [];
   const msgListeners: Array<(msg: any, sender: any) => any> = [];
   let tabSeq = 100000;
   let winSeq = 900000;
@@ -53,7 +57,14 @@ export function installFakeBrowser(seed: Seed) {
 
   const listener = () => {
     const ls: Array<(...a: any[]) => void> = [];
-    return { addListener: (f: any) => ls.push(f), _emit: (...a: any[]) => ls.slice().forEach((f) => f(...a)) };
+    return {
+      addListener: (f: any) => ls.push(f),
+      removeListener: (f: any) => {
+        const i = ls.indexOf(f);
+        if (i >= 0) ls.splice(i, 1);
+      },
+      _emit: (...a: any[]) => ls.slice().forEach((f) => f(...a)),
+    };
   };
   const ev = {
     tabCreated: listener(),
@@ -65,6 +76,8 @@ export function installFakeBrowser(seed: Seed) {
     tabDetached: listener(),
     winCreated: listener(),
     winRemoved: listener(),
+    alarm: listener(),
+    downloadChanged: listener(),
   };
 
   const tabInfo = (t: any) => ({
@@ -221,6 +234,69 @@ export function installFakeBrowser(seed: Seed) {
         return Promise.resolve();
       },
     },
+    storage: {
+      local: {
+        get: (keys?: string | string[] | Record<string, unknown> | null) => {
+          const out: Record<string, unknown> = {};
+          if (keys == null) {
+            for (const [key, value] of storageLocal) out[key] = value;
+          } else if (typeof keys === "string") {
+            out[keys] = storageLocal.get(keys);
+          } else if (Array.isArray(keys)) {
+            for (const key of keys) out[key] = storageLocal.get(key);
+          } else {
+            for (const [key, fallback] of Object.entries(keys)) {
+              out[key] = storageLocal.has(key) ? storageLocal.get(key) : fallback;
+            }
+          }
+          return Promise.resolve(out);
+        },
+        set: (items: Record<string, unknown>) => {
+          for (const [key, value] of Object.entries(items)) storageLocal.set(key, value);
+          return Promise.resolve();
+        },
+        remove: (keys: string | string[]) => {
+          for (const key of Array.isArray(keys) ? keys : [keys]) storageLocal.delete(key);
+          return Promise.resolve();
+        },
+        clear: () => {
+          storageLocal.clear();
+          return Promise.resolve();
+        },
+      },
+    },
+    alarms: {
+      create: (name: string, info: { when?: number; delayInMinutes?: number; periodInMinutes?: number } = {}) => {
+        const scheduledTime =
+          info.when ??
+          Date.now() + Math.max(0, info.delayInMinutes ?? info.periodInMinutes ?? 0) * 60 * 1000;
+        alarms.set(name, {
+          name,
+          scheduledTime,
+          ...(typeof info.periodInMinutes === "number" ? { periodInMinutes: info.periodInMinutes } : {}),
+        });
+      },
+      clear: (name: string) => Promise.resolve(alarms.delete(name)),
+      get: (name: string) => Promise.resolve(alarms.get(name)),
+      onAlarm: ev.alarm,
+    },
+    downloads: {
+      download: async (options: any) => {
+        let body: string | undefined;
+        if (typeof options?.url === "string") {
+          try {
+            body = await fetch(options.url).then((r) => r.text());
+          } catch (_) {
+            body = undefined;
+          }
+        }
+        const id = downloads.length + 1;
+        downloads.push({ id, ...options, ...(body !== undefined ? { body } : {}) });
+        if (driver.autoCompleteDownloads) setTimeout(() => driver.completeDownload(id), 0);
+        return id;
+      },
+      onChanged: ev.downloadChanged,
+    },
   };
 
   function firstWindowId() {
@@ -256,6 +332,20 @@ export function installFakeBrowser(seed: Seed) {
       const c = commandShortcuts.find((x) => x.name === name);
       return c ? c.shortcut : null;
     },
+    alarm: (name: string) => alarms.get(name) ?? null,
+    emitAlarm: (name: string) => {
+      const alarm = alarms.get(name);
+      if (alarm) ev.alarm._emit({ ...alarm });
+    },
+    autoCompleteDownloads: true,
+    completeDownload: (id: number) => {
+      ev.downloadChanged._emit({ id, state: { current: "complete" } });
+    },
+    interruptDownload: (id: number, error = "USER_CANCELED") => {
+      ev.downloadChanged._emit({ id, state: { current: "interrupted" }, error: { current: error } });
+    },
+    downloads,
+    storageLocal: (key: string) => storageLocal.get(key) ?? null,
     // read-only view of the live windows + their tab urls, for assertions
     listWindows: () =>
       [...wins.values()].map((w) => ({
