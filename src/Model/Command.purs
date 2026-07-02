@@ -21,7 +21,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, mergePatch, pruneFrom, rootAncestor, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabChild, mergePatch, pruneFrom, rootAncestor, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, defaultNode, emptyPatch, isLiveTab)
 
 data Command
@@ -49,7 +49,7 @@ data Command
 -- | onAttached/onCreated events.
 data BrowserAction
   = FocusTab Int
-  | CreateTab (Maybe Int) (Maybe String)
+  | CreateTab (Maybe Int) (Maybe Int) (Maybe String)
   | CreateWindow (Array String)
   | MoveTabToWindow Int Int Int -- tabId, destination (live) windowId, index (-1 = append)
   | NewWindowWithTabs (Array Int) -- detach these tabs into one brand-new window
@@ -58,7 +58,7 @@ data BrowserAction
 derive instance eqBrowserAction :: Eq BrowserAction
 instance showBrowserAction :: Show BrowserAction where
   show (FocusTab t) = "FocusTab " <> show t
-  show (CreateTab w u) = "CreateTab " <> show w <> " " <> show u
+  show (CreateTab w i u) = "CreateTab " <> show w <> " " <> show i <> " " <> show u
   show (CreateWindow us) = "CreateWindow " <> show us
   show (MoveTabToWindow t w i) = "MoveTabToWindow " <> show t <> " " <> show w <> " " <> show i
   show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
@@ -297,8 +297,8 @@ applyCommandRaw now cmd model = case cmd of
       newWindows = map (\w -> { node: w, tabs: List.fromFoldable (map _.id (forWindow w)) }) newWinIds
 
       tabActions = Array.mapMaybe (\x -> case x.target of
-        IntoWindow wid -> Just (CreateTab (Just wid) (Just x.url))
-        IntoCurrent -> Just (CreateTab Nothing (Just x.url))
+        IntoWindow wid -> Just (CreateTab (Just wid) (restoreIndex wid x.id) (Just x.url))
+        IntoCurrent -> Just (CreateTab Nothing Nothing (Just x.url))
         IntoNewWindow _ -> Nothing) tagged
 
       -- queue each IntoWindow tab under its target window — a FIFO consumed as the
@@ -309,6 +309,22 @@ applyCommandRaw now cmd model = case cmd of
         IntoWindow wid -> Map.alter (\ml -> Just (maybe (List.singleton x.id) (\l -> List.snoc l x.id) ml)) wid m
         _ -> m
       pending' = foldl queueIntoWindow model.pendingRestore tagged
+
+      -- tabs.create's index is counted among live browser tabs. To keep
+      -- one-by-one restores in saved tree order, count siblings before this node
+      -- that are already live plus siblings this same restore command is also
+      -- creating into the window.
+      restoreIndex :: Int -> NodeId -> Maybe Int
+      restoreIndex wid id = do
+        n <- Map.lookup id model.nodes
+        pid <- n.parent
+        p <- Map.lookup pid model.nodes
+        let
+          restoring = Set.fromFoldable
+            (map _.id (Array.filter (\x -> x.target == IntoWindow wid) tagged))
+          before = Array.takeWhile (_ /= id) p.children
+          counts cid = liveTabChild model cid || Set.member cid restoring
+        pure (Array.length (Array.filter counts before))
 
       -- Mark every closed tab we are reopening so a later *browser* close keeps it as
       -- history (a restored tab belongs in the tree), whereas a freshly-opened tab is

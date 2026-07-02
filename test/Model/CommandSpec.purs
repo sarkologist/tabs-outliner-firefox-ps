@@ -2,15 +2,16 @@ module Test.Model.CommandSpec where
 
 import Prelude
 
+import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.List (List(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Command (BrowserAction(..), Command(..), applyCommand, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Tree (applyPatch)
+import Model.Tree (applyPatch, insertAtClamped)
 import Model.Types (Kind(..), Model, NodeId, defaultNode, emptyModel, isLive)
 import Test.QuickCheck ((===))
 import Test.Spec (Spec, describe, it)
@@ -49,6 +50,97 @@ outlinerClose :: NodeId -> Int -> Model -> Model
 outlinerClose nid tabId m =
   let saved = (applyCommand 0.0 (CloseNode nid) m).model
   in (applyBrowser 0.0 (TabClosed { tabId }) saved).model
+
+restoreIds :: Array NodeId
+restoreIds = [ "a", "b", "c", "d" ]
+
+tabTitle :: NodeId -> String
+tabTitle = case _ of
+  "a" -> "A"
+  "b" -> "B"
+  "c" -> "C"
+  "d" -> "D"
+  other -> other
+
+savedGroupModel :: Model
+savedGroupModel =
+  (applyPatch
+    { upserts:
+        [ (defaultNode "g" KGroup 0.0) { title = "Saved", children = restoreIds }
+        , savedTab "a"
+        , savedTab "b"
+        , savedTab "c"
+        , savedTab "d"
+        ]
+    , removes: []
+    , roots: Just [ "g" ]
+    }
+    emptyModel
+  ) { nextId = 10 }
+  where
+  savedTab id =
+    let title = tabTitle id
+    in (defaultNode id KTab 0.0) { title = title, url = Just ("http://" <> title), parent = Just "g", closedAt = Just 0.0 }
+
+pmod :: Int -> Int -> Int
+pmod a b = if b <= 0 then 0 else ((a `mod` b) + b) `mod` b
+
+restoreOrder :: Array Int -> Array NodeId
+restoreOrder raw = go raw restoreIds []
+  where
+  go _ [] acc = acc
+  go choices remaining acc =
+    let
+      choice = case Array.uncons choices of
+        Just { head } -> head
+        Nothing -> 0
+      restChoices = case Array.uncons choices of
+        Just { tail } -> tail
+        Nothing -> []
+      id = fromMaybe "a" (Array.index remaining (pmod choice (Array.length remaining)))
+    in
+      go restChoices (Array.delete id remaining) (Array.snoc acc id)
+
+feedEvents :: Model -> Array BrowserEvent -> Model
+feedEvents = foldl (\m e -> (applyBrowser 0.0 e m).model)
+
+liveChildIds :: Model -> NodeId -> Array NodeId
+liveChildIds m parent =
+  let children = fromMaybe [] (_.children <$> Map.lookup parent m.nodes)
+  in Array.mapMaybe (\cid -> Map.lookup cid m.nodes >>= \n -> if isLive n && n.kind == KTab then Just cid else Nothing) children
+
+type RestoreSim =
+  { model :: Model
+  , browser :: Array NodeId
+  , nextTab :: Int
+  , windowId :: Maybe Int
+  }
+
+restoreOne :: RestoreSim -> NodeId -> RestoreSim
+restoreOne s nid =
+  let r = applyCommand 0.0 (Activate nid) s.model
+  in case Array.uncons r.actions of
+    Just { head: CreateWindow _, tail } | Array.null tail ->
+      let
+        wid = fromMaybe 50 s.windowId
+        tabId = s.nextTab
+        title = tabTitle nid
+        model' = feedEvents r.model
+          [ WindowOpened { windowId: wid }
+          , TabOpened { tabId, windowId: wid, index: 0, url: Just ("http://" <> title), title, active: true, favIconUrl: Nothing }
+          ]
+      in
+        { model: model', browser: [ nid ], nextTab: tabId + 1, windowId: Just wid }
+    Just { head: CreateTab (Just wid) index _, tail } | Array.null tail ->
+      let
+        tabId = s.nextTab
+        title = tabTitle nid
+        i = fromMaybe (Array.length s.browser) index
+        model' = feedEvents r.model
+          [ TabOpened { tabId, windowId: wid, index: i, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing } ]
+      in
+        { model: model', browser: insertAtClamped i nid s.browser, nextTab: tabId + 1, windowId: Just wid }
+    _ -> s { model = r.model }
 
 spec :: Spec Unit
 spec = describe "Model.Command" do
@@ -160,7 +252,7 @@ spec = describe "Model.Command" do
       activated = applyCommand 0.0 (Activate "n2") closed
       reopened = (applyBrowser 0.0 (openTab 99 1 0 "A" true) activated.model).model
     -- the window is still live, so the tab reopens back into it (not a new window)
-    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just "http://A") ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 0) (Just "http://A") ]
     -- same node id, now live and bound to the new tab; no extra node created
     (isLive <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just true
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
@@ -364,6 +456,22 @@ spec = describe "Model.Command" do
             , pendingTabs: Nothing
             , roots: [ "n1", "n4" ]
             , nodeCount: 6
+            }
+
+  it "property: one-by-one saved-group restores create tabs at saved live indices" $
+    quickCheck \(raw :: Array Int) ->
+      let
+        order = restoreOrder raw
+        restored = foldl restoreOne
+          { model: savedGroupModel, browser: [], nextTab: 100, windowId: Nothing }
+          order
+      in
+        { browser: restored.browser
+        , model: liveChildIds restored.model "g"
+        }
+          ===
+            { browser: restoreIds
+            , model: restoreIds
             }
 
   -- The close rule: a browser-closed tab keeps its place as closed history ONLY if

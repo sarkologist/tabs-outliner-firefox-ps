@@ -323,7 +323,7 @@ ackJson = encodeJson { ok: true }
 runAction :: BrowserApi -> BrowserAction -> Aff Unit
 runAction api = case _ of
   FocusTab t -> Browser.focusTab api t
-  CreateTab w u -> Browser.createTab api w u
+  CreateTab w i u -> Browser.createTab api w i u
   CreateWindow us -> Browser.createWindow api us
   MoveTabToWindow t w i -> Browser.moveTabToWindow api t w i
   NewWindowWithTabs ts -> Browser.newWindowWithTabs api ts

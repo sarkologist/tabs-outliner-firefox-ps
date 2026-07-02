@@ -133,7 +133,7 @@ subscribe api handle = subscribeImpl api
   }
 
 foreign import focusTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
-foreign import createTabImpl :: BrowserApi -> Nullable Int -> Nullable String -> Effect (Promise Unit)
+foreign import createTabImpl :: BrowserApi -> Nullable Int -> Nullable Int -> Nullable String -> Effect (Promise Unit)
 foreign import createWindowImpl :: BrowserApi -> Array String -> Effect (Promise Unit)
 foreign import moveTabToWindowImpl :: BrowserApi -> Int -> Int -> Int -> Effect (Promise Unit)
 foreign import newWindowWithTabsImpl :: BrowserApi -> Array Int -> Effect (Promise Unit)
@@ -153,8 +153,8 @@ foreign import downloadBackupImpl :: BrowserApi -> String -> String -> Effect (P
 focusTab :: BrowserApi -> Int -> Aff Unit
 focusTab api tabId = toAffE (focusTabImpl api tabId)
 
-createTab :: BrowserApi -> Maybe Int -> Maybe String -> Aff Unit
-createTab api windowId url = toAffE (createTabImpl api (toNullable windowId) (toNullable url))
+createTab :: BrowserApi -> Maybe Int -> Maybe Int -> Maybe String -> Aff Unit
+createTab api windowId index url = toAffE (createTabImpl api (toNullable windowId) (toNullable index) (toNullable url))
 
 -- | Open one new browser window populated with the given urls.
 createWindow :: BrowserApi -> Array String -> Aff Unit
