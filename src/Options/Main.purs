@@ -9,15 +9,19 @@ module Options.Main where
 
 import Prelude
 
+import Data.Argonaut.Core (Json)
 import Data.Argonaut.Decode (decodeJson)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..), hush)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String.Common (joinWith)
 import Effect (Effect)
-import Effect.Aff (Aff)
+import Effect.Aff (Aff, attempt)
+import Effect.Browser (BrowserApi, getAutomaticBackupsEnabled, getBrowser)
+import Effect.Channel as Channel
 import Effect.Commands as Commands
+import Effect.Exception (message)
 import Effect.Profile as Profile
 import Effect.Settings as Settings
 import Foreign.Object (Object)
@@ -30,6 +34,7 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Halogen.VDom.Driver (runUI)
+import Model.Command (Request(..), encodeRequest)
 import Model.Shortcuts as Sh
 
 main :: Effect Unit
@@ -41,13 +46,17 @@ type ProfileEntry = { name :: String, ms :: Number }
 type ProfileRec = { label :: String, at :: String, entries :: Array ProfileEntry }
 
 type State =
-  { overrides :: Object String
+  { api :: Maybe BrowserApi
+  , overrides :: Object String
   , recording :: Maybe Sh.Cmd
   , listener :: Maybe (HS.Listener Action)
   , toggle :: Maybe String -- Nothing = commands API unavailable; Just s = current ("" if unset)
   , toggleMac :: Boolean
   , toggleRecording :: Boolean
   , toggleError :: Maybe String
+  , backupsEnabled :: Boolean
+  , backupsBusy :: Boolean
+  , backupsError :: Maybe String
   , profEnabled :: Boolean
   , profile :: Maybe ProfileRec
   }
@@ -61,6 +70,7 @@ data Action
   | StartRecordToggle
   | CapturedToggle String
   | ResetToggle
+  | ToggleBackups Boolean
   | ToggleProfiling Boolean
   | RefreshProfile
   | DownloadProfile
@@ -72,16 +82,25 @@ readProfile = do
   s <- Profile.readLast
   pure (hush (jsonParser s) >>= (hush <<< decodeJson))
 
+type BackupsRec = { enabled :: Boolean }
+
+decodeBackups :: Json -> Maybe BackupsRec
+decodeBackups = hush <<< decodeJson
+
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { overrides: Object.empty
+      { api: Nothing
+      , overrides: Object.empty
       , recording: Nothing
       , listener: Nothing
       , toggle: Nothing
       , toggleMac: false
       , toggleRecording: false
       , toggleError: Nothing
+      , backupsEnabled: false
+      , backupsBusy: false
+      , backupsError: Nothing
       , profEnabled: false
       , profile: Nothing
       }
@@ -94,12 +113,26 @@ handleAction = case _ of
   Initialize -> do
     { emitter, listener } <- H.liftEffect HS.create
     void $ H.subscribe emitter
+    api <- H.liftEffect getBrowser
     overrides <- H.liftEffect Settings.getShortcuts
     mac <- H.liftEffect Commands.isMac
     toggle <- H.liftAff Commands.getSidebarToggle
+    backupsResp <- H.liftAff (attempt (getAutomaticBackupsEnabled api))
     pe <- H.liftEffect Profile.getEnabled
     pr <- H.liftEffect readProfile
-    H.modify_ _ { overrides = overrides, listener = Just listener, toggle = toggle, toggleMac = mac, profEnabled = pe, profile = pr }
+    let
+      backups = hush backupsResp
+    H.modify_ _
+      { api = Just api
+      , overrides = overrides
+      , listener = Just listener
+      , toggle = toggle
+      , toggleMac = mac
+      , backupsEnabled = fromMaybe false backups
+      , backupsError = Nothing
+      , profEnabled = pe
+      , profile = pr
+      }
 
   StartRecord cmd -> do
     st <- H.get
@@ -154,6 +187,19 @@ handleAction = case _ of
     cur <- H.liftAff Commands.getSidebarToggle
     H.modify_ _ { toggle = cur, toggleRecording = false, toggleError = Nothing }
 
+  ToggleBackups enabled -> do
+    st <- H.get
+    H.modify_ _ { backupsBusy = true, backupsError = Nothing }
+    case st.api of
+      Nothing -> H.modify_ _ { backupsBusy = false, backupsError = Just "Could not reach the background." }
+      Just api -> do
+        resp <- H.liftAff (attempt (Channel.request api (encodeRequest (SetAutomaticBackups enabled))))
+        case resp of
+          Left err -> H.modify_ _ { backupsBusy = false, backupsError = Just ("Could not update backups: " <> message err) }
+          Right json -> case decodeBackups json of
+            Just rec -> H.modify_ _ { backupsEnabled = rec.enabled, backupsBusy = false, backupsError = Nothing }
+            Nothing -> H.modify_ _ { backupsBusy = false, backupsError = Just "Could not read backup settings." }
+
   ToggleProfiling b -> do
     H.liftEffect (Profile.setEnabled b)
     H.modify_ _ { profEnabled = b }
@@ -178,6 +224,7 @@ render st =
         )
     , HH.button [ HP.id "reset-all", HE.onClick \_ -> ResetAll ] [ HH.text "Reset all to defaults" ]
     , toggleSection st
+    , backupsSection st
     , profilingSection st
     ]
 
@@ -235,6 +282,31 @@ toggleSection st =
       HH.span [ HP.class_ (ClassName "kbd") ] [ HH.text current ]
   errorNote = case st.toggleError of
     Just msg -> [ HH.div [ HP.class_ (ClassName "warn"), HP.id "toggle-error" ] [ HH.text msg ] ]
+    Nothing -> []
+
+backupsSection :: State -> H.ComponentHTML Action () Aff
+backupsSection st =
+  HH.div_
+    ( [ HH.h2_ [ HH.text "Backups" ]
+      , HH.p [ HP.class_ (ClassName "hint") ]
+          [ HH.text "Saves daily JSON exports to Downloads/tabs-outliner-backups." ]
+      , HH.label [ HP.class_ (ClassName "toggle-row") ]
+          [ HH.input
+              [ HP.type_ HP.InputCheckbox
+              , HP.id "automatic-backups-enabled"
+              , HP.checked st.backupsEnabled
+              , HP.disabled st.backupsBusy
+              , HE.onChecked ToggleBackups
+              ]
+          , HH.text " Enable automatic backups"
+          ]
+      , HH.p [ HP.id "backup-status", HP.class_ (ClassName "hint") ]
+          [ HH.text (if st.backupsEnabled then "On" else "Off") ]
+      ] <> errorNote
+    )
+  where
+  errorNote = case st.backupsError of
+    Just msg -> [ HH.div [ HP.class_ (ClassName "warn"), HP.id "backup-error" ] [ HH.text msg ] ]
     Nothing -> []
 
 -- | Opt-in profiling of the sidebar-open path. Enable here, open the sidebar on
