@@ -330,6 +330,42 @@ spec = describe "Model.Command" do
             , nodeCount: 6
             }
 
+  it "property: multi-tab restore drains the queue regardless of the window event slot" $
+    quickCheck \(rawSlot :: Int) ->
+      let
+        grp = (defaultNode "g1" KGroup 0.0) { title = "Saved", children = [ "t1", "t2" ] }
+        a = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1" }
+        b = (defaultNode "t2" KTab 0.0) { title = "B", url = Just "http://b", parent = Just "g1" }
+        saved = (applyCommand 0.0 (Import { nodes: [ grp, a, b ], roots: [ "g1" ] }) base).model
+        activated = applyCommand 0.0 (Activate "n4") saved
+        win = WindowOpened { windowId: 5 }
+        tabA = openTab 71 5 0 "a" true
+        tabB = openTab 72 5 1 "b" false
+        slot = ((rawSlot `mod` 3) + 3) `mod` 3
+        events =
+          if slot == 0 then [ win, tabA, tabB ]
+          else if slot == 1 then [ tabA, win, tabB ]
+          else [ tabA, tabB, win ]
+        reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model events
+      in
+        { groupWindow: _.windowId <$> Map.lookup "n4" reopened.nodes
+        , firstTab: _.tabId <$> Map.lookup "n5" reopened.nodes
+        , secondTab: _.tabId <$> Map.lookup "n6" reopened.nodes
+        , pendingWindows: reopened.pendingRestoreWindows
+        , pendingTabs: Map.lookup 5 reopened.pendingRestore
+        , roots: reopened.roots
+        , nodeCount: Map.size reopened.nodes
+        }
+          ===
+            { groupWindow: Just (Just 5)
+            , firstTab: Just (Just 71)
+            , secondTab: Just (Just 72)
+            , pendingWindows: []
+            , pendingTabs: Nothing
+            , roots: [ "n1", "n4" ]
+            , nodeCount: 6
+            }
+
   -- The close rule: a browser-closed tab keeps its place as closed history ONLY if
   -- it was restored from history (it belongs in the tree) or the outliner itself
   -- closed it ("save & close"); a freshly-opened tab the user just closes is dropped,
