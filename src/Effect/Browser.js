@@ -224,7 +224,9 @@ export const downloadBackupImpl = (api) => (filename) => (content) => () => {
   if (!downloads || typeof downloads.download !== "function") return Promise.resolve();
   const blob = new Blob([content], { type: "application/json" });
   const url = URL.createObjectURL(blob);
+  // The downloads promise resolves once the transfer is created, before the
+  // browser has necessarily consumed the Blob URL.
   return Promise.resolve(
     downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
-  ).finally(() => URL.revokeObjectURL(url));
+  ).then(() => undefined);
 };
