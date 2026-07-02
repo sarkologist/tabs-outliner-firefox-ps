@@ -204,6 +204,22 @@ spec = describe "Model.Reconcile" do
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
 
+  it "restores a pending window even when the browser reuses a stale window id" do
+    let
+      closed = runEvents
+        [ openTab 11 1 0 "A" true
+        , WindowClosed { windowId: 1 }
+        ]
+      queued = closed { pendingRestoreWindows = [ { node: "n1", tabs: List.singleton "n2" } ] }
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) queued
+        [ WindowOpened { windowId: 1 }
+        , openTab 21 1 0 "A" true
+        ]
+    (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 1)
+    (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 21)
+    reopened.roots `shouldEqual` [ "n1" ]
+    Map.size reopened.nodes `shouldEqual` 2
+
   it "a pending-queue rebind is not itself marked restored (only Command.restore marks)" do
     -- a closed tab n2 under a live window n1, plus a pending-restore slot for it that
     -- did NOT come from Command.restore (e.g. a live-tab rehome). The rebind itself

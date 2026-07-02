@@ -53,7 +53,7 @@ resolveWindow now windowId model = case liveWindowNode windowId model of
 
 applyBrowser :: Number -> BrowserEvent -> Model -> Step
 applyBrowser now ev model = case ev of
-  WindowOpened { windowId } -> case Map.lookup windowId model.byWindow of
+  WindowOpened { windowId } -> case liveWindowNode windowId model of
     Just _ -> noop model
     Nothing -> case Array.uncons model.pendingRestoreWindows of
       -- a window restore is pending: bind this new browser window to the closed
@@ -81,12 +81,12 @@ applyBrowser now ev model = case ev of
           _ -> freshWindow now windowId model'
       Nothing -> freshWindow now windowId model
 
-  WindowClosed { windowId } -> case Map.lookup windowId model.byWindow of
+  WindowClosed { windowId } -> case liveWindowNode windowId model of
     Nothing -> noop model
-    Just wid ->
+    Just w ->
       let
         upserts = Array.mapMaybe (\i -> closeNode now <$> Map.lookup i model.nodes)
-          (subtreeIds wid model)
+          (subtreeIds w.id model)
         patch = { upserts, removes: [], roots: Nothing }
       in
         commit model.nextId patch model
