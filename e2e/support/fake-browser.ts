@@ -57,7 +57,14 @@ export function installFakeBrowser(seed: Seed) {
 
   const listener = () => {
     const ls: Array<(...a: any[]) => void> = [];
-    return { addListener: (f: any) => ls.push(f), _emit: (...a: any[]) => ls.slice().forEach((f) => f(...a)) };
+    return {
+      addListener: (f: any) => ls.push(f),
+      removeListener: (f: any) => {
+        const i = ls.indexOf(f);
+        if (i >= 0) ls.splice(i, 1);
+      },
+      _emit: (...a: any[]) => ls.slice().forEach((f) => f(...a)),
+    };
   };
   const ev = {
     tabCreated: listener(),
@@ -70,6 +77,7 @@ export function installFakeBrowser(seed: Seed) {
     winCreated: listener(),
     winRemoved: listener(),
     alarm: listener(),
+    downloadChanged: listener(),
   };
 
   const tabInfo = (t: any) => ({
@@ -282,9 +290,12 @@ export function installFakeBrowser(seed: Seed) {
             body = undefined;
           }
         }
-        downloads.push({ ...options, ...(body !== undefined ? { body } : {}) });
-        return downloads.length;
+        const id = downloads.length + 1;
+        downloads.push({ id, ...options, ...(body !== undefined ? { body } : {}) });
+        if (driver.autoCompleteDownloads) setTimeout(() => driver.completeDownload(id), 0);
+        return id;
       },
+      onChanged: ev.downloadChanged,
     },
   };
 
@@ -325,6 +336,13 @@ export function installFakeBrowser(seed: Seed) {
     emitAlarm: (name: string) => {
       const alarm = alarms.get(name);
       if (alarm) ev.alarm._emit({ ...alarm });
+    },
+    autoCompleteDownloads: true,
+    completeDownload: (id: number) => {
+      ev.downloadChanged._emit({ id, state: { current: "complete" } });
+    },
+    interruptDownload: (id: number, error = "USER_CANCELED") => {
+      ev.downloadChanged._emit({ id, state: { current: "interrupted" }, error: { current: error } });
     },
     downloads,
     storageLocal: (key: string) => storageLocal.get(key) ?? null,

@@ -66,3 +66,58 @@ test("automatic backups catch up once on startup when stale", async ({ page }) =
   const alarm = await page.evaluate((name) => (globalThis as any).__fake.alarm(name), BACKUP_ALARM);
   expect(alarm).toMatchObject({ name: BACKUP_ALARM, periodInMinutes: 1440 });
 });
+
+test("automatic backup success is recorded only after the download completes", async ({ page }) => {
+  await bootBackground(page, seed);
+
+  await page.evaluate(() => {
+    (globalThis as any).__fake.autoCompleteDownloads = false;
+    (globalThis as any).__fake.pendingBackupRequest = (globalThis as any).browser.runtime.sendMessage({
+      kind: "req",
+      body: { tag: "setAutomaticBackups", enabled: true },
+    });
+  });
+
+  await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.downloads.length)).toBe(1);
+  expect(await page.evaluate((key) => (globalThis as any).__fake.storageLocal(key), BACKUP_LAST_SUCCESS_KEY)).toBeNull();
+
+  await page.evaluate(() => (globalThis as any).__fake.completeDownload(1));
+  await page.evaluate(() => (globalThis as any).__fake.pendingBackupRequest);
+  await expect
+    .poll(() => page.evaluate((key) => (globalThis as any).__fake.storageLocal(key), BACKUP_LAST_SUCCESS_KEY))
+    .not.toBeNull();
+});
+
+test("automatic backup startup preserves an existing alarm when not due", async ({ page }) => {
+  await page.addInitScript(installFakeBrowser, seed);
+  await page.goto("/blank.html");
+
+  const scheduledTime = Date.now() + 6 * 60 * 60 * 1000;
+  await page.evaluate(
+    ([alarmName, enabledKey, lastKey, when]) =>
+      (globalThis as any).browser.storage.local
+        .set({
+          [enabledKey as string]: true,
+          [lastKey as string]: new Date().toISOString(),
+        })
+        .then(() =>
+          (globalThis as any).browser.alarms.create(alarmName, {
+            when,
+            periodInMinutes: 1440,
+          })
+        ),
+    [BACKUP_ALARM, BACKUP_ENABLED_KEY, BACKUP_LAST_SUCCESS_KEY, scheduledTime] as const
+  );
+
+  await page.addScriptTag({ path: "dist/background/background.js" });
+  await page.evaluate(() =>
+    (globalThis as any).browser.runtime.sendMessage({
+      kind: "req",
+      body: { tag: "getAutomaticBackups" },
+    })
+  );
+
+  const alarm = await page.evaluate((name) => (globalThis as any).__fake.alarm(name), BACKUP_ALARM);
+  expect(alarm.scheduledTime).toBe(scheduledTime);
+  expect(await page.evaluate(() => (globalThis as any).__fake.downloads.length)).toBe(0);
+});

@@ -190,9 +190,14 @@ export const recordAutomaticBackupSuccessImpl = (api) => () => {
 export const ensureBackupAlarmImpl = (api) => () => {
   const alarms = api && api.alarms;
   if (!alarms || typeof alarms.create !== "function") return Promise.resolve();
-  return Promise.resolve(
+  const create = () => Promise.resolve(
     alarms.create(BACKUP_ALARM, { periodInMinutes: 24 * 60 })
   ).then(() => undefined);
+  if (typeof alarms.get !== "function") return create();
+  return Promise.resolve(alarms.get(BACKUP_ALARM)).then(
+    (alarm) => (alarm ? undefined : create()),
+    () => create()
+  );
 };
 
 export const clearBackupAlarmImpl = (api) => () => {
@@ -224,9 +229,68 @@ export const downloadBackupImpl = (api) => (filename) => (content) => () => {
   if (!downloads || typeof downloads.download !== "function") return Promise.resolve();
   const blob = new Blob([content], { type: "application/json" });
   const url = URL.createObjectURL(blob);
-  // The downloads promise resolves once the transfer is created, before the
-  // browser has necessarily consumed the Blob URL.
-  return Promise.resolve(
-    downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
-  ).then(() => undefined);
+  const changes = downloads.onChanged;
+  const canObserve =
+    changes &&
+    typeof changes.addListener === "function" &&
+    typeof changes.removeListener === "function";
+  let revoked = false;
+  const revoke = () => {
+    if (!revoked) {
+      revoked = true;
+      URL.revokeObjectURL(url);
+    }
+  };
+  if (!canObserve) {
+    return Promise.resolve(
+      downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
+    ).then(() => revoke(), (err) => {
+      revoke();
+      throw err;
+    });
+  }
+  return new Promise((resolve, reject) => {
+    let downloadId = null;
+    const pending = [];
+    let settled = false;
+    const cleanup = () => {
+      changes.removeListener(listener);
+      revoke();
+    };
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const finishFromDelta = (delta) => {
+      const state = delta && delta.state && delta.state.current;
+      if (!state) return false;
+      if (downloadId === null) {
+        pending.push(delta);
+        return false;
+      }
+      if (delta.id !== downloadId) return false;
+      if (state === "complete") {
+        settle(resolve, undefined);
+        return true;
+      }
+      if (state === "interrupted") {
+        const detail = delta.error && (delta.error.current || delta.error);
+        settle(reject, new Error("Automatic backup download interrupted" + (detail ? ": " + detail : "")));
+        return true;
+      }
+      return false;
+    };
+    const listener = (delta) => {
+      finishFromDelta(delta);
+    };
+    changes.addListener(listener);
+    Promise.resolve(
+      downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
+    ).then((id) => {
+      downloadId = id;
+      pending.slice().some(finishFromDelta);
+    }, (err) => settle(reject, err));
+  });
 };
