@@ -12,8 +12,10 @@ import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch)
 import Model.Types (Kind(..), Model, NodeId, defaultNode, emptyModel, isLive)
+import Test.QuickCheck ((===))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
+import Test.Spec.QuickCheck (quickCheck)
 
 openTab :: Int -> Int -> Int -> String -> Boolean -> BrowserEvent
 openTab tabId windowId index title active =
@@ -297,6 +299,73 @@ spec = describe "Model.Command" do
     (_.url <$> Map.lookup "n6" afterClose.nodes) `shouldEqual` Just (Just "http://b")
     (_.url <$> Map.lookup "n5" afterClose.nodes) `shouldEqual` Just (Just "http://a")
 
+  it "property: one-tab restore from a saved group tolerates either window/tab event order" $
+    quickCheck \(windowFirst :: Boolean) ->
+      let
+        grp = (defaultNode "g1" KGroup 0.0) { title = "Saved", children = [ "t1", "t2" ] }
+        a = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1" }
+        b = (defaultNode "t2" KTab 0.0) { title = "B", url = Just "http://b", parent = Just "g1" }
+        saved = (applyCommand 0.0 (Import { nodes: [ grp, a, b ], roots: [ "g1" ] }) base).model
+        activated = applyCommand 0.0 (Activate "n6") saved
+        win = WindowOpened { windowId: 5 }
+        tab = openTab 71 5 0 "b" true
+        events = if windowFirst then [ win, tab ] else [ tab, win ]
+        reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model events
+      in
+        { groupWindow: _.windowId <$> Map.lookup "n4" reopened.nodes
+        , restoredTab: _.tabId <$> Map.lookup "n6" reopened.nodes
+        , siblingLive: isLive <$> Map.lookup "n5" reopened.nodes
+        , pendingWindows: reopened.pendingRestoreWindows
+        , pendingTabs: Map.lookup 5 reopened.pendingRestore
+        , roots: reopened.roots
+        , nodeCount: Map.size reopened.nodes
+        }
+          ===
+            { groupWindow: Just (Just 5)
+            , restoredTab: Just (Just 71)
+            , siblingLive: Just false
+            , pendingWindows: []
+            , pendingTabs: Nothing
+            , roots: [ "n1", "n4" ]
+            , nodeCount: 6
+            }
+
+  it "property: multi-tab restore drains the queue regardless of the window event slot" $
+    quickCheck \(rawSlot :: Int) ->
+      let
+        grp = (defaultNode "g1" KGroup 0.0) { title = "Saved", children = [ "t1", "t2" ] }
+        a = (defaultNode "t1" KTab 0.0) { title = "A", url = Just "http://a", parent = Just "g1" }
+        b = (defaultNode "t2" KTab 0.0) { title = "B", url = Just "http://b", parent = Just "g1" }
+        saved = (applyCommand 0.0 (Import { nodes: [ grp, a, b ], roots: [ "g1" ] }) base).model
+        activated = applyCommand 0.0 (Activate "n4") saved
+        win = WindowOpened { windowId: 5 }
+        tabA = openTab 71 5 0 "a" true
+        tabB = openTab 72 5 1 "b" false
+        slot = ((rawSlot `mod` 3) + 3) `mod` 3
+        events =
+          if slot == 0 then [ win, tabA, tabB ]
+          else if slot == 1 then [ tabA, win, tabB ]
+          else [ tabA, tabB, win ]
+        reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model events
+      in
+        { groupWindow: _.windowId <$> Map.lookup "n4" reopened.nodes
+        , firstTab: _.tabId <$> Map.lookup "n5" reopened.nodes
+        , secondTab: _.tabId <$> Map.lookup "n6" reopened.nodes
+        , pendingWindows: reopened.pendingRestoreWindows
+        , pendingTabs: Map.lookup 5 reopened.pendingRestore
+        , roots: reopened.roots
+        , nodeCount: Map.size reopened.nodes
+        }
+          ===
+            { groupWindow: Just (Just 5)
+            , firstTab: Just (Just 71)
+            , secondTab: Just (Just 72)
+            , pendingWindows: []
+            , pendingTabs: Nothing
+            , roots: [ "n1", "n4" ]
+            , nodeCount: 6
+            }
+
   -- The close rule: a browser-closed tab keeps its place as closed history ONLY if
   -- it was restored from history (it belongs in the tree) or the outliner itself
   -- closed it ("save & close"); a freshly-opened tab the user just closes is dropped,
@@ -364,6 +433,30 @@ spec = describe "Model.Command" do
       (map _.node r.model.pendingRestoreWindows) `shouldEqual` [ "n6" ]
       (map _.tabs r.model.pendingRestoreWindows) `shouldEqual` [ Nil ]
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
+
+    it "property: live-tab rehome to a saved group tolerates either window/attach event order" $
+      quickCheck \(windowFirst :: Boolean) ->
+        let
+          withGroup = (applyCommand 0.0 (NewGroup Nothing 0) base2).model -- group n6 at root
+          r = applyCommand 0.0 (Move "n2" (Just "n6") 0) withGroup
+          win = WindowOpened { windowId: 5 }
+          attach = TabAttached { tabId: 11, windowId: 5, index: 0 }
+          events = if windowFirst then [ win, attach ] else [ attach, win ]
+          moved = foldl (\m e -> (applyBrowser 0.0 e m).model) r.model events
+        in
+          { groupWindow: _.windowId <$> Map.lookup "n6" moved.nodes
+          , movedParent: _.parent <$> Map.lookup "n2" moved.nodes
+          , pendingWindows: moved.pendingRestoreWindows
+          , roots: moved.roots
+          , nodeCount: Map.size moved.nodes
+          }
+            ===
+              { groupWindow: Just (Just 5)
+              , movedParent: Just (Just "n6")
+              , pendingWindows: []
+              , roots: [ "n6", "n1", "n4" ]
+              , nodeCount: 6
+              }
 
     it "out to the root: detaches into a brand-new window" do
       let r = applyCommand 0.0 (Move "n2" Nothing 0) base2

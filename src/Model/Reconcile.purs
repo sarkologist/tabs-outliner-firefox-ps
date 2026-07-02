@@ -53,40 +53,16 @@ resolveWindow now windowId model = case liveWindowNode windowId model of
 
 applyBrowser :: Number -> BrowserEvent -> Model -> Step
 applyBrowser now ev model = case ev of
-  WindowOpened { windowId } -> case Map.lookup windowId model.byWindow of
+  WindowOpened { windowId } -> case liveWindowNode windowId model of
     Just _ -> noop model
-    Nothing -> case Array.uncons model.pendingRestoreWindows of
-      -- a window restore is pending: bind this new browser window to the closed
-      -- window node being restored, so it goes live in place (its tabs rebind as
-      -- their own onCreated events arrive) rather than a fresh node.
-      Just { head: pw, tail } ->
-        let model' = model { pendingRestoreWindows = tail }
-        in case Map.lookup pw.node model'.nodes of
-          Just wn | wn.kind == KGroup ->
-            let
-              wn' = wn { windowId = Just windowId, closedAt = Nothing }
-              -- queue EXACTLY the tabs this restore opens into the window (carried on
-              -- the pending entry, in creation order), so each rebinds as its
-              -- onCreated arrives. A rehome carries none (its dragged tab arrives via
-              -- onAttached); a partial restore carries only the chosen tab(s) — so
-              -- neither hijacks the container's other saved closed tabs.
-              model'' =
-                if List.null pw.tabs then model'
-                else model' { pendingRestore = Map.insert windowId pw.tabs model'.pendingRestore }
-              patch = { upserts: [ wn' ], removes: [], roots: Nothing }
-            in
-              commit model''.nextId patch model''
-          -- the restored node was deleted before its window opened: drop the
-          -- stale queue entry and treat this as a brand-new window.
-          _ -> freshWindow now windowId model'
-      Nothing -> freshWindow now windowId model
+    Nothing -> fromMaybe (freshWindow now windowId model) (bindPendingWindow now windowId model)
 
-  WindowClosed { windowId } -> case Map.lookup windowId model.byWindow of
+  WindowClosed { windowId } -> case liveWindowNode windowId model of
     Nothing -> noop model
-    Just wid ->
+    Just w ->
       let
         upserts = Array.mapMaybe (\i -> closeNode now <$> Map.lookup i model.nodes)
-          (subtreeIds wid model)
+          (subtreeIds w.id model)
         patch = { upserts, removes: [], roots: Nothing }
       in
         commit model.nextId patch model
@@ -137,6 +113,34 @@ applyBrowser now ev model = case ev of
 
   TabAttached a -> attachTab now a.tabId a.windowId a.index model
 
+-- | Bind the next pending restore/rehome container to `windowId`. Normally this
+-- | happens on WindowOpened, but Firefox may report the new window's first
+-- | TabOpened/TabAttached before windows.onCreated. In that ordering, binding
+-- | here lets the tab consume its pending node instead of creating a duplicate.
+bindPendingWindow :: Number -> Int -> Model -> Maybe Step
+bindPendingWindow now windowId model = case Array.uncons model.pendingRestoreWindows of
+  Nothing -> Nothing
+  Just { head: pw, tail } ->
+    let model' = model { pendingRestoreWindows = tail }
+    in Just case Map.lookup pw.node model'.nodes of
+      Just wn | wn.kind == KGroup ->
+        let
+          wn' = wn { windowId = Just windowId, closedAt = Nothing }
+          -- queue EXACTLY the tabs this restore opens into the window (carried on
+          -- the pending entry, in creation order), so each rebinds as its
+          -- onCreated arrives. A rehome carries none (its dragged tab arrives via
+          -- onAttached); a partial restore carries only the chosen tab(s) — so
+          -- neither hijacks the container's other saved closed tabs.
+          model'' =
+            if List.null pw.tabs then model'
+            else model' { pendingRestore = Map.insert windowId pw.tabs model'.pendingRestore }
+          patch = { upserts: [ wn' ], removes: [], roots: Nothing }
+        in
+          commit model''.nextId patch model''
+      -- the restored node was deleted before its window opened: drop the stale
+      -- queue entry and treat this as a brand-new window.
+      _ -> freshWindow now windowId model'
+
 -- | A brand-new browser window: add a fresh window node at the end of the roots.
 freshWindow :: Number -> Int -> Model -> Step
 freshWindow now windowId model =
@@ -185,14 +189,23 @@ orElse old new = case new of
 openTab :: Number -> OpenedTab -> Model -> Step
 openTab now t model = case liveTabNode t.tabId model of
   Just _ -> noop model -- already tracking this browser tab; ignore duplicate
-  Nothing -> case popPendingRestore t.windowId model of
-    -- a restore into this window is pending: rebind the next queued node to this
-    -- tab (matched by window + creation order, NOT url, which the browser may
-    -- report differently for the recreated tab)
-    Just r -> case Map.lookup r.node r.model.nodes of
-      Just n -> rebindRestored now t r.node n r.model
-      Nothing -> openFresh now t r.model -- queued node vanished; consume the slot, open fresh
-    Nothing -> openFresh now t model
+  Nothing -> openUnboundTab now t model
+
+openUnboundTab :: Number -> OpenedTab -> Model -> Step
+openUnboundTab now t model = case popPendingRestore t.windowId model of
+  -- a restore into this window is pending: rebind the next queued node to this
+  -- tab (matched by window + creation order, NOT url, which the browser may
+  -- report differently for the recreated tab)
+  Just r -> case Map.lookup r.node r.model.nodes of
+    Just n -> rebindRestored now t r.node n r.model
+    Nothing -> openFresh now t r.model -- queued node vanished; consume the slot, open fresh
+  Nothing -> case liveWindowNode t.windowId model of
+    Just _ -> openFresh now t model
+    Nothing -> case bindPendingWindow now t.windowId model of
+      Nothing -> openFresh now t model
+      Just bound ->
+        let opened = openUnboundTab now t bound.model
+        in { model: opened.model, patch: mergePatch bound.patch opened.patch }
 
 -- | Pop the next node queued to rebind in `windowId` (FIFO), returning it and the
 -- | model with the queue advanced.
@@ -275,7 +288,16 @@ activateTab tabId windowId model = case liveTabNode tabId model of
       commit model.nextId patch model
 
 attachTab :: Number -> Int -> Int -> Int -> Model -> Step
-attachTab now tabId windowId index model = withTab tabId model \nid n ->
+attachTab now tabId windowId index model = case liveWindowNode windowId model of
+  Just _ -> attachTabBound now tabId windowId index model
+  Nothing -> case bindPendingWindow now windowId model of
+    Nothing -> attachTabBound now tabId windowId index model
+    Just bound ->
+      let attached = attachTabBound now tabId windowId index bound.model
+      in { model: attached.model, patch: mergePatch bound.patch attached.patch }
+
+attachTabBound :: Number -> Int -> Int -> Int -> Model -> Step
+attachTabBound now tabId windowId index model = withTab tabId model \nid n ->
   let
     rw = resolveWindow now windowId model
     oldParentUpsert = case n.parent of

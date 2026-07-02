@@ -204,6 +204,44 @@ spec = describe "Model.Reconcile" do
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
 
+  it "restores a pending window even when the browser reuses a stale window id" do
+    let
+      closed = runEvents
+        [ openTab 11 1 0 "A" true
+        , WindowClosed { windowId: 1 }
+        ]
+      queued = closed { pendingRestoreWindows = [ { node: "n1", tabs: List.singleton "n2" } ] }
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) queued
+        [ WindowOpened { windowId: 1 }
+        , openTab 21 1 0 "A" true
+        ]
+    (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 1)
+    (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 21)
+    reopened.roots `shouldEqual` [ "n1" ]
+    Map.size reopened.nodes `shouldEqual` 2
+
+  it "drops a stale pending window when an early tab-open creates that window fresh" do
+    let
+      queued = emptyModel { pendingRestoreWindows = [ { node: "gone", tabs: List.singleton "missing" } ] }
+      m = (applyBrowser 0.0 (openTab 21 5 0 "A" true) queued).model
+    m.pendingRestoreWindows `shouldEqual` []
+    m.roots `shouldEqual` [ "n1" ]
+    (_.windowId <$> Map.lookup "n1" m.nodes) `shouldEqual` Just (Just 5)
+    (_.tabId <$> Map.lookup "n2" m.nodes) `shouldEqual` Just (Just 21)
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
+
+  it "drops a stale pending window when an early attach creates that window fresh" do
+    let
+      m0 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false ]
+      queued = m0 { pendingRestoreWindows = [ { node: "gone", tabs: List.Nil } ] }
+      m = (applyBrowser 0.0 (TabAttached { tabId: 12, windowId: 5, index: 0 }) queued).model
+    m.pendingRestoreWindows `shouldEqual` []
+    m.roots `shouldEqual` [ "n1", "n4" ]
+    (_.windowId <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just 5)
+    (_.parent <$> Map.lookup "n3" m.nodes) `shouldEqual` Just (Just "n4")
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ]
+    (_.children <$> Map.lookup "n4" m.nodes) `shouldEqual` Just [ "n3" ]
+
   it "a pending-queue rebind is not itself marked restored (only Command.restore marks)" do
     -- a closed tab n2 under a live window n1, plus a pending-restore slot for it that
     -- did NOT come from Command.restore (e.g. a live-tab rehome). The rebind itself
