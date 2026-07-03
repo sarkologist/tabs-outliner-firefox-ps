@@ -133,7 +133,10 @@ export const subscribeImpl = (api) => (sink) => () => {
       favIconUrl: tab.favIconUrl ?? null,
     })();
   });
-  t.onRemoved.addListener((tabId) => sink.tabClosed(tabId)());
+  t.onRemoved.addListener((tabId, info) => {
+    if (info && isKnownOrPendingOutlinerWindow(info.windowId)) return;
+    sink.tabClosed(tabId)();
+  });
   t.onUpdated.addListener((tabId, change, tab) => {
     if (shouldIgnoreTab(api, tab) || isOutlinerSidebarUrl(api, change.url)) return;
     sink.tabChanged({
@@ -174,11 +177,18 @@ export const subscribeImpl = (api) => (sink) => () => {
     }, () => {});
   });
   w.onCreated.addListener((win) => {
-    if (outlinerPopupCreationDepth > 0) {
+    if (outlinerPopupCreationDepth > 0 && win.type !== "normal") {
       pendingOutlinerPopupWindowIds.add(win.id);
       return;
     }
-    if (isOutlinerWindow(api, win) || isKnownOrPendingOutlinerWindow(win.id)) return;
+    if (isKnownOrPendingOutlinerWindow(win.id)) return;
+    if (win.type === "popup") {
+      openFullSizeSidebarWindows(api).then((open) => {
+        if (open.some((w) => w.windowId === win.id)) return;
+        if (!isKnownOrPendingOutlinerWindow(win.id)) sink.windowOpened(win.id)();
+      });
+      return;
+    }
     sink.windowOpened(win.id)();
   });
   w.onRemoved.addListener((winId) => {

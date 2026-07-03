@@ -544,7 +544,9 @@ decodeRequest json = do
     "undo" -> Right Undo
     "redo" -> Right Redo
     "export" -> Right Export
-    "openFullSizeOutliner" -> (\r -> OpenFullSizeOutliner r.sourceWindowId) <$> (dec json :: Either String { sourceWindowId :: Maybe Int })
+    "openFullSizeOutliner" -> case (dec json :: Either String { sourceWindowId :: Maybe Int }) of
+      Right r -> Right (OpenFullSizeOutliner r.sourceWindowId)
+      Left _ -> Right (OpenFullSizeOutliner Nothing)
     "getAutomaticBackups" -> Right GetAutomaticBackups
     "setAutomaticBackups" -> (\r -> SetAutomaticBackups r.enabled) <$> (dec json :: Either String { enabled :: Boolean })
     other -> Left ("unknown request: " <> other)

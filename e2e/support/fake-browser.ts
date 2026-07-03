@@ -154,8 +154,9 @@ export function installFakeBrowser(seed: Seed) {
           for (const win of wins.values()) win.focused = false;
           currentWindowId = id;
         }
-        wins.set(id, { id, tabIds: [], type: props.type ?? "normal", focused: props.focused !== false });
-        ev.winCreated._emit({ id });
+        const type = props.type ?? "normal";
+        wins.set(id, { id, tabIds: [], type, focused: props.focused !== false });
+        ev.winCreated._emit({ id, type, focused: props.focused !== false });
         if (props.tabId != null) {
           // create a window holding an existing tab: onCreated (above) then the
           // tab's onAttached into it — the order the background relies on
@@ -382,9 +383,9 @@ export function installFakeBrowser(seed: Seed) {
       })),
     // read a browser.sessions tab value (the node id the outliner stamped on a tab)
     tabValue: (tabId: number, key: string) => tabValues.get(`${tabId}\0${key}`) ?? null,
-    openWindow: (id: number) => {
-      if (!wins.has(id)) wins.set(id, { id, tabIds: [], type: "normal", focused: false });
-      ev.winCreated._emit({ id });
+    openWindow: (id: number, type = "normal") => {
+      if (!wins.has(id)) wins.set(id, { id, tabIds: [], type, focused: false });
+      ev.winCreated._emit({ id, type, focused: false });
     },
     closeWindow: (id: number) => {
       const w = wins.get(id);
@@ -393,6 +394,12 @@ export function installFakeBrowser(seed: Seed) {
       wins.delete(id);
       if (currentWindowId === id) currentWindowId = firstWindowId();
       ev.winRemoved._emit(id);
+    },
+    closeWindowWithTabEvents: (id: number) => {
+      const w = wins.get(id);
+      if (!w) return;
+      w.tabIds.slice().forEach((tid) => ev.tabRemoved._emit(tid, { windowId: id, isWindowClosing: true }));
+      driver.closeWindow(id);
     },
     openTab: (t: { id: number; windowId: number; openerTabId?: number; index?: number; url?: string; title?: string; active?: boolean }) => {
       if (!wins.has(t.windowId)) driver.openWindow(t.windowId);
