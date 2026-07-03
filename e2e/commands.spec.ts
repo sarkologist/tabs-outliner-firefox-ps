@@ -125,6 +125,14 @@ test.describe("commands", () => {
       .toEqual({ title: "Alpha", url: "http://a", live: true });
 
     const alphaTabId = (await readNodes(page)).find((n) => n.id === alphaId)!.tabId;
+    await fake(page, "updateTab", alphaTabId, {}); // status-only update still sees tab.title = New Tab
+    await expect
+      .poll(async () => {
+        const n = (await readNodes(page)).find((x) => x.id === alphaId);
+        return n ? { title: n.title, url: n.url, live: n.tabId != null } : null;
+      })
+      .toEqual({ title: "Alpha", url: "http://a", live: true });
+
     await fake(page, "closeTab", alphaTabId);
 
     await expect

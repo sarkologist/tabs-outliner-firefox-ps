@@ -304,9 +304,19 @@ spec = describe "Model.Reconcile" do
       reopened = (applyBrowser 0.0
         (TabOpened { tabId: 99, windowId: 1, index: 0, url: Just "about:newtab", title: "New Tab", active: true, favIconUrl: Nothing })
         queued).model
-      closed = (applyBrowser 0.0 (TabClosed { tabId: 99 }) reopened).model
+      transientUpdate = (applyBrowser 0.0
+        (TabChanged { tabId: 99, url: Nothing, title: Just "New Tab", favIconUrl: Nothing })
+        reopened).model
+      loaded = (applyBrowser 0.0
+        (TabChanged { tabId: 99, url: Just "http://A-loaded", title: Just "A loaded", favIconUrl: Nothing })
+        transientUpdate).model
+      closed = (applyBrowser 0.0 (TabClosed { tabId: 99 }) transientUpdate).model
     (_.title <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just "A"
     (_.url <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just "http://A")
+    (_.title <$> Map.lookup "n2" transientUpdate.nodes) `shouldEqual` Just "A"
+    (_.url <$> Map.lookup "n2" transientUpdate.nodes) `shouldEqual` Just (Just "http://A")
+    (_.title <$> Map.lookup "n2" loaded.nodes) `shouldEqual` Just "A loaded"
+    (_.url <$> Map.lookup "n2" loaded.nodes) `shouldEqual` Just (Just "http://A-loaded")
     (_.title <$> Map.lookup "n2" closed.nodes) `shouldEqual` Just "A"
     (_.url <$> Map.lookup "n2" closed.nodes) `shouldEqual` Just (Just "http://A")
 

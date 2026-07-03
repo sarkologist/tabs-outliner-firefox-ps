@@ -89,8 +89,8 @@ applyBrowser now ev model = case ev of
   TabChanged c -> withTab c.tabId model \_ n ->
     let
       n' = n
-        { title = fromMaybe n.title c.title
-        , url = orElse n.url c.url
+        { title = changedTitle n c.title
+        , url = changedUrl n c.url
         , favIconUrl = orElse n.favIconUrl c.favIconUrl
         }
     in
@@ -208,12 +208,26 @@ restoreRebindUrl old new = case new of
   Just _ -> new
   Nothing -> old
 
+changedUrl :: Node -> Maybe String -> Maybe String
+changedUrl n new
+  | n.restoredFromClosed = restoreRebindUrl n.url new
+  | otherwise = orElse n.url new
+
+changedTitle :: Node -> Maybe String -> String
+changedTitle n new = case new of
+  Just t | n.restoredFromClosed && isTransientRestoreTitle t -> n.title
+  Just t -> t
+  Nothing -> n.title
+
 isTransientRestoreUrl :: String -> Boolean
 isTransientRestoreUrl u =
   u == "about:blank"
     || u == "about:newtab"
     || u == "chrome://newtab"
     || u == "chrome://newtab/"
+
+isTransientRestoreTitle :: String -> Boolean
+isTransientRestoreTitle t = t == "" || t == "New Tab"
 
 openTab :: Number -> OpenedTab -> Model -> Step
 openTab now t model = case liveTabNode t.tabId model of
