@@ -62,7 +62,7 @@ applyBrowser now ev model = case ev of
     Just w ->
       let
         upserts = Array.mapMaybe (\i -> closeNode now <$> Map.lookup i model.nodes)
-          (subtreeIds w.id model)
+          (closeWindowIds w.id model)
         patch = { upserts, removes: [], roots: Nothing }
       in
         commit model.nextId patch model
@@ -89,8 +89,8 @@ applyBrowser now ev model = case ev of
   TabChanged c -> withTab c.tabId model \_ n ->
     let
       n' = n
-        { title = fromMaybe n.title c.title
-        , url = orElse n.url c.url
+        { title = changedTitle n c.title
+        , url = changedUrl n c.url
         , favIconUrl = orElse n.favIconUrl c.favIconUrl
         }
     in
@@ -162,6 +162,22 @@ closeNode now n
   | isLive n = n { tabId = Nothing, windowId = Nothing, active = false, closedAt = Just now, restoredFromClosed = false }
   | otherwise = n
 
+-- | Nodes owned by a closing browser window. Descend through ordinary saved/user
+-- | groups, but stop at nested live-window containers: they mirror independent
+-- | browser windows and must survive their parent's window close.
+closeWindowIds :: NodeId -> Model -> Array NodeId
+closeWindowIds root model = go true root
+  where
+  go isRoot nid = case Map.lookup nid model.nodes of
+    Nothing -> []
+    Just n
+      | not isRoot && n.kind == KGroup && hasWindowBinding n -> []
+      | otherwise -> [ nid ] <> Array.concatMap (go false) n.children
+
+  hasWindowBinding n = case n.windowId of
+    Just _ -> true
+    Nothing -> false
+
 -- | Remove a single browser-closed tab node from the tree entirely (used when a
 -- | freshly-opened, never-restored tab is closed by the browser): unlink it from
 -- | its parent and the node map, drop it from the roots if it sat there, then prune
@@ -185,6 +201,33 @@ orElse :: Maybe String -> Maybe String -> Maybe String
 orElse old new = case new of
   Just _ -> new
   Nothing -> old
+
+restoreRebindUrl :: Maybe String -> Maybe String -> Maybe String
+restoreRebindUrl old new = case new of
+  Just u | isTransientRestoreUrl u -> old
+  Just _ -> new
+  Nothing -> old
+
+changedUrl :: Node -> Maybe String -> Maybe String
+changedUrl n new
+  | n.restoredFromClosed = restoreRebindUrl n.url new
+  | otherwise = orElse n.url new
+
+changedTitle :: Node -> Maybe String -> String
+changedTitle n new = case new of
+  Just t | n.restoredFromClosed && isTransientRestoreTitle t -> n.title
+  Just t -> t
+  Nothing -> n.title
+
+isTransientRestoreUrl :: String -> Boolean
+isTransientRestoreUrl u =
+  u == "about:blank"
+    || u == "about:newtab"
+    || u == "chrome://newtab"
+    || u == "chrome://newtab/"
+
+isTransientRestoreTitle :: String -> Boolean
+isTransientRestoreTitle t = t == "" || t == "New Tab"
 
 openTab :: Number -> OpenedTab -> Model -> Step
 openTab now t model = case liveTabNode t.tabId model of
@@ -254,9 +297,8 @@ rebindRestored _ t _ n model =
     n' = n
       { tabId = Just t.tabId
       , active = t.active
-      , title = t.title
-      , url = t.url
-      , favIconUrl = t.favIconUrl
+      , url = restoreRebindUrl n.url t.url
+      , favIconUrl = orElse n.favIconUrl t.favIconUrl
       , closedAt = Nothing
       }
     patch = { upserts: [ n' ], removes: [], roots: Nothing }

@@ -204,6 +204,24 @@ spec = describe "Model.Reconcile" do
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
 
+  it "closing a window leaves nested live windows alone" do
+    let
+      m0 = modelOf
+        [ win "outer" 1 [ "outerTab", "inner" ]
+        , liveTab "outerTab" "outer" 11 "A"
+        , (win "inner" 2 [ "innerTab" ]) { parent = Just "outer" }
+        , liveTab "innerTab" "inner" 21 "B"
+        ]
+        [ "outer" ]
+        1
+      m = (applyBrowser 0.0 (WindowClosed { windowId: 1 }) m0).model
+    (isLive <$> Map.lookup "outer" m.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "outerTab" m.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "inner" m.nodes) `shouldEqual` Just true
+    (isLive <$> Map.lookup "innerTab" m.nodes) `shouldEqual` Just true
+    Map.lookup 2 m.byWindow `shouldEqual` Just "inner"
+    Map.lookup 21 m.byTab `shouldEqual` Just "innerTab"
+
   it "restores a pending window even when the browser reuses a stale window id" do
     let
       closed = runEvents
@@ -264,6 +282,43 @@ spec = describe "Model.Reconcile" do
     -- unflagged, so the browser close drops it (it was never a user restore)
     let closedAgain = (applyBrowser 0.0 (TabClosed { tabId: 99 }) reopened).model
     Map.lookup "n2" closedAgain.nodes `shouldEqual` Nothing
+
+  it "keeps restored tab metadata if the recreated tab is still a New Tab" do
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "n1" KGroup 0.0) { windowId = Just 1, title = "Window", children = [ "n2" ] }
+            , (defaultNode "n2" KTab 0.0)
+                { parent = Just "n1"
+                , url = Just "http://A"
+                , title = "A"
+                , closedAt = Just 0.0
+                , restoredFromClosed = true
+                }
+            ]
+        , removes: []
+        , roots: Just [ "n1" ]
+        }
+        emptyModel
+      queued = m0 { pendingRestore = Map.singleton 1 (List.singleton "n2") }
+      reopened = (applyBrowser 0.0
+        (TabOpened { tabId: 99, windowId: 1, index: 0, url: Just "about:newtab", title: "New Tab", active: true, favIconUrl: Nothing })
+        queued).model
+      transientUpdate = (applyBrowser 0.0
+        (TabChanged { tabId: 99, url: Nothing, title: Just "New Tab", favIconUrl: Nothing })
+        reopened).model
+      loaded = (applyBrowser 0.0
+        (TabChanged { tabId: 99, url: Just "http://A-loaded", title: Just "A loaded", favIconUrl: Nothing })
+        transientUpdate).model
+      closed = (applyBrowser 0.0 (TabClosed { tabId: 99 }) transientUpdate).model
+    (_.title <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just "A"
+    (_.url <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just "http://A")
+    (_.title <$> Map.lookup "n2" transientUpdate.nodes) `shouldEqual` Just "A"
+    (_.url <$> Map.lookup "n2" transientUpdate.nodes) `shouldEqual` Just (Just "http://A")
+    (_.title <$> Map.lookup "n2" loaded.nodes) `shouldEqual` Just "A loaded"
+    (_.url <$> Map.lookup "n2" loaded.nodes) `shouldEqual` Just (Just "http://A-loaded")
+    (_.title <$> Map.lookup "n2" closed.nodes) `shouldEqual` Just "A"
+    (_.url <$> Map.lookup "n2" closed.nodes) `shouldEqual` Just (Just "http://A")
 
   it "a reused browser tab id creates a fresh node (no stale-index no-op)" do
     let
