@@ -16,8 +16,8 @@ Follow this for any code-change task:
    stack on it and set the PR base to that branch (not `master`).
 3. **PR when done.** Once the work is complete and the gate is green, open a
    pull request with `gh`.
-4. **codex-cli review.** After the PR is up, have codex review it (see below),
-   then address the feedback and relay the review to the user.
+4. **Independent AI review.** After the PR is up, have a different agent review
+   it (see below), then address the feedback and relay the review to the user.
 
 **Why:** in-progress work stays isolated, changes land as small reviewable units
 on branches/PRs, and every change gets an automated second-opinion pass before
@@ -36,16 +36,27 @@ The project has a strict **no-manual-testing** contract: the whole suite is
 deterministic and headless. Add unit + e2e coverage for new behavior rather than
 relying on eyeballing the result.
 
-## codex-cli review
+## Independent AI review
 
-- codex-cli is installed at `/opt/homebrew/bin/codex`.
-- Run it read-only, scoped to the feature commit(s); tell it to inspect the diff
-  and not modify files:
+- Prefer a reviewer that is not the agent doing the implementation. If the
+  implementing agent knows it is Codex, use Claude Code for the review instead
+  of codex-cli. Claude Code is installed at `/Users/sark/.local/bin/claude`.
+- Run Claude Code in non-interactive plan mode, scoped to the feature commit(s);
+  tell it to inspect the diff and not modify files:
+
+  ```sh
+  claude -p --permission-mode plan "Review HEAD — inspect it via 'git show HEAD' \
+    and read any files you need; do NOT modify files. <what to scrutinize>"
+  ```
+
+- If the implementing agent is not Codex, codex-cli is still available at
+  `/opt/homebrew/bin/codex`. Run it read-only, scoped to the feature commit(s);
+  tell it to inspect the diff and not modify files:
 
   ```sh
   codex exec --sandbox read-only "Review HEAD — inspect it via 'git show HEAD' \
     and read any files you need; do NOT modify files. <what to scrutinize>"
   ```
 
-- Commits that address a codex finding use the message suffix `(codex review)`
-  (e.g. `Harden virtualization (codex review)`). Match it.
+- Commits that address review feedback use a suffix naming the reviewer, e.g.
+  `(claude review)` or `(codex review)`.
