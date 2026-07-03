@@ -110,14 +110,40 @@ test.describe("commands", () => {
     await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(true);
   });
 
+  test("closing a just-restored tab before load keeps its saved url", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, { ...seed, blankCreatedTabs: true });
+    const alphaId = (await readNodes(page)).find((n) => n.title === "Alpha")!.id;
+    await clickAction(page, "Alpha", ".btn-close"); // save Alpha as closed history
+    await rowOf(page, "Alpha").locator(".title").click(); // restore -> onCreated says New Tab
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+
+    await expect
+      .poll(async () => {
+        const n = (await readNodes(page)).find((x) => x.id === alphaId);
+        return n ? { title: n.title, url: n.url, live: n.tabId != null } : null;
+      })
+      .toEqual({ title: "Alpha", url: "http://a", live: true });
+
+    const alphaTabId = (await readNodes(page)).find((n) => n.id === alphaId)!.tabId;
+    await fake(page, "closeTab", alphaTabId);
+
+    await expect
+      .poll(async () => {
+        const n = (await readNodes(page)).find((x) => x.id === alphaId);
+        return n ? { title: n.title, url: n.url, live: n.tabId != null } : null;
+      })
+      .toEqual({ title: "Alpha", url: "http://a", live: false });
+    await expect(rowOf(page, "New Tab")).toHaveCount(0);
+  });
+
   test("the outliner's own close keeps a tab as history (save & close)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     const alphaId = (await readNodes(page)).find((n) => n.title === "Alpha")!.id;
     await clickAction(page, "Alpha", ".btn-close"); // save Alpha
-    await rowOf(page, "Alpha").locator(".title").click(); // restore (row title becomes its url)
+    await rowOf(page, "Alpha").locator(".title").click(); // restore
     await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
     // close it from the outliner again ("save & close"): kept as closed history
-    await clickAction(page, "http://a", ".btn-close");
+    await clickAction(page, "Alpha", ".btn-close");
     await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
     await expect.poll(() => readNodes(page).then((ns) => ns.some((n) => n.id === alphaId))).toBe(true);
     await expect(page.locator("[role=treeitem]")).toHaveCount(3);
