@@ -13,7 +13,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
-import Model.Tree (applyPatch, insertAtLive, liveTabChild, liveTabNode, liveWindowNode, mergePatch, moveWithin, pruneFrom, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveInsertSlot, liveTabNode, liveTabPreorder, liveWindowNode, mergePatch, nearestGroupAncestor, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Step, defaultNode, emptyPatch, isLive)
 
 mkId :: Int -> NodeId
@@ -61,8 +61,8 @@ applyBrowser now ev model = case ev of
     Nothing -> noop model
     Just w ->
       let
-        upserts = Array.mapMaybe (\i -> closeNode now <$> Map.lookup i model.nodes)
-          (subtreeIds w.id model)
+        closeIds = [ w.id ] <> liveTabPreorder model w.id
+        upserts = Array.mapMaybe (\i -> closeNode now <$> Map.lookup i model.nodes) closeIds
         patch = { upserts, removes: [], roots: Nothing }
       in
         commit model.nextId patch model
@@ -98,18 +98,26 @@ applyBrowser now ev model = case ev of
 
   TabActivated a -> activateTab a.tabId a.windowId model
 
-  TabMoved m -> withTab m.tabId model \nid n -> case n.parent of
+  TabMoved m -> withTab m.tabId model \nid n -> case liveWindowNode m.windowId model of
     Nothing -> noop model
-    Just pid -> case Map.lookup pid model.nodes of
-      Nothing -> noop model
-      Just p ->
-        let
-          -- m.toIndex is a browser tab index (counted among LIVE tabs); map it
-          -- through the interleaved closed nodes so the live subsequence stays in
-          -- browser order.
-          p' = p { children = moveWithin (liveTabChild model) nid m.toIndex p.children }
-        in
-          commit model.nextId { upserts: [ p' ], removes: [], roots: Nothing } model
+    Just w ->
+      let
+        oldParentUpsert = case n.parent >>= (\pid -> Map.lookup pid model.nodes) of
+          Just p -> [ p { children = Array.delete nid p.children } ]
+          Nothing -> []
+        detachedModel = applyPatch { upserts: oldParentUpsert, removes: [], roots: Nothing } model
+        preferred = n.parent >>= \pid -> if isAncestorOrSelf w.id pid model then Just pid else Nothing
+        slot = liveInsertSlot detachedModel w.id preferred m.toIndex
+        parent0 = fromMaybe w (Map.lookup slot.parent detachedModel.nodes)
+        parent' = parent0 { children = insertAtClamped slot.index nid (Array.delete nid parent0.children) }
+        n' = n { parent = Just slot.parent }
+        patch = { upserts: oldParentUpsert <> [ parent', n' ], removes: [], roots: Nothing }
+        base = commit model.nextId patch model
+      in
+        case n.parent of
+          Just pid | pid /= slot.parent ->
+            let p = pruneFrom pid base.model in base { model = p.model, patch = mergePatch base.patch p.patch }
+          _ -> base
 
   TabAttached a -> attachTab now a.tabId a.windowId a.index model
 
@@ -233,11 +241,14 @@ openFresh now t model =
       , tabId = Just t.tabId
       , parent = Just rw.winId
       }
-    -- t.index is a browser tab index (counted among LIVE tabs only); map it past
-    -- any interleaved closed nodes so the live subsequence stays in browser order.
-    winNode' = rw.winNode { children = insertAtLive (liveTabChild model) t.index tabNodeId rw.winNode.children }
+    -- t.index is a browser tab index (counted among LIVE tabs only); map it onto
+    -- the window's live-tab preorder. If the browser reports a same-window opener,
+    -- prefer nesting under that tab when it can represent the tab-strip order.
+    slot = liveInsertSlot model rw.winId (openerParent t rw.winId model) t.index
+    parent0 = if slot.parent == rw.winId then rw.winNode else fromMaybe rw.winNode (Map.lookup slot.parent model.nodes)
+    parent' = parent0 { children = insertAtClamped slot.index tabNodeId parent0.children }
     roots' = if rw.isNew then Just (model.roots <> [ rw.winId ]) else Nothing
-    patch = { upserts: [ winNode', tabNode ], removes: [], roots: roots' }
+    patch = { upserts: [ parent', tabNode { parent = Just slot.parent } ], removes: [], roots: roots' }
   in
     commit (rw.nextId + 1) patch model
 
@@ -268,10 +279,10 @@ activateTab tabId windowId model = case liveTabNode tabId model of
   Nothing -> noop model
   Just n ->
     let
-      winChildren = case liveWindowNode windowId model of
-        Just w -> w.children
+      winTabs = case liveWindowNode windowId model of
+        Just w -> liveTabPreorder model w.id
         Nothing -> []
-      deact = Array.mapMaybe deactivate winChildren
+      deact = Array.mapMaybe deactivate winTabs
       deactivate cid = case Map.lookup cid model.nodes of
         Just c | c.active, c.id /= n.id -> Just (c { active = false })
         _ -> Nothing
@@ -297,13 +308,15 @@ attachTabBound now tabId windowId index model = withTab tabId model \nid n ->
         Just p -> [ p { children = Array.delete nid p.children } ]
         Nothing -> []
       _ -> []
+    detachedModel = applyPatch { upserts: oldParentUpsert, removes: [], roots: Nothing } model
     -- index is a browser tab index in the destination window (counted among LIVE
-    -- tabs); map it past interleaved closed nodes to keep the live subsequence in
-    -- browser order. (Delete first in case nid already sits in the target list.)
-    winNode' = rw.winNode { children = insertAtLive (liveTabChild model) index nid (Array.delete nid rw.winNode.children) }
-    n' = n { parent = Just rw.winId }
+    -- tabs); map it onto that window's live-tab preorder.
+    slot = liveInsertSlot detachedModel rw.winId Nothing index
+    parent0 = if slot.parent == rw.winId then rw.winNode else fromMaybe rw.winNode (Map.lookup slot.parent detachedModel.nodes)
+    parent' = parent0 { children = insertAtClamped slot.index nid (Array.delete nid parent0.children) }
+    n' = n { parent = Just slot.parent }
     roots' = if rw.isNew then Just (model.roots <> [ rw.winId ]) else Nothing
-    patch = { upserts: oldParentUpsert <> [ winNode', n' ], removes: [], roots: roots' }
+    patch = { upserts: oldParentUpsert <> [ parent', n' ], removes: [], roots: roots' }
     base = commit rw.nextId patch model
   in
     -- the tab left its old parent; if that emptied an un-renamed group, prune it
@@ -311,3 +324,10 @@ attachTabBound now tabId windowId index model = withTab tabId model \nid n ->
       Just pid | pid /= rw.winId ->
         let p = pruneFrom pid base.model in base { model = p.model, patch = mergePatch base.patch p.patch }
       _ -> base
+
+openerParent :: OpenedTab -> NodeId -> Model -> Maybe NodeId
+openerParent t windowRoot model = do
+  openerTabId <- t.openerTabId
+  opener <- liveTabNode openerTabId model
+  owner <- nearestGroupAncestor model opener.id
+  if owner.id == windowRoot then Just opener.id else Nothing

@@ -11,7 +11,7 @@
 export type Seed = {
   windows: Array<{
     id: number;
-    tabs: Array<{ id: number; url?: string; title?: string; active?: boolean; favIconUrl?: string }>;
+    tabs: Array<{ id: number; openerTabId?: number; url?: string; title?: string; active?: boolean; favIconUrl?: string }>;
   }>;
   // when true, a tab created via tabs.create reports a slightly different url in
   // its onCreated than was requested (as Firefox does — normalization/redirect),
@@ -83,6 +83,7 @@ export function installFakeBrowser(seed: Seed) {
   const tabInfo = (t: any) => ({
     id: t.id,
     windowId: t.windowId,
+    openerTabId: t.openerTabId ?? null,
     index: t.index,
     url: t.url,
     title: t.title,
@@ -101,6 +102,7 @@ export function installFakeBrowser(seed: Seed) {
         id: t.id,
         windowId: w.id,
         index: 0,
+        openerTabId: t.openerTabId ?? null,
         url: t.url ?? null,
         title: t.title ?? "",
         active: !!t.active,
@@ -166,7 +168,7 @@ export function installFakeBrowser(seed: Seed) {
       create: (props: any) => {
         const id = ++tabSeq;
         const reportedUrl = seed?.redirectCreatedTabs && props.url ? props.url + "?redirected" : props.url;
-        driver.openTab({ id, windowId: props.windowId ?? firstWindowId(), index: props.index, url: reportedUrl, title: props.url ?? "", active: true });
+        driver.openTab({ id, windowId: props.windowId ?? firstWindowId(), openerTabId: props.openerTabId, index: props.index, url: reportedUrl, title: props.url ?? "", active: true });
         return Promise.resolve(tabInfo(tabs.get(id)));
       },
       remove: (id: number) => {
@@ -365,13 +367,14 @@ export function installFakeBrowser(seed: Seed) {
       wins.delete(id);
       ev.winRemoved._emit(id);
     },
-    openTab: (t: { id: number; windowId: number; index?: number; url?: string; title?: string; active?: boolean }) => {
+    openTab: (t: { id: number; windowId: number; openerTabId?: number; index?: number; url?: string; title?: string; active?: boolean }) => {
       if (!wins.has(t.windowId)) driver.openWindow(t.windowId);
       const w = wins.get(t.windowId)!;
       const index = t.index ?? w.tabIds.length;
       const tab = {
         id: t.id,
         windowId: t.windowId,
+        openerTabId: t.openerTabId ?? null,
         index,
         url: t.url ?? null,
         title: t.title ?? "",

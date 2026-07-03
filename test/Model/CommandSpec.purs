@@ -12,7 +12,7 @@ import Model.Codec (Snapshot)
 import Model.Command (BrowserAction(..), Command(..), applyCommand, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Tree (applyPatch, insertAtClamped)
+import Model.Tree (applyPatch, insertAtClamped, liveTabCountInWindow, liveTabPreorder, liveWindowNode)
 import Model.Types (Kind(..), Model, NodeId, defaultNode, emptyModel, isLive, isLiveTab)
 import Test.QuickCheck ((===))
 import Test.Spec (Spec, describe, it)
@@ -21,13 +21,13 @@ import Test.Spec.QuickCheck (quickCheck)
 
 openTab :: Int -> Int -> Int -> String -> Boolean -> BrowserEvent
 openTab tabId windowId index title active =
-  TabOpened { tabId, windowId, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
+  TabOpened { tabId, windowId, openerTabId: Nothing, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
 
 -- a TabOpened with an explicit url, to model the browser reporting a different url
 -- for a recreated tab than the one stored
 openTabU :: Int -> Int -> Int -> String -> String -> BrowserEvent
 openTabU tabId windowId index url title =
-  TabOpened { tabId, windowId, index, url: Just url, title, active: false, favIconUrl: Nothing }
+  TabOpened { tabId, windowId, openerTabId: Nothing, index, url: Just url, title, active: false, favIconUrl: Nothing }
 
 runEvents :: Array BrowserEvent -> Model
 runEvents = foldl (\m e -> (applyBrowser 0.0 e m).model) emptyModel
@@ -106,9 +106,7 @@ feedEvents :: Model -> Array BrowserEvent -> Model
 feedEvents = foldl (\m e -> (applyBrowser 0.0 e m).model)
 
 liveChildIds :: Model -> NodeId -> Array NodeId
-liveChildIds m parent =
-  let children = fromMaybe [] (_.children <$> Map.lookup parent m.nodes)
-  in Array.mapMaybe (\cid -> Map.lookup cid m.nodes >>= \n -> if isLive n && n.kind == KTab then Just cid else Nothing) children
+liveChildIds m parent = liveTabPreorder m parent
 
 type RestoreSim =
   { model :: Model
@@ -128,7 +126,7 @@ restoreOne s nid =
         title = tabTitle nid
         model' = feedEvents r.model
           [ WindowOpened { windowId: wid }
-          , TabOpened { tabId, windowId: wid, index: 0, url: Just ("http://" <> title), title, active: true, favIconUrl: Nothing }
+          , TabOpened { tabId, windowId: wid, openerTabId: Nothing, index: 0, url: Just ("http://" <> title), title, active: true, favIconUrl: Nothing }
           ]
       in
         { model: model', browser: [ nid ], nextTab: tabId + 1, windowId: Just wid }
@@ -138,7 +136,7 @@ restoreOne s nid =
         title = tabTitle nid
         i = fromMaybe (Array.length s.browser) index
         model' = feedEvents r.model
-          [ TabOpened { tabId, windowId: wid, index: i, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing } ]
+          [ TabOpened { tabId, windowId: wid, openerTabId: Nothing, index: i, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing } ]
       in
         { model: model', browser: insertAtClamped i nid s.browser, nextTab: tabId + 1, windowId: Just wid }
     _ -> s { model = r.model }
@@ -252,11 +250,6 @@ insertTabInto requested tab win =
   let index = clampIndex requested (Array.length win.tabs)
   in { window: win { tabs = insertAtClamped index tab win.tabs }, index }
 
-liveChild :: Model -> NodeId -> Boolean
-liveChild m cid = case Map.lookup cid m.nodes of
-  Just n -> isLiveTab n
-  Nothing -> false
-
 liveSlotAfterDetachIn :: Model -> NodeId -> NodeId -> Int -> Int
 liveSlotAfterDetachIn m movingId parentId index = case Map.lookup movingId m.nodes, Map.lookup parentId m.nodes of
   Just moving, Just parent ->
@@ -264,7 +257,7 @@ liveSlotAfterDetachIn m movingId parentId index = case Map.lookup movingId m.nod
       children = if moving.parent == Just parent.id then Array.delete moving.id parent.children else parent.children
       slot = clamp 0 (Array.length children) index
     in
-      Array.length (Array.filter (liveChild m) (Array.take slot children))
+      foldl (\n cid -> n + liveTabCountInWindow m parent.id cid) 0 (Array.take slot children)
   _, _ -> index
 
 expectedMoveActions :: String -> NodeId -> Maybe NodeId -> Int -> Model -> Maybe { label :: String, actions :: Array BrowserAction }
@@ -370,7 +363,7 @@ applyBrowserAction salt s = case _ of
         in
           enqueueEvents
             ( openEvents <>
-                [ TabOpened { tabId, windowId, index: inserted.index, url: Just url, title: url, active: true, favIconUrl: Nothing } ]
+                [ TabOpened { tabId, windowId, openerTabId: Nothing, index: inserted.index, url: Just url, title: url, active: true, favIconUrl: Nothing } ]
             )
             s'
   CreateWindow urls ->
@@ -384,6 +377,7 @@ applyBrowserAction salt s = case _ of
           TabOpened
             { tabId: s.nextTab + i
             , windowId
+            , openerTabId: Nothing
             , index: i
             , url: Just url
             , title: url
@@ -463,9 +457,9 @@ browserTabOrder windowId s = case findWindowIn windowId s.windows of
   Just w -> map _.tabId w.tabs
 
 modelTabOrder :: Int -> Model -> Array Int
-modelTabOrder windowId m = case Map.lookup windowId m.byWindow >>= \nid -> Map.lookup nid m.nodes of
+modelTabOrder windowId m = case liveWindowNode windowId m of
   Nothing -> []
-  Just w -> Array.mapMaybe tabIdIfLive w.children
+  Just w -> Array.mapMaybe tabIdIfLive (liveTabPreorder m w.id)
   where
   tabIdIfLive cid = Map.lookup cid m.nodes >>= \n -> if isLiveTab n then n.tabId else Nothing
 
@@ -660,7 +654,7 @@ spec = describe "Model.Command" do
       -- the browser recreates the tab, but onCreated reports a normalized/redirected
       -- url ("http://A/" with a trailing slash, not the stored "http://A")
       reopened = (applyBrowser 0.0
-        (TabOpened { tabId: 99, windowId: 1, index: 0, url: Just "http://A/", title: "A", active: true, favIconUrl: Nothing })
+        (TabOpened { tabId: 99, windowId: 1, openerTabId: Nothing, index: 0, url: Just "http://A/", title: "A", active: true, favIconUrl: Nothing })
         activated.model).model
     -- the SAME node n2 is rebound — no duplicate fresh node
     (isLive <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just true
@@ -698,9 +692,74 @@ spec = describe "Model.Command" do
     reopened.roots `shouldEqual` [ "n1" ]
     Map.size reopened.nodes `shouldEqual` 3
 
-  -- The unification: a saved GROUP (never a browser window) restores exactly like
-  -- a saved window — its owning container goes live in place. A node's owning
-  -- window is its immediate parent, so restoring the tab lights up that parent.
+  it "restoring a closed window with nested tabs opens one window in preorder" do
+    let
+      -- closed window n1 = [ A(n2 -> B(n3)), C(n4) ]; tab nesting is semantic, not
+      -- a browser-window boundary, so all three tabs restore into n1's one window.
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "n1" KGroup 0.0) { title = "W", children = [ "n2", "n4" ] }
+            , (defaultNode "n2" KTab 0.0) { parent = Just "n1", children = [ "n3" ], url = Just "http://a", title = "A" }
+            , (defaultNode "n3" KTab 0.0) { parent = Just "n2", url = Just "http://b", title = "B" }
+            , (defaultNode "n4" KTab 0.0) { parent = Just "n1", url = Just "http://c", title = "C" }
+            ]
+        , removes: []
+        , roots: Just [ "n1" ]
+        }
+        emptyModel
+      activated = applyCommand 0.0 (Activate "n1") m0
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ WindowOpened { windowId: 5 }
+        , openTab 51 5 0 "a" true
+        , openTab 52 5 1 "b" false
+        , openTab 53 5 2 "c" false
+        ]
+    activated.actions `shouldEqual` [ CreateWindow [ "http://a", "http://b", "http://c" ] ]
+    (map _.node activated.model.pendingRestoreWindows) `shouldEqual` [ "n1" ]
+    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "n2" (Cons "n3" (Cons "n4" Nil)) ]
+    (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 5)
+    (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 51)
+    (_.tabId <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just (Just 52)
+    (_.tabId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 53)
+    liveChildIds reopened "n1" `shouldEqual` [ "n2", "n3", "n4" ]
+
+  it "restoring a nested tab into a live window uses preorder for the browser index" do
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "n1" KGroup 0.0) { windowId = Just 1, title = "W", children = [ "n2", "n4" ] }
+            , (defaultNode "n2" KTab 0.0) { parent = Just "n1", children = [ "n3" ], tabId = Just 11, url = Just "http://a", title = "A" }
+            , (defaultNode "n3" KTab 0.0) { parent = Just "n2", url = Just "http://b", title = "B" }
+            , (defaultNode "n4" KTab 0.0) { parent = Just "n1", tabId = Just 12, url = Just "http://c", title = "C" }
+            ]
+        , removes: []
+        , roots: Just [ "n1" ]
+        }
+        emptyModel
+      activated = applyCommand 0.0 (Activate "n3") m0
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://b") ]
+
+  it "restoring into an outer live window ignores nested live-window tabs in the browser index" do
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "W" KGroup 0.0) { windowId = Just 1, title = "Outer", children = [ "A", "NW", "C", "B" ] }
+            , (defaultNode "A" KTab 0.0) { parent = Just "W", tabId = Just 11, url = Just "http://a", title = "A" }
+            , (defaultNode "NW" KGroup 0.0) { parent = Just "W", windowId = Just 2, title = "Inner", children = [ "X" ] }
+            , (defaultNode "X" KTab 0.0) { parent = Just "NW", tabId = Just 21, url = Just "http://x", title = "X" }
+            , (defaultNode "C" KTab 0.0) { parent = Just "W", tabId = Just 12, url = Just "http://c", title = "C" }
+            , (defaultNode "B" KTab 0.0) { parent = Just "W", url = Just "http://b", title = "B" }
+            ]
+        , removes: []
+        , roots: Just [ "W" ]
+        }
+        emptyModel
+      activated = applyCommand 0.0 (Activate "B") m0
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 2) (Just "http://b") ]
+
+  -- The unification: a saved GROUP restores exactly like a saved window — its
+  -- owning group goes live in place. Tab nesting is skipped when choosing that
+  -- runtime group/window boundary.
   it "restoring a closed window with a nested group binds each tab to its own node" do
     let
       -- closed window n1 = [ A(n2), group n3 = [ B(n4) ], C(n5) ] — all closed, with urls

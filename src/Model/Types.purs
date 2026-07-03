@@ -20,6 +20,7 @@ type NodeId = String
 type RuntimeTab =
   { tabId :: Int
   , windowId :: Int
+  , openerTabId :: Maybe Int
   , index :: Int
   , url :: Maybe String
   , title :: String

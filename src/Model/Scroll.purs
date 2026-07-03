@@ -15,23 +15,20 @@ import Data.Array as Array
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Model.Tree (liveWindowNode)
-import Model.Types (Kind(..), Model, NodeId, isLiveTab)
+import Model.Tree (liveTabPreorder, liveWindowNode)
+import Model.Types (Model, NodeId)
 
 -- | The live, active tab inside the live browser window `windowId` — the node the
 -- | sidebar reveals for its host window. Preorder, short-circuiting at the first
--- | match, so it costs O(subtree-up-to-the-active-tab), not O(total). It walks the
--- | whole window subtree (not just direct children) so a tab the user grouped
--- | under the window still counts.
+-- | match. It walks the window's live-tab preorder, so tab nesting counts but a
+-- | descendant live group/window remains a separate runtime boundary.
 activeTabInWindow :: Int -> Model -> Maybe NodeId
-activeTabInWindow windowId model = liveWindowNode windowId model >>= \w -> go w.id
+activeTabInWindow windowId model = liveWindowNode windowId model >>= \w ->
+  Array.findMap active (liveTabPreorder model w.id)
   where
-  go :: NodeId -> Maybe NodeId
-  go id = case Map.lookup id model.nodes of
-    Nothing -> Nothing
-    Just n
-      | n.kind == KTab && isLiveTab n && n.active -> Just n.id
-      | otherwise -> Array.findMap go n.children
+  active id = case Map.lookup id model.nodes of
+    Just n | n.active -> Just id
+    _ -> Nothing
 
 -- | Geometry of the virtualized tree: row height, the scroll viewport height, the
 -- | total scrollable content height, and the current scroll offset — all in px.

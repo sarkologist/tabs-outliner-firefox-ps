@@ -15,7 +15,7 @@ import Test.Spec.Assertions (shouldEqual)
 
 openTab :: Int -> Int -> Int -> String -> Boolean -> BrowserEvent
 openTab tabId windowId index title active =
-  TabOpened { tabId, windowId, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
+  TabOpened { tabId, windowId, openerTabId: Nothing, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
 
 runEvents :: Array BrowserEvent -> Model
 runEvents = foldl (\m e -> (applyBrowser 0.0 e m).model) emptyModel
@@ -26,13 +26,13 @@ prior = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false ]
 
 rt :: Int -> Int -> Int -> String -> RuntimeTab
 rt tabId windowId index title =
-  { tabId, windowId, index, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing, nodeKey: Nothing }
+  { tabId, windowId, openerTabId: Nothing, index, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing, nodeKey: Nothing }
 
 -- a runtime tab carrying a stamped node id (browser.sessions value), as it would
 -- appear after a restart that session-restored the tab
 rtKeyed :: Int -> Int -> Int -> String -> String -> RuntimeTab
 rtKeyed tabId windowId index title nodeKey =
-  { tabId, windowId, index, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing, nodeKey: Just nodeKey }
+  { tabId, windowId, openerTabId: Nothing, index, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing, nodeKey: Just nodeKey }
 
 rw :: Int -> Array RuntimeTab -> RuntimeWindow
 rw windowId tabs = { windowId, tabs }
