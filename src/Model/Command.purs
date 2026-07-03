@@ -21,7 +21,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabChild, mergePatch, pruneFrom, rootAncestor, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabCount, liveWindowNode, mergePatch, nearestGroupAncestor, pruneFrom, rootAncestor, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, defaultNode, emptyPatch, isLiveTab)
 
 data Command
@@ -64,8 +64,8 @@ instance showBrowserAction :: Show BrowserAction where
   show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
   show (RemoveTab t) = "RemoveTab " <> show t
 
--- | Where a restored tab should reopen, decided by its IMMEDIATE PARENT — the
--- | container that owns it (a node's owning window is its immediate parent).
+-- | Where a restored tab should reopen, decided by its nearest group ancestor.
+-- | Tab nesting is semantic history; only groups bind/create browser windows.
 data RestoreTarget
   = IntoWindow Int -- parent already live as a window (reopen the tab back into it)
   | IntoNewWindow NodeId -- saved-container parent (its tabs open one new window it goes live as)
@@ -270,26 +270,39 @@ applyCommandRaw now cmd model = case cmd of
 
   -- restore: re-open every closed tab in the subtree, re-binding to existing
   -- nodes via pendingRestore (keyed by the window each tab is recreated in) when
-  -- each onCreated arrives. Each tab is routed by its immediate parent: a parent
-  -- already live as a window reopens the tab back into it; a saved-group parent
-  -- has all its tabs grouped into one new browser window (whose node rebinds via
-  -- pendingRestoreWindows) and goes live in place; a tab with no parent reopens in
-  -- the current window.
+  -- each onCreated arrives. Tab parents are skipped when choosing the runtime
+  -- container: the nearest group ancestor owns the browser window. A live group
+  -- reopens tabs back into its window; a saved group opens one new window and
+  -- goes live in place; a tab with no group ancestor reopens in the current window.
   restore :: NodeId -> CmdResult
   restore nid =
     let
+      queuedTabs = Set.fromFoldable
+        ( Array.concatMap Array.fromFoldable (Array.fromFoldable (Map.values model.pendingRestore) :: Array (List NodeId))
+            <> Array.concatMap (Array.fromFoldable <<< _.tabs) model.pendingRestoreWindows
+        )
+      queuedWindows = Set.fromFoldable (map _.node model.pendingRestoreWindows)
       closedTabs = Array.filter (\n -> n.kind == KTab && not (isLiveTab n))
         (Array.mapMaybe (\i -> Map.lookup i model.nodes) (subtreeIds nid model))
       -- only tabs with a url can be reopened; keep subtree (preorder) order
       tagged = Array.mapMaybe
-        (\n -> map (\u -> { id: n.id, url: u, target: restoreTargetOf model n.id }) n.url)
+        ( \n ->
+            if Set.member n.id queuedTabs then Nothing
+            else map (\u -> { id: n.id, url: u, target: restoreTargetOf model n.id }) n.url
+        )
         closedTabs
+      -- If a saved group/window is already waiting for its browser window, a second
+      -- click before events settle must not create a duplicate window. The user can
+      -- restore more from that group once the first window binds.
+      ready = Array.filter (\x -> case x.target of
+        IntoNewWindow w -> not (Set.member w queuedWindows)
+        _ -> true) tagged
 
       -- one new window per closed-window ancestor, in first-seen order
       newWinIds = Array.nub (Array.mapMaybe (\x -> case x.target of
         IntoNewWindow w -> Just w
-        _ -> Nothing) tagged)
-      forWindow w = Array.filter (\x -> x.target == IntoNewWindow w) tagged
+        _ -> Nothing) ready)
+      forWindow w = Array.filter (\x -> x.target == IntoNewWindow w) ready
       windowActions = map (\w -> CreateWindow (map _.url (forWindow w))) newWinIds
       -- carry the EXACT node ids (same order as the urls above) so each rebinds to
       -- the right node when the window's tabs arrive — not "all of the container's
@@ -299,7 +312,7 @@ applyCommandRaw now cmd model = case cmd of
       tabActions = Array.mapMaybe (\x -> case x.target of
         IntoWindow wid -> Just (CreateTab (Just wid) (restoreIndex wid x.id) (Just x.url))
         IntoCurrent -> Just (CreateTab Nothing Nothing (Just x.url))
-        IntoNewWindow _ -> Nothing) tagged
+        IntoNewWindow _ -> Nothing) ready
 
       -- queue each IntoWindow tab under its target window — a FIFO consumed as the
       -- recreated tabs' onCreated events arrive (in this same order). IntoNewWindow
@@ -308,23 +321,23 @@ applyCommandRaw now cmd model = case cmd of
       queueIntoWindow m x = case x.target of
         IntoWindow wid -> Map.alter (\ml -> Just (maybe (List.singleton x.id) (\l -> List.snoc l x.id) ml)) wid m
         _ -> m
-      pending' = foldl queueIntoWindow model.pendingRestore tagged
+      pending' = foldl queueIntoWindow model.pendingRestore ready
 
       -- tabs.create's index is counted among live browser tabs. To keep restores
       -- in saved tree order, count siblings before this node that are already live
       -- plus siblings queued by this or an earlier not-yet-reconciled restore.
       restoreIndex :: Int -> NodeId -> Maybe Int
       restoreIndex wid id = do
-        n <- Map.lookup id model.nodes
-        pid <- n.parent
-        p <- Map.lookup pid model.nodes
+        w <- liveWindowNode wid model
         let
           queued = maybe [] Array.fromFoldable (Map.lookup wid model.pendingRestore)
           restoring = Set.fromFoldable
-            (queued <> map _.id (Array.filter (\x -> x.target == IntoWindow wid) tagged))
-          before = Array.takeWhile (_ /= id) p.children
-          counts cid = liveTabChild model cid || Set.member cid restoring
-        pure (Array.length (Array.filter counts before))
+            (queued <> map _.id (Array.filter (\x -> x.target == IntoWindow wid) ready))
+          counts n = isLiveTab n || Set.member n.id restoring
+          ordered = Array.mapMaybe
+            (\cid -> Map.lookup cid model.nodes >>= \n -> if n.kind == KTab && counts n then Just cid else Nothing)
+            (subtreeIds w.id model)
+        Array.elemIndex id ordered
 
       -- Mark every closed tab we are reopening so a later *browser* close keeps it as
       -- history (a restored tab belongs in the tree), whereas a freshly-opened tab is
@@ -333,7 +346,7 @@ applyCommandRaw now cmd model = case cmd of
       -- rehomed into a saved group also rebinds via `pendingRestore`; flagging at the
       -- rebind would mistake that (and any later tab in that window) for a restore.
       flagged = Array.mapMaybe
-        (\x -> (\n -> n { restoredFromClosed = true }) <$> Map.lookup x.id model.nodes) tagged
+        (\x -> (\n -> n { restoredFromClosed = true }) <$> Map.lookup x.id model.nodes) ready
       patch = { upserts: flagged, removes: [], roots: Nothing }
       model' = (applyPatch patch model)
         { pendingRestore = pending'
@@ -412,7 +425,7 @@ applyCommandRaw now cmd model = case cmd of
       base = if moving.parent == Just parent.id then Array.delete moving.id parent.children else parent.children
       slot = clamp 0 (Array.length base) index
     in
-      Array.length (Array.filter (liveTabChild model) (Array.take slot base))
+      foldl (\n cid -> n + liveTabCount model cid) 0 (Array.take slot base)
 
   -- Browser action(s) to re-home live `tabIds` to container `mParent` (their new
   -- owning window): into an already-live window -> move each there; into a
@@ -453,7 +466,7 @@ applyCommandRaw now cmd model = case cmd of
               Just pid | Just p <- Map.lookup pid model.nodes, Just w <- p.windowId ->
                 let
                   before = Array.takeWhile (_ /= nid) p.children
-                  baseIndex = Array.length (Array.filter (liveTabChild model) before)
+                  baseIndex = foldl (\n cid -> n + liveTabCount model cid) 0 before
                 in
                   { model: m, actions: Array.mapWithIndex (\i t -> MoveTabToWindow t w (baseIndex + i)) kidTabIds }
               _ -> rehome m node.parent kidTabIds
@@ -476,19 +489,16 @@ spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 pushPending :: NodeId -> Array PendingWindow -> Array PendingWindow
 pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.snoc xs { node: pid, tabs: Nil }
 
--- | Where a closed tab node should reopen, decided by its IMMEDIATE parent — the
--- | container that owns it (a node's owning window is its immediate parent). A
--- | parent already live as a window -> back into that window; a parent that is a
--- | saved group -> a new window that the group goes live as; no parent (a bare
--- | root tab) -> the current window.
+-- | Where a closed tab node should reopen. Tab parents are not window boundaries:
+-- | the nearest group ancestor owns the runtime window. A live group -> back into
+-- | that window; a saved group -> a new window that the group goes live as; no
+-- | group ancestor (a bare root tab) -> the current window.
 restoreTargetOf :: Model -> NodeId -> RestoreTarget
-restoreTargetOf model nid = case parentNode nid of
+restoreTargetOf model nid = case nearestGroupAncestor model nid of
   Just p
     | Just wid <- p.windowId -> IntoWindow wid
     | otherwise -> IntoNewWindow p.id
   Nothing -> IntoCurrent
-  where
-  parentNode id = (Map.lookup id model.nodes >>= _.parent) >>= \pid -> Map.lookup pid model.nodes
 
 -- Request protocol -----------------------------------------------------------
 

@@ -42,14 +42,13 @@ applyPatch p model =
     Just w | isLive n -> Map.insert w n.id m
     _ -> m
 
--- | The STRUCTURAL test for "this container is a live window": it directly owns
--- | at least one live tab. At runtime the operative marker is the container's
--- | `windowId` binding (O(1), and what display and the indexes key off); the two
--- | are kept loosely in step — e.g. a freshly-opened window is windowId-bound for
--- | a moment before its first tab node lands. Used to state and verify the
--- | window/group correspondence (a node's owning window is its immediate parent).
+-- | The STRUCTURAL test for "this container is a live window": it owns at least
+-- | one live tab somewhere in its subtree. At runtime the operative marker is the
+-- | container's `windowId` binding (O(1), and what display and the indexes key
+-- | off); the two are kept loosely in step — e.g. a freshly-opened window is
+-- | windowId-bound for a moment before its first tab node lands.
 isLiveWindow :: Model -> Node -> Boolean
-isLiveWindow model n = n.kind == KGroup && Array.any (liveTabChild model) n.children
+isLiveWindow model n = n.kind == KGroup && liveTabCount model n.id > 0
 
 -- | Is child id `cid` a LIVE TAB in `model`? This is the membership that defines
 -- | browser tab order among a container's children: a window's live-tab children,
@@ -58,6 +57,135 @@ isLiveWindow model n = n.kind == KGroup && Array.any (liveTabChild model) n.chil
 -- | not live tabs.
 liveTabChild :: Model -> NodeId -> Boolean
 liveTabChild model cid = maybe false isLiveTab (Map.lookup cid model.nodes)
+
+-- | Nearest ancestor that is a group/container, skipping tab ancestors. This is
+-- | the runtime window boundary for nested tab trees: a tab can own semantic
+-- | children, but only a group can bind/create a browser window.
+nearestGroupAncestor :: Model -> NodeId -> Maybe Node
+nearestGroupAncestor model nid = go Set.empty (Map.lookup nid model.nodes >>= _.parent)
+  where
+  go seen = case _ of
+    Nothing -> Nothing
+    Just pid
+      | Set.member pid seen -> Nothing
+      | otherwise -> case Map.lookup pid model.nodes of
+          Just n | n.kind == KGroup -> Just n
+          Just n -> go (Set.insert pid seen) n.parent
+          Nothing -> Nothing
+
+-- | Live tab nodes in preorder under `root`. This is the nodes-side ordering that
+-- | corresponds to a browser window's tab strip when tabs are nested under tabs.
+-- | Descendant groups that are themselves live browser windows are separate
+-- | runtime boundaries, so they are not counted in the ancestor window's order.
+liveTabPreorder :: Model -> NodeId -> Array NodeId
+liveTabPreorder model root = Array.fromFoldable (go root Nil)
+  where
+  go :: NodeId -> List NodeId -> List NodeId
+  go id rest = case Map.lookup id model.nodes of
+    Nothing -> rest
+    Just n | id /= root && n.kind == KGroup && n.windowId /= Nothing -> rest
+    Just n ->
+      let tail = foldr go rest n.children
+      in if n.kind == KTab && isLiveTab n then Cons id tail else tail
+
+liveTabCount :: Model -> NodeId -> Int
+liveTabCount model root = Array.length (liveTabPreorder model root)
+
+liveTabPreorderIndex :: Model -> NodeId -> NodeId -> Maybe Int
+liveTabPreorderIndex model root id = Array.elemIndex id (liveTabPreorder model root)
+
+type LiveInsertSlot = { parent :: NodeId, index :: Int }
+
+-- | Find a tree insertion slot for a live tab that should appear at `liveIdx` in
+-- | the owning window's live-tab preorder. A preferred parent (usually the
+-- | opener tab) wins when it can represent the requested order exactly; otherwise
+-- | direct window placement is preferred, then any exact preorder slot.
+liveInsertSlot :: Model -> NodeId -> Maybe NodeId -> Int -> LiveInsertSlot
+liveInsertSlot model windowRoot preferredParent liveIdx =
+  let
+    target = clamp 0 (liveTabCount model windowRoot) liveIdx
+    direct = exactSlotInParent windowRoot target
+    anySlot = firstExactSlot windowRoot target
+    append =
+      { parent: windowRoot
+      , index: maybe 0 (Array.length <<< _.children) (Map.lookup windowRoot model.nodes)
+      }
+  in
+    fromMaybe
+      (fromMaybe (fromMaybe append anySlot) direct)
+      (preferredParent >>= \pid -> exactSlotInParent pid target)
+  where
+  exactSlotInParent :: NodeId -> Int -> Maybe LiveInsertSlot
+  exactSlotInParent parentId target = do
+    if inRuntimeWindow parentId then do
+      p <- Map.lookup parentId model.nodes
+      slot <- foldl
+        (\found i -> if slotLiveIndex windowRoot parentId i == Just target then Just i else found)
+        Nothing
+        (Array.range 0 (Array.length p.children))
+      pure { parent: parentId, index: slot }
+    else Nothing
+
+  firstExactSlot :: NodeId -> Int -> Maybe LiveInsertSlot
+  firstExactSlot root target = go root
+    where
+    go id = case Map.lookup id model.nodes of
+      Just n | isNestedLiveGroup id n -> Nothing
+      Just n -> case exactSlotInParent id target of
+        Just slot -> Just slot
+        Nothing -> goChildren n.children
+      Nothing -> Nothing
+
+    goChildren kids = case Array.uncons kids of
+      Nothing -> Nothing
+      Just { head, tail } -> case go head of
+        Just slot -> Just slot
+        Nothing -> goChildren tail
+
+  inRuntimeWindow :: NodeId -> Boolean
+  inRuntimeWindow id = go Set.empty id
+    where
+    go seen cur
+      | cur == windowRoot = true
+      | Set.member cur seen = false
+      | otherwise = case Map.lookup cur model.nodes of
+          Just n | isNestedLiveGroup cur n -> false
+          Just n -> maybe false (go (Set.insert cur seen)) n.parent
+          Nothing -> false
+
+  isNestedLiveGroup :: NodeId -> Node -> Boolean
+  isNestedLiveGroup id n = id /= windowRoot && n.kind == KGroup && n.windowId /= Nothing
+
+  runtimeLiveCount :: NodeId -> Int
+  runtimeLiveCount id = case Map.lookup id model.nodes of
+    Nothing -> 0
+    Just n | isNestedLiveGroup id n -> 0
+    Just n ->
+      let self = if n.kind == KTab && isLiveTab n then 1 else 0
+      in self + foldl (\count cid -> count + runtimeLiveCount cid) 0 n.children
+
+  slotLiveIndex :: NodeId -> NodeId -> Int -> Maybe Int
+  slotLiveIndex root parentId slot = go 0 root
+    where
+    go acc id = case Map.lookup id model.nodes of
+      Nothing -> Nothing
+      Just n | isNestedLiveGroup id n -> Nothing
+      Just n ->
+        let afterSelf = if n.kind == KTab && isLiveTab n then acc + 1 else acc
+        in
+          if id == parentId then Just (afterSelf + liveBefore slot n.children)
+          else goChildren afterSelf n.children
+
+    goChildren acc kids = case Array.uncons kids of
+      Nothing -> Nothing
+      Just { head, tail } -> case go acc head of
+        Just idx -> Just idx
+        Nothing -> goChildren (acc + runtimeLiveCount head) tail
+
+  liveBefore slot children =
+    foldl (\n cid -> n + runtimeLiveCount cid)
+      0
+      (Array.take (clamp 0 (Array.length children) slot) children)
 
 -- | Combine two patches applied in sequence (`b` after `a`): later upserts win
 -- | (folded last), removes accumulate, and `b`'s roots — if it set them — win.

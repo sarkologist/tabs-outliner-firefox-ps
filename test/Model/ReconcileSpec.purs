@@ -9,7 +9,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Tree (applyPatch, insertAtClamped)
+import Model.Tree (applyPatch, insertAtClamped, liveTabPreorder)
 import Model.Types (Kind(..), Model, Node, NodeId, defaultNode, emptyModel, isLive, isLiveTab)
 import Test.QuickCheck ((===))
 import Test.Spec (Spec, describe, it)
@@ -24,7 +24,7 @@ runEvents = foldl (flip step) emptyModel
 
 openTab :: Int -> Int -> Int -> String -> Boolean -> BrowserEvent
 openTab tabId windowId index title active =
-  TabOpened { tabId, windowId, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
+  TabOpened { tabId, windowId, openerTabId: Nothing, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
 
 -- Fixture builders for models with closed/history nodes interleaved among a
 -- window's live tabs. `nextId` is set past the listed ids so the first
@@ -100,15 +100,14 @@ simStep s a =
         tabId = s.nextTab
         idx = pmod (g 1) (len + 1)
         ev = TabOpened
-          { tabId, windowId: 1, index: idx, url: Just ("http://t" <> show tabId), title: "t" <> show tabId, active: false, favIconUrl: Nothing }
+          { tabId, windowId: 1, openerTabId: Nothing, index: idx, url: Just ("http://t" <> show tabId), title: "t" <> show tabId, active: false, favIconUrl: Nothing }
         model' = (applyBrowser 0.0 ev s.model).model
       in
         { model: model', order: insertAtClamped idx tabId s.order, nextTab: s.nextTab + 1 }
 
 -- the live tabs of window 1, in children-array order, as their browser tab ids
 liveOrder :: Model -> Array Int
-liveOrder m = Array.mapMaybe (\cid -> Map.lookup cid m.nodes >>= \n -> if isLiveTab n then n.tabId else Nothing)
-  (childrenOf m "n1")
+liveOrder m = Array.mapMaybe (\cid -> Map.lookup cid m.nodes >>= _.tabId) (liveTabPreorder m "n1")
 
 spec :: Spec Unit
 spec = describe "Model.Reconcile" do
@@ -120,6 +119,39 @@ spec = describe "Model.Reconcile" do
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just true
     Map.lookup 11 m.byTab `shouldEqual` Just "n2"
     Map.lookup 1 m.byWindow `shouldEqual` Just "n1"
+
+  it "nests a same-window opener tab under its opener while preserving preorder" do
+    let
+      m0 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false ]
+      m = (applyBrowser 0.0
+        (TabOpened { tabId: 13, windowId: 1, openerTabId: Just 11, index: 1, url: Just "http://C", title: "C", active: false, favIconUrl: Nothing })
+        m0).model
+    (_.parent <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just "n2")
+    (_.children <$> Map.lookup "n2" m.nodes) `shouldEqual` Just [ "n4" ]
+    liveOrder m `shouldEqual` [ 11, 13, 12 ]
+
+  it "falls back to the window when an opener is missing, closed, or cross-window" do
+    let
+      missing0 = runEvents [ openTab 11 1 0 "A" true ]
+      missing = (applyBrowser 0.0
+        (TabOpened { tabId: 12, windowId: 1, openerTabId: Just 99, index: 1, url: Just "http://B", title: "B", active: false, favIconUrl: Nothing })
+        missing0).model
+      closed0 = modelOf
+        [ win "n1" 1 [ "n2" ]
+        , closedTab "n2" "n1" "A"
+        ]
+        [ "n1" ]
+        3
+      closed = (applyBrowser 0.0
+        (TabOpened { tabId: 12, windowId: 1, openerTabId: Just 11, index: 0, url: Just "http://B", title: "B", active: false, favIconUrl: Nothing })
+        closed0).model
+      cross0 = runEvents [ openTab 11 1 0 "A" true, openTab 21 2 0 "X" true ]
+      cross = (applyBrowser 0.0
+        (TabOpened { tabId: 22, windowId: 2, openerTabId: Just 11, index: 1, url: Just "http://Y", title: "Y", active: false, favIconUrl: Nothing })
+        cross0).model
+    (_.parent <$> Map.lookup "n3" missing.nodes) `shouldEqual` Just (Just "n1")
+    (_.parent <$> Map.lookup "n3" closed.nodes) `shouldEqual` Just (Just "n1")
+    (_.parent <$> Map.lookup "n5" cross.nodes) `shouldEqual` Just (Just "n3")
 
   it "does not duplicate a window opened explicitly then populated" do
     let m = runEvents [ WindowOpened { windowId: 1 }, openTab 11 1 0 "A" true ]
@@ -192,7 +224,7 @@ spec = describe "Model.Reconcile" do
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2" ] -- window 1 keeps A
     Map.lookup 2 m.byWindow `shouldEqual` Just "n4"
 
-  it "closes a window subtree to history but keeps it as a root" do
+  it "closes a window's runtime tabs to history but keeps it as a root" do
     let
       m = runEvents
         [ openTab 11 1 0 "A" true
@@ -203,6 +235,24 @@ spec = describe "Model.Reconcile" do
     (isLive <$> Map.lookup "n1" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
+
+  it "closing an outer window leaves a nested live-window boundary alone" do
+    let
+      m0 = modelOf
+        [ win "outer" 2 [ "inner", "tab" ]
+        , win "inner" 1 [ "a", "b" ]
+        , liveTab "a" "inner" 11 "A"
+        , liveTab "b" "inner" 12 "B"
+        , liveTab "tab" "outer" 21 "Outer"
+        ]
+        [ "outer" ]
+        1
+      moved = (applyBrowser 0.0 (TabAttached { tabId: 21, windowId: 50, index: 0 }) m0).model
+      closedOuter = (applyBrowser 0.0 (WindowClosed { windowId: 2 }) moved).model
+    (_.windowId <$> Map.lookup "outer" closedOuter.nodes) `shouldEqual` Just Nothing
+    (_.windowId <$> Map.lookup "inner" closedOuter.nodes) `shouldEqual` Just (Just 1)
+    (_.tabId <$> Map.lookup "a" closedOuter.nodes) `shouldEqual` Just (Just 11)
+    (_.tabId <$> Map.lookup "b" closedOuter.nodes) `shouldEqual` Just (Just 12)
 
   it "restores a pending window even when the browser reuses a stale window id" do
     let

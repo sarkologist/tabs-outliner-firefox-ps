@@ -160,6 +160,33 @@ test.describe("commands", () => {
     expect(restored.tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b"]);
   });
 
+  test("restoring a closed window with nested tabs uses one browser window in preorder", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a", title: "Alpha", active: true },
+            { id: 12, openerTabId: 11, url: "http://b", title: "Beta" },
+            { id: 13, url: "http://c", title: "Gamma" },
+          ],
+        },
+      ],
+    });
+    await expect.poll(() => titles(page)).toEqual(["Window", "Alpha", "Beta", "Gamma"]);
+
+    await fake(page, "closeWindow", 1);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(4);
+    expect(await page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
+
+    await page.locator('.row[data-status="closed"]').filter({ hasText: "Window" }).locator(".title").click();
+
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+    expect(windows.length).toBe(1);
+    expect(windows[0].tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b", "http://c"]);
+  });
+
   test("drag reorders siblings", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Beta")).toBeVisible();

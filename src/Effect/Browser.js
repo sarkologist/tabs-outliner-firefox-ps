@@ -32,6 +32,7 @@ export const getAllWindowsImpl = (api) => () =>
             getTabKey(api, t.id).then((nodeKey) => ({
               tabId: t.id,
               windowId: t.windowId,
+              openerTabId: t.openerTabId ?? null,
               index: t.index,
               url: t.url ?? null,
               title: t.title ?? "",
@@ -70,6 +71,7 @@ export const subscribeImpl = (api) => (sink) => () => {
     sink.tabOpened({
       tabId: tab.id,
       windowId: tab.windowId,
+      openerTabId: tab.openerTabId ?? null,
       index: tab.index,
       url: tab.url ?? null,
       title: tab.title ?? "",

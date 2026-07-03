@@ -24,7 +24,7 @@ import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
-import Model.Tree (insertAtClamped)
+import Model.Tree (insertAtClamped, liveInsertSlot, nearestGroupAncestor)
 import Model.Types (Kind(..), Model, Node, NodeId, RuntimeTab, RuntimeWindow, defaultNode, isLiveTab)
 
 type Acc =
@@ -51,7 +51,7 @@ rematchOnStartup now current model0 =
     priorTabs = Array.filter (\n -> n.kind == KTab && isLiveTab n) allN
     priorWindows = Array.filter (\n -> n.kind == KGroup && isJust n.windowId) allN
     pool0 = foldl addToPool Map.empty priorTabs
-    urlToWin = foldl addUrlWindow Map.empty priorTabs
+    urlToWin = foldl (addUrlWindow model0) Map.empty priorTabs
 
     -- Window nodes whose match is too ambiguous to safely DROP an orphan from. A url
     -- shared across more than one prior window can bind the wrong window node at
@@ -59,12 +59,12 @@ rematchOnStartup now current model0 =
     -- window — only from one whose urls are all unique. Dropping is conservative on
     -- purpose: when unsure, keep (the prior behaviour), never delete.
     urlWins = foldl addUrlWin Map.empty priorTabs
-    addUrlWin m n = case n.url, n.parent of
+    addUrlWin m n = case n.url, owningGroupId model0 n.id of
       Just u, Just p -> Map.insertWith Set.union u (Set.singleton p) m
       _, _ -> m
     sharedUrl u = maybe false (\s -> Set.size s >= 2) (Map.lookup u urlWins)
     windowsWithSharedUrl = foldl
-      (\acc n -> case n.url, n.parent of
+      (\acc n -> case n.url, owningGroupId model0 n.id of
         Just u, Just p | sharedUrl u -> Set.insert p acc
         _, _ -> acc)
       Set.empty
@@ -105,8 +105,8 @@ rematchOnStartup now current model0 =
       not n.restoredFromClosed
         && not a.anyFreshTab
         && windowReopened a n
-        && maybe false (\p -> not (Set.member p windowsWithSharedUrl)) n.parent
-        && maybe false (\p -> not (Set.member p a.windowsGainedTab)) n.parent
+        && maybe false (\p -> not (Set.member p windowsWithSharedUrl)) (owningGroupId (accModel a) n.id)
+        && maybe false (\p -> not (Set.member p a.windowsGainedTab)) (owningGroupId (accModel a) n.id)
     acc2 = foldl
       ( \a n ->
           if Set.member n.id a.consumedTabs then a
@@ -138,16 +138,30 @@ addToPool m n = case n.url of
   Just u -> Map.alter (Just <<< maybe (List.singleton n.id) (Cons n.id)) u m
   Nothing -> m
 
--- url -> the container that owns a prior-live tab with that url (its immediate
--- parent — a node's owning window is its immediate parent), for matching a
--- reopened browser window to the container it should re-bind.
-addUrlWindow :: Map String NodeId -> Node -> Map String NodeId
-addUrlWindow m n = case n.url, n.parent of
+-- url -> the group/window that owns a prior-live tab with that url. Tab parents
+-- are semantic nesting, not browser window boundaries.
+addUrlWindow :: Model -> Map String NodeId -> Node -> Map String NodeId
+addUrlWindow model m n = case n.url, owningGroupId model n.id of
   Just u, Just p -> Map.insert u p m
   _, _ -> m
 
 mkId :: Int -> NodeId
 mkId i = "n" <> show i
+
+accModel :: Acc -> Model
+accModel a =
+  { roots: a.roots
+  , nodes: a.nodes
+  , byTab: a.byTab
+  , byWindow: a.byWindow
+  , pendingRestore: Map.empty
+  , pendingRestoreWindows: []
+  , closingTabs: Set.empty
+  , nextId: a.nextId
+  }
+
+owningGroupId :: Model -> NodeId -> Maybe NodeId
+owningGroupId model nid = _.id <$> nearestGroupAncestor model nid
 
 processWindow :: Number -> Map String NodeId -> Acc -> RuntimeWindow -> Acc
 processWindow now urlToWin acc cw =
@@ -206,7 +220,7 @@ chooseWindow urlToWin acc cw =
     -- this run, and a duplicate key (e.g. a duplicated tab) for an already-bound tab.
     byStamp = tally
       ( \ct -> ct.nodeKey >>= \k ->
-          if Set.member k acc.priorTabIds && not (Set.member k acc.consumedTabs) then Map.lookup k acc.nodes >>= _.parent
+          if Set.member k acc.priorTabIds && not (Set.member k acc.consumedTabs) then owningGroupId (accModel acc) k
           else Nothing
       )
     byUrl = tally (\ct -> ct.url >>= \u -> Map.lookup u urlToWin)
@@ -246,21 +260,24 @@ matchTab now winId acc ct = case sessionMatch of
       | n.parent == Just winId -> consume nid (Map.insert nid (rebind n) acc.nodes) acc.roots pool' acc.touched
       | otherwise ->
           let
-            nodes1 = Map.insert nid ((rebind n) { parent = Just winId }) acc.nodes
+            nodes1 = Map.insert nid (rebind n) acc.nodes
             -- detach from its old parent's child list (or the roots)
             nodes2 = case n.parent >>= (\pid -> Map.lookup pid nodes1) of
               Just p -> Map.insert p.id (p { children = Array.delete nid p.children }) nodes1
               Nothing -> nodes1
+            roots' = Array.delete nid acc.roots
+            slot = liveInsertSlot ((accModel acc) { nodes = nodes2, roots = roots' }) winId Nothing ct.index
             -- attach into the chosen window at the browser position
-            nodes3 = case Map.lookup winId nodes2 of
-              Just w -> Map.insert winId (w { children = insertAtClamped ct.index nid (Array.delete nid w.children) }) nodes2
+            nodes3 = case Map.lookup slot.parent nodes2 of
+              Just p -> Map.insert slot.parent (p { children = insertAtClamped slot.index nid (Array.delete nid p.children) }) nodes2
               Nothing -> nodes2
-            touched' = Set.insert winId (maybe acc.touched (\pid -> Set.insert pid acc.touched) n.parent)
+            nodes4 = Map.insert nid ((rebind n) { parent = Just slot.parent }) nodes3
+            touched' = Set.insert slot.parent (Set.insert winId (maybe acc.touched (\pid -> Set.insert pid acc.touched) n.parent))
           in
             -- this window gained a tab moved in from another window: mark it ambiguous
             -- so an orphan here is not dropped (the moved-in tab might be that orphan
             -- reopened under a changed url that happened to match the other window's tab)
-            (consume nid nodes3 (Array.delete nid acc.roots) pool' touched')
+            (consume nid nodes4 roots' pool' touched')
               { windowsGainedTab = Set.insert winId acc.windowsGainedTab }
     Nothing -> freshTab now winId acc ct
   consume nid nodes roots pool' touched = acc
@@ -283,12 +300,17 @@ matchTab now winId acc ct = case sessionMatch of
 freshTab :: Number -> NodeId -> Acc -> RuntimeTab -> Acc
 freshTab now winId acc ct =
   let
+    model = accModel acc
+    preferredParent = ct.openerTabId >>= \openerTabId -> do
+      opener <- Map.lookup openerTabId acc.byTab
+      if owningGroupId model opener == Just winId then Just opener else Nothing
+    slot = liveInsertSlot model winId preferredParent ct.index
     nid = mkId acc.nextId
     n = (defaultNode nid KTab now)
-      { title = ct.title, url = ct.url, favIconUrl = ct.favIconUrl, active = ct.active, tabId = Just ct.tabId, parent = Just winId }
-    win = Map.lookup winId acc.nodes
-    nodes' = case win of
-      Just w -> Map.insert winId (w { children = insertAtClamped ct.index nid w.children }) (Map.insert nid n acc.nodes)
+      { title = ct.title, url = ct.url, favIconUrl = ct.favIconUrl, active = ct.active, tabId = Just ct.tabId, parent = Just slot.parent }
+    parent = Map.lookup slot.parent acc.nodes
+    nodes' = case parent of
+      Just p -> Map.insert slot.parent (p { children = insertAtClamped slot.index nid p.children }) (Map.insert nid n acc.nodes)
       Nothing -> Map.insert nid n acc.nodes
   in
     acc
@@ -305,7 +327,7 @@ freshTab now winId acc ct =
 popPoolFor :: NodeId -> String -> Acc -> Maybe (Tuple NodeId (Map String (List NodeId)))
 popPoolFor winId u acc = do
   lst <- Map.lookup u acc.pool
-  let ownedByWindow nid = (Map.lookup nid acc.nodes >>= _.parent) == Just winId
+  let ownedByWindow nid = owningGroupId (accModel acc) nid == Just winId
   case List.find ownedByWindow lst of
     Just nid -> pure (Tuple nid (Map.insert u (List.delete nid lst) acc.pool))
     Nothing -> do
@@ -324,7 +346,7 @@ closeInAcc now acc nid = case Map.lookup nid acc.nodes of
 -- window)? If so, the tab is orphaned in a still-open window; if not, its whole
 -- window is gone and the tab is preserved with it.
 windowReopened :: Acc -> Node -> Boolean
-windowReopened acc n = case n.parent of
+windowReopened acc n = case owningGroupId (accModel acc) n.id of
   Just pid -> Set.member pid acc.consumedWindows
   Nothing -> false
 

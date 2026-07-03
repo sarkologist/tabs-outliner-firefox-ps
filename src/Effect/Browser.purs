@@ -42,6 +42,7 @@ foreign import getBrowser :: Effect BrowserApi
 type RawTab =
   { tabId :: Int
   , windowId :: Int
+  , openerTabId :: Nullable Int
   , index :: Int
   , url :: Nullable String
   , title :: String
@@ -62,6 +63,7 @@ getAllWindows api = map (map cleanWindow) (toAffE (getAllWindowsImpl api))
   cleanTab t =
     { tabId: t.tabId
     , windowId: t.windowId
+    , openerTabId: toMaybe t.openerTabId
     , index: t.index
     , url: toMaybe t.url
     , title: t.title
@@ -81,6 +83,7 @@ getCurrentWindowId api = map toMaybe (toAffE (getCurrentWindowIdImpl api))
 type RawOpened =
   { tabId :: Int
   , windowId :: Int
+  , openerTabId :: Nullable Int
   , index :: Int
   , url :: Nullable String
   , title :: String
@@ -115,6 +118,7 @@ subscribe api handle = subscribeImpl api
       ( TabOpened
           { tabId: r.tabId
           , windowId: r.windowId
+          , openerTabId: toMaybe r.openerTabId
           , index: r.index
           , url: toMaybe r.url
           , title: r.title

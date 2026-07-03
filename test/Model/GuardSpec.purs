@@ -77,7 +77,7 @@ spec = describe "asymptotics guard (52k nodes)" do
 
   it "opening a tab touches only its window + the new node (2)" do
     let
-      ev = TabOpened { tabId: 7777777, windowId: midWin, index: 0, url: Just "http://new", title: "new", active: false, favIconUrl: Nothing }
+      ev = TabOpened { tabId: 7777777, windowId: midWin, openerTabId: Nothing, index: 0, url: Just "http://new", title: "new", active: false, favIconUrl: Nothing }
       p = (applyBrowser 0.0 ev big).patch
     Array.length p.upserts `shouldEqual` 2
 

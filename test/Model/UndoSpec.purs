@@ -16,7 +16,7 @@ import Test.Spec.Assertions (shouldEqual)
 
 openTab :: Int -> Int -> Int -> String -> Boolean -> BrowserEvent
 openTab tabId windowId index title active =
-  TabOpened { tabId, windowId, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
+  TabOpened { tabId, windowId, openerTabId: Nothing, index, url: Just ("http://" <> title), title, active, favIconUrl: Nothing }
 
 runEvents :: Array BrowserEvent -> Model
 runEvents = foldl (\m e -> (applyBrowser 0.0 e m).model) emptyModel

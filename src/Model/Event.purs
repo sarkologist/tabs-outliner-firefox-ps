@@ -7,6 +7,7 @@ import Data.Maybe (Maybe)
 type OpenedTab =
   { tabId :: Int
   , windowId :: Int
+  , openerTabId :: Maybe Int
   , index :: Int
   , url :: Maybe String
   , title :: String
