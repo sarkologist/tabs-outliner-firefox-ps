@@ -21,7 +21,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, mergePatch, pruneFrom, rootAncestor, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabChild, mergePatch, pruneFrom, rootAncestor, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, defaultNode, emptyPatch, isLiveTab)
 
 data Command
@@ -49,7 +49,7 @@ data Command
 -- | onAttached/onCreated events.
 data BrowserAction
   = FocusTab Int
-  | CreateTab (Maybe Int) (Maybe String)
+  | CreateTab (Maybe Int) (Maybe Int) (Maybe String)
   | CreateWindow (Array String)
   | MoveTabToWindow Int Int Int -- tabId, destination (live) windowId, index (-1 = append)
   | NewWindowWithTabs (Array Int) -- detach these tabs into one brand-new window
@@ -58,7 +58,7 @@ data BrowserAction
 derive instance eqBrowserAction :: Eq BrowserAction
 instance showBrowserAction :: Show BrowserAction where
   show (FocusTab t) = "FocusTab " <> show t
-  show (CreateTab w u) = "CreateTab " <> show w <> " " <> show u
+  show (CreateTab w i u) = "CreateTab " <> show w <> " " <> show i <> " " <> show u
   show (CreateWindow us) = "CreateWindow " <> show us
   show (MoveTabToWindow t w i) = "MoveTabToWindow " <> show t <> " " <> show w <> " " <> show i
   show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
@@ -297,8 +297,8 @@ applyCommandRaw now cmd model = case cmd of
       newWindows = map (\w -> { node: w, tabs: List.fromFoldable (map _.id (forWindow w)) }) newWinIds
 
       tabActions = Array.mapMaybe (\x -> case x.target of
-        IntoWindow wid -> Just (CreateTab (Just wid) (Just x.url))
-        IntoCurrent -> Just (CreateTab Nothing (Just x.url))
+        IntoWindow wid -> Just (CreateTab (Just wid) (restoreIndex wid x.id) (Just x.url))
+        IntoCurrent -> Just (CreateTab Nothing Nothing (Just x.url))
         IntoNewWindow _ -> Nothing) tagged
 
       -- queue each IntoWindow tab under its target window — a FIFO consumed as the
@@ -309,6 +309,22 @@ applyCommandRaw now cmd model = case cmd of
         IntoWindow wid -> Map.alter (\ml -> Just (maybe (List.singleton x.id) (\l -> List.snoc l x.id) ml)) wid m
         _ -> m
       pending' = foldl queueIntoWindow model.pendingRestore tagged
+
+      -- tabs.create's index is counted among live browser tabs. To keep restores
+      -- in saved tree order, count siblings before this node that are already live
+      -- plus siblings queued by this or an earlier not-yet-reconciled restore.
+      restoreIndex :: Int -> NodeId -> Maybe Int
+      restoreIndex wid id = do
+        n <- Map.lookup id model.nodes
+        pid <- n.parent
+        p <- Map.lookup pid model.nodes
+        let
+          queued = maybe [] Array.fromFoldable (Map.lookup wid model.pendingRestore)
+          restoring = Set.fromFoldable
+            (queued <> map _.id (Array.filter (\x -> x.target == IntoWindow wid) tagged))
+          before = Array.takeWhile (_ /= id) p.children
+          counts cid = liveTabChild model cid || Set.member cid restoring
+        pure (Array.length (Array.filter counts before))
 
       -- Mark every closed tab we are reopening so a later *browser* close keeps it as
       -- history (a restored tab belongs in the tree), whereas a freshly-opened tab is
@@ -348,10 +364,10 @@ applyCommandRaw now cmd model = case cmd of
     Just node
       -- reject a move into the node's own subtree (O(depth) upward walk)
       | mParent == Just nid || maybe false (\p -> isAncestorOrSelf nid p model) mParent -> noChange
-      -- a live tab changing its owning window (its immediate parent): drive the
-      -- real browser tab instead of editing the tree; the tree re-settles from the
-      -- resulting onAttached/onCreated events, so this emits no patch.
-      | isLiveTab node && mParent /= node.parent -> moveLiveTab node mParent index
+      -- a live tab move must drive the real browser tab, even within the same
+      -- window; the tree re-settles from tabs.onMoved/onAttached so live child
+      -- order stays the browser's tab order.
+      | isLiveTab node -> moveLiveTab node mParent index
       | otherwise ->
           let
             detached = detachUpserts node
@@ -381,11 +397,22 @@ applyCommandRaw now cmd model = case cmd of
   moveLiveTab :: Node -> Maybe NodeId -> Int -> CmdResult
   moveLiveTab node mParent index = case node.tabId of
     Nothing -> noChange -- unreachable under the isLiveTab guard; keeps this total
-    Just t -> case mParent >>= (\pid -> Map.lookup pid model.nodes) >>= _.windowId of
-      -- into an already-live window: move the tab there at the dropped position
-      Just w -> actionsOnly [ MoveTabToWindow t w index ]
+    Just t -> case mParent of
+      Just pid | Just parent <- Map.lookup pid model.nodes, Just w <- parent.windowId ->
+        -- UI moves are expressed as child-array slots; tabs.move expects a live-tab
+        -- slot. Remove the moving node first so same-window reorders use the
+        -- post-detach coordinates that the browser will see.
+        actionsOnly [ MoveTabToWindow t w (liveSlotAfterDetach node parent index) ]
       -- new-window cases (a plain container goes live, or out to the root)
-      Nothing -> let r = rehome model mParent [ t ] in { model: r.model, patch: emptyPatch, actions: r.actions }
+      _ -> let r = rehome model mParent [ t ] in { model: r.model, patch: emptyPatch, actions: r.actions }
+
+  liveSlotAfterDetach :: Node -> Node -> Int -> Int
+  liveSlotAfterDetach moving parent index =
+    let
+      base = if moving.parent == Just parent.id then Array.delete moving.id parent.children else parent.children
+      slot = clamp 0 (Array.length base) index
+    in
+      Array.length (Array.filter (liveTabChild model) (Array.take slot base))
 
   -- Browser action(s) to re-home live `tabIds` to container `mParent` (their new
   -- owning window): into an already-live window -> move each there; into a
@@ -419,8 +446,19 @@ applyCommandRaw now cmd model = case cmd of
             promote parentRef = Array.mapMaybe
               (\cid -> (\c -> c { parent = parentRef }) <$> Map.lookup cid model.nodes)
               kids
+            -- Flatten preserves the dissolved window's position in its parent.
+            -- If the parent is already a live browser window, move the real tabs
+            -- to that same live index instead of appending them.
+            rehomeFlatten m = case node.parent of
+              Just pid | Just p <- Map.lookup pid model.nodes, Just w <- p.windowId ->
+                let
+                  before = Array.takeWhile (_ /= nid) p.children
+                  baseIndex = Array.length (Array.filter (liveTabChild model) before)
+                in
+                  { model: m, actions: Array.mapWithIndex (\i t -> MoveTabToWindow t w (baseIndex + i)) kidTabIds }
+              _ -> rehome m node.parent kidTabIds
             withBrowser patch =
-              let br = rehome (applyPatch patch model) node.parent kidTabIds
+              let br = rehomeFlatten (applyPatch patch model)
               in { model: br.model, patch, actions: br.actions }
           in
             case node.parent of

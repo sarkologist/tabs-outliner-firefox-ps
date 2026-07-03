@@ -123,9 +123,10 @@ export const focusTabImpl = (api) => (tabId) => () =>
     )
   );
 
-export const createTabImpl = (api) => (windowId) => (url) => () => {
+export const createTabImpl = (api) => (windowId) => (index) => (url) => () => {
   const props = {};
   if (windowId !== null) props.windowId = windowId;
+  if (index !== null) props.index = index;
   if (url !== null) props.url = url;
   return Promise.resolve(api.tabs.create(props));
 };

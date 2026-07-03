@@ -2,16 +2,18 @@ module Test.Model.CommandSpec where
 
 import Prelude
 
+import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.List (List(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
+import Model.Codec (Snapshot)
 import Model.Command (BrowserAction(..), Command(..), applyCommand, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Tree (applyPatch)
-import Model.Types (Kind(..), Model, NodeId, defaultNode, emptyModel, isLive)
+import Model.Tree (applyPatch, insertAtClamped)
+import Model.Types (Kind(..), Model, NodeId, defaultNode, emptyModel, isLive, isLiveTab)
 import Test.QuickCheck ((===))
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -49,6 +51,483 @@ outlinerClose :: NodeId -> Int -> Model -> Model
 outlinerClose nid tabId m =
   let saved = (applyCommand 0.0 (CloseNode nid) m).model
   in (applyBrowser 0.0 (TabClosed { tabId }) saved).model
+
+restoreIds :: Array NodeId
+restoreIds = [ "a", "b", "c", "d" ]
+
+tabTitle :: NodeId -> String
+tabTitle = case _ of
+  "a" -> "A"
+  "b" -> "B"
+  "c" -> "C"
+  "d" -> "D"
+  other -> other
+
+savedGroupModel :: Model
+savedGroupModel =
+  (applyPatch
+    { upserts:
+        [ (defaultNode "g" KGroup 0.0) { title = "Saved", children = restoreIds }
+        , savedTab "a"
+        , savedTab "b"
+        , savedTab "c"
+        , savedTab "d"
+        ]
+    , removes: []
+    , roots: Just [ "g" ]
+    }
+    emptyModel
+  ) { nextId = 10 }
+  where
+  savedTab id =
+    let title = tabTitle id
+    in (defaultNode id KTab 0.0) { title = title, url = Just ("http://" <> title), parent = Just "g", closedAt = Just 0.0 }
+
+pmod :: Int -> Int -> Int
+pmod a b = if b <= 0 then 0 else ((a `mod` b) + b) `mod` b
+
+restoreOrder :: Array Int -> Array NodeId
+restoreOrder raw = go raw restoreIds []
+  where
+  go _ [] acc = acc
+  go choices remaining acc =
+    let
+      choice = case Array.uncons choices of
+        Just { head } -> head
+        Nothing -> 0
+      restChoices = case Array.uncons choices of
+        Just { tail } -> tail
+        Nothing -> []
+      id = fromMaybe "a" (Array.index remaining (pmod choice (Array.length remaining)))
+    in
+      go restChoices (Array.delete id remaining) (Array.snoc acc id)
+
+feedEvents :: Model -> Array BrowserEvent -> Model
+feedEvents = foldl (\m e -> (applyBrowser 0.0 e m).model)
+
+liveChildIds :: Model -> NodeId -> Array NodeId
+liveChildIds m parent =
+  let children = fromMaybe [] (_.children <$> Map.lookup parent m.nodes)
+  in Array.mapMaybe (\cid -> Map.lookup cid m.nodes >>= \n -> if isLive n && n.kind == KTab then Just cid else Nothing) children
+
+type RestoreSim =
+  { model :: Model
+  , browser :: Array NodeId
+  , nextTab :: Int
+  , windowId :: Maybe Int
+  }
+
+restoreOne :: RestoreSim -> NodeId -> RestoreSim
+restoreOne s nid =
+  let r = applyCommand 0.0 (Activate nid) s.model
+  in case Array.uncons r.actions of
+    Just { head: CreateWindow _, tail } | Array.null tail ->
+      let
+        wid = fromMaybe 50 s.windowId
+        tabId = s.nextTab
+        title = tabTitle nid
+        model' = feedEvents r.model
+          [ WindowOpened { windowId: wid }
+          , TabOpened { tabId, windowId: wid, index: 0, url: Just ("http://" <> title), title, active: true, favIconUrl: Nothing }
+          ]
+      in
+        { model: model', browser: [ nid ], nextTab: tabId + 1, windowId: Just wid }
+    Just { head: CreateTab (Just wid) index _, tail } | Array.null tail ->
+      let
+        tabId = s.nextTab
+        title = tabTitle nid
+        i = fromMaybe (Array.length s.browser) index
+        model' = feedEvents r.model
+          [ TabOpened { tabId, windowId: wid, index: i, url: Just ("http://" <> title), title, active: false, favIconUrl: Nothing } ]
+      in
+        { model: model', browser: insertAtClamped i nid s.browser, nextTab: tabId + 1, windowId: Just wid }
+    _ -> s { model = r.model }
+
+type SimTab =
+  { tabId :: Int
+  , windowId :: Int
+  , url :: Maybe String
+  , title :: String
+  , active :: Boolean
+  }
+
+type SimWindow = { windowId :: Int, tabs :: Array SimTab }
+
+type OrderCheck = { window :: Int, browser :: Array Int, model :: Array Int, history :: Array String }
+
+type ActionCheck = { label :: String, expected :: Array BrowserAction, actual :: Array BrowserAction, history :: Array String }
+
+type UserSim =
+  { model :: Model
+  , windows :: Array SimWindow
+  , events :: Array BrowserEvent
+  , activeWindow :: Maybe Int
+  , nextTab :: Int
+  , nextWindow :: Int
+  , failures :: Array OrderCheck
+  , actionFailures :: Array ActionCheck
+  , history :: Array String
+  }
+
+simTab :: Int -> Int -> String -> Boolean -> SimTab
+simTab tabId windowId title active =
+  { tabId, windowId, url: Just ("http://" <> title), title, active }
+
+userSimInit :: UserSim
+userSimInit =
+  { model: base2
+  , windows:
+      [ { windowId: 1, tabs: [ simTab 11 1 "A" true, simTab 12 1 "B" false ] }
+      , { windowId: 2, tabs: [ simTab 21 2 "C" true ] }
+      ]
+  , events: []
+  , activeWindow: Just 1
+  , nextTab: 100
+  , nextWindow: 50
+  , failures: []
+  , actionFailures: []
+  , history: []
+  }
+
+rawAt :: Array Int -> Int -> Int
+rawAt raw i = fromMaybe 0 (Array.index raw i)
+
+clampIndex :: Int -> Int -> Int
+clampIndex i len
+  | i < 0 = len
+  | i > len = len
+  | otherwise = i
+
+nodeIds :: Model -> Array NodeId
+nodeIds m = map _.id (Array.fromFoldable (Map.values m.nodes))
+
+groupIds :: Model -> Array NodeId
+groupIds m = Array.mapMaybe
+  (\n -> if n.kind == KGroup then Just n.id else Nothing)
+  (Array.fromFoldable (Map.values m.nodes))
+
+pickMaybe :: forall a. Array a -> Int -> Maybe a
+pickMaybe xs raw = Array.index xs (pmod raw (Array.length xs))
+
+childCount :: Maybe NodeId -> Model -> Int
+childCount parent m = case parent of
+  Nothing -> Array.length m.roots
+  Just pid -> fromMaybe 0 (Array.length <<< _.children <$> Map.lookup pid m.nodes)
+
+userIndex :: Maybe NodeId -> Model -> Int -> Int
+userIndex parent m raw = pmod raw (childCount parent m + 1)
+
+findWindowIn :: Int -> Array SimWindow -> Maybe SimWindow
+findWindowIn windowId = Array.find (\w -> w.windowId == windowId)
+
+replaceWindowIn :: SimWindow -> Array SimWindow -> Array SimWindow
+replaceWindowIn win wins =
+  if Array.any (\w -> w.windowId == win.windowId) wins then
+    map (\w -> if w.windowId == win.windowId then win else w) wins
+  else Array.snoc wins win
+
+findTabIn :: Int -> Array SimWindow -> Maybe { tab :: SimTab, window :: SimWindow }
+findTabIn tabId wins = Array.head (Array.mapMaybe inWindow wins)
+  where
+  inWindow w = map (\t -> { tab: t, window: w }) (Array.find (\t -> t.tabId == tabId) w.tabs)
+
+currentWindowId :: UserSim -> Maybe Int
+currentWindowId s = case s.activeWindow of
+  Just wid -> Just wid
+  Nothing -> map _.windowId (Array.head s.windows)
+
+ensureWindow :: Int -> UserSim -> { state :: UserSim, opened :: Boolean }
+ensureWindow windowId s = case findWindowIn windowId s.windows of
+  Just _ -> { state: s, opened: false }
+  Nothing ->
+    { state: s
+        { windows = Array.snoc s.windows { windowId, tabs: [] }
+        , nextWindow = max s.nextWindow (windowId + 1)
+        }
+    , opened: true
+    }
+
+insertTabInto :: Int -> SimTab -> SimWindow -> { window :: SimWindow, index :: Int }
+insertTabInto requested tab win =
+  let index = clampIndex requested (Array.length win.tabs)
+  in { window: win { tabs = insertAtClamped index tab win.tabs }, index }
+
+liveChild :: Model -> NodeId -> Boolean
+liveChild m cid = case Map.lookup cid m.nodes of
+  Just n -> isLiveTab n
+  Nothing -> false
+
+liveSlotAfterDetachIn :: Model -> NodeId -> NodeId -> Int -> Int
+liveSlotAfterDetachIn m movingId parentId index = case Map.lookup movingId m.nodes, Map.lookup parentId m.nodes of
+  Just moving, Just parent ->
+    let
+      children = if moving.parent == Just parent.id then Array.delete moving.id parent.children else parent.children
+      slot = clamp 0 (Array.length children) index
+    in
+      Array.length (Array.filter (liveChild m) (Array.take slot children))
+  _, _ -> index
+
+expectedMoveActions :: String -> NodeId -> Maybe NodeId -> Int -> Model -> Maybe { label :: String, actions :: Array BrowserAction }
+expectedMoveActions label nid mParent index m = case Map.lookup nid m.nodes, mParent of
+  Just node, Just pid | isLiveTab node -> case node.tabId, Map.lookup pid m.nodes of
+    Just tabId, Just parent | Just windowId <- parent.windowId ->
+      Just { label, actions: [ MoveTabToWindow tabId windowId (liveSlotAfterDetachIn m nid pid index) ] }
+    _, _ -> Nothing
+  _, _ -> Nothing
+
+expectedCommandActions :: Command -> Model -> Maybe { label :: String, actions :: Array BrowserAction }
+expectedCommandActions cmd m = case cmd of
+  Move nid parent index -> expectedMoveActions ("move " <> nid) nid parent index m
+  Drop dragId targetId
+    | dragId == targetId -> Nothing
+    | otherwise -> case Map.lookup targetId m.nodes of
+        Just target | target.kind == KGroup ->
+          expectedMoveActions ("drop " <> dragId <> " onto group " <> targetId) dragId (Just target.id) (Array.length target.children) m
+        Just target ->
+          let
+            siblings = case target.parent of
+              Just pid -> fromMaybe [] (_.children <$> Map.lookup pid m.nodes)
+              Nothing -> m.roots
+            shrunk = Array.delete dragId siblings
+            idx = fromMaybe (Array.length shrunk) (Array.elemIndex targetId shrunk)
+          in
+            expectedMoveActions ("drop " <> dragId <> " before " <> targetId) dragId target.parent idx m
+        Nothing -> Nothing
+  _ -> Nothing
+
+enqueueEvents :: Array BrowserEvent -> UserSim -> UserSim
+enqueueEvents evs s = s { events = s.events <> evs }
+
+moveBrowserTab :: Int -> Int -> Int -> UserSim -> UserSim
+moveBrowserTab tabId destWindow requested s = case findTabIn tabId s.windows of
+  Nothing -> s
+  Just found -> case findWindowIn destWindow s.windows of
+    Nothing -> s
+    Just _ ->
+      let
+        old = found.window
+        sameWindow = old.windowId == destWindow
+        oldWithout = old { tabs = Array.filter (\t -> t.tabId /= tabId) old.tabs }
+        removed = s { windows = replaceWindowIn oldWithout s.windows }
+        dest0 = fromMaybe { windowId: destWindow, tabs: [] } (findWindowIn destWindow removed.windows)
+        requested' = if requested < 0 then Array.length dest0.tabs else requested
+        inserted = insertTabInto requested' (found.tab { windowId = destWindow }) dest0
+        withDest = removed
+          { windows = replaceWindowIn inserted.window removed.windows
+          , activeWindow = Just destWindow
+          }
+        oldEmptied = (not sameWindow) && Array.null oldWithout.tabs
+        finalWindows =
+          if oldEmptied then Array.filter (\w -> w.windowId /= old.windowId) withDest.windows
+          else withDest.windows
+        moveEvent =
+          if sameWindow then TabMoved { tabId, windowId: destWindow, toIndex: inserted.index }
+          else TabAttached { tabId, windowId: destWindow, index: inserted.index }
+        closeEvents = if oldEmptied then [ WindowClosed { windowId: old.windowId } ] else []
+      in
+        enqueueEvents ([ moveEvent ] <> closeEvents) (withDest { windows = finalWindows })
+
+removeBrowserTab :: Int -> UserSim -> UserSim
+removeBrowserTab tabId s = case findTabIn tabId s.windows of
+  Nothing -> s
+  Just found ->
+    let
+      old = found.window
+      oldWithout = old { tabs = Array.filter (\t -> t.tabId /= tabId) old.tabs }
+      s' = s { windows = replaceWindowIn oldWithout s.windows }
+    in
+      enqueueEvents [ TabClosed { tabId } ] s'
+
+applyBrowserAction :: Int -> UserSim -> BrowserAction -> UserSim
+applyBrowserAction salt s = case _ of
+  FocusTab tabId -> case findTabIn tabId s.windows of
+    Nothing -> s
+    Just found ->
+      let
+        window' = found.window { tabs = map (\t -> t { active = t.tabId == tabId }) found.window.tabs }
+        s' = s { windows = replaceWindowIn window' s.windows, activeWindow = Just found.window.windowId }
+      in
+        enqueueEvents [ TabActivated { tabId, windowId: found.window.windowId } ] s'
+  CreateTab mWindow mIndex mUrl ->
+    case mWindow >>= \windowId -> if Array.any (\w -> w.windowId == windowId) s.windows then Nothing else Just windowId of
+      Just _ -> s
+      Nothing ->
+        let
+          windowId = fromMaybe (fromMaybe s.nextWindow (currentWindowId s)) mWindow
+          ensured = ensureWindow windowId s
+          win0 = fromMaybe { windowId, tabs: [] } (findWindowIn windowId ensured.state.windows)
+          tabId = ensured.state.nextTab
+          url = fromMaybe ("http://new" <> show tabId) mUrl
+          requested = fromMaybe (Array.length win0.tabs) mIndex
+          tab = { tabId, windowId, url: Just url, title: url, active: true }
+          inserted = insertTabInto requested tab win0
+          s' = ensured.state
+            { windows = replaceWindowIn inserted.window ensured.state.windows
+            , nextTab = tabId + 1
+            , activeWindow = Just windowId
+            }
+          openEvents = if ensured.opened then [ WindowOpened { windowId } ] else []
+        in
+          enqueueEvents
+            ( openEvents <>
+                [ TabOpened { tabId, windowId, index: inserted.index, url: Just url, title: url, active: true, favIconUrl: Nothing } ]
+            )
+            s'
+  CreateWindow urls ->
+    let
+      windowId = s.nextWindow
+      tabs = Array.mapWithIndex
+        (\i url -> { tabId: s.nextTab + i, windowId, url: Just url, title: url, active: i == 0 })
+        urls
+      tabEvents = Array.mapWithIndex
+        (\i url ->
+          TabOpened
+            { tabId: s.nextTab + i
+            , windowId
+            , index: i
+            , url: Just url
+            , title: url
+            , active: i == 0
+            , favIconUrl: Nothing
+            }
+        )
+        urls
+      s' = s
+        { windows = Array.snoc s.windows { windowId, tabs }
+        , nextWindow = windowId + 1
+        , nextTab = s.nextTab + Array.length urls
+        , activeWindow = Just windowId
+        }
+      events =
+        if pmod salt 2 == 0 then [ WindowOpened { windowId } ] <> tabEvents
+        else tabEvents <> [ WindowOpened { windowId } ]
+    in
+      enqueueEvents events s'
+  MoveTabToWindow tabId windowId index -> moveBrowserTab tabId windowId index s
+  NewWindowWithTabs tabIds -> case Array.uncons tabIds of
+    Nothing -> s
+    Just _ ->
+      let
+        windowId = s.nextWindow
+        s' = s
+          { windows = Array.snoc s.windows { windowId, tabs: [] }
+          , nextWindow = windowId + 1
+          , activeWindow = Just windowId
+          , events = s.events <> [ WindowOpened { windowId } ]
+          }
+      in
+        foldl (\acc tabId -> moveBrowserTab tabId windowId (-1) acc) s' tabIds
+  RemoveTab tabId -> removeBrowserTab tabId s
+
+applySimCommand :: Int -> Command -> UserSim -> UserSim
+applySimCommand salt cmd s =
+  let
+    expected = expectedCommandActions cmd s.model
+    r = applyCommand 0.0 cmd s.model
+    checked = case expected of
+      Just e | e.actions /= r.actions ->
+        s { actionFailures = Array.snoc s.actionFailures { label: e.label, expected: e.actions, actual: r.actions, history: s.history } }
+      _ -> s
+  in
+    foldl (applyBrowserAction salt) (checked { model = r.model }) r.actions
+
+flushOne :: UserSim -> UserSim
+flushOne s = case Array.uncons s.events of
+  Nothing -> s
+  Just { head, tail } -> s { model = (applyBrowser 0.0 head s.model).model, events = tail }
+
+flushAll :: UserSim -> UserSim
+flushAll s =
+  if Array.null s.events then settleCheck s
+  else flushAll (flushOne s)
+
+importSnapshot :: Int -> Snapshot
+importSnapshot raw =
+  let
+    suffix = show (pmod raw 1000)
+    gid = "ig" <> suffix
+    aid = "ia" <> suffix
+    bid = "ib" <> suffix
+  in
+    { nodes:
+        [ (defaultNode gid KGroup 0.0) { title = "Imported" <> suffix, children = [ aid, bid ] }
+        , (defaultNode aid KTab 0.0) { parent = Just gid, title = "IA" <> suffix, url = Just ("http://ia" <> suffix) }
+        , (defaultNode bid KTab 0.0) { parent = Just gid, title = "IB" <> suffix, url = Just ("http://ib" <> suffix) }
+        ]
+    , roots: [ gid ]
+    }
+
+browserTabOrder :: Int -> UserSim -> Array Int
+browserTabOrder windowId s = case findWindowIn windowId s.windows of
+  Nothing -> []
+  Just w -> map _.tabId w.tabs
+
+modelTabOrder :: Int -> Model -> Array Int
+modelTabOrder windowId m = case Map.lookup windowId m.byWindow >>= \nid -> Map.lookup nid m.nodes of
+  Nothing -> []
+  Just w -> Array.mapMaybe tabIdIfLive w.children
+  where
+  tabIdIfLive cid = Map.lookup cid m.nodes >>= \n -> if isLiveTab n then n.tabId else Nothing
+
+orderChecks :: UserSim -> Array OrderCheck
+orderChecks s =
+  let
+    browserWindows = map _.windowId s.windows
+    modelWindows = Array.fromFoldable (Map.keys s.model.byWindow)
+  in
+    map
+      (\window -> { window, browser: browserTabOrder window s, model: modelTabOrder window s.model, history: s.history })
+      (Array.nub (browserWindows <> modelWindows))
+
+orderMismatches :: UserSim -> Array OrderCheck
+orderMismatches s = Array.filter (\c -> c.browser /= c.model) (orderChecks s)
+
+settleCheck :: UserSim -> UserSim
+settleCheck s =
+  if Array.null s.events then s { failures = s.failures <> orderMismatches s }
+  else s
+
+simUserStep :: UserSim -> Array Int -> UserSim
+simUserStep s raw =
+  let
+    op = pmod (rawAt raw 0) 14
+    -- Non-activate commands are generated from settled UI/model states. Activate
+    -- may run while create/restore events are still queued, which is the race that
+    -- originally let restored tabs compute stale insertion indexes.
+    effectiveOp = if not (Array.null s.events) && op /= 0 && op /= 1 && op /= 13 then 0 else op
+    stepped = case effectiveOp of
+      0 -> flushOne s
+      1 -> onNode Activate
+      2 -> onNode CloseNode
+      3 -> onNode Delete
+      4 ->
+        let parents = [ Nothing ] <> map Just (groupIds s.model)
+        in case pickMaybe (nodeIds s.model) (rawAt raw 1) of
+          Nothing -> s
+          Just nid ->
+            let parent = fromMaybe Nothing (pickMaybe parents (rawAt raw 2))
+            in applySimCommand salt (Move nid parent (userIndex parent s.model (rawAt raw 3))) s
+      5 -> case pickMaybe (nodeIds s.model) (rawAt raw 1), pickMaybe (nodeIds s.model) (rawAt raw 2) of
+        Just dragId, Just targetId -> applySimCommand salt (Drop dragId targetId) s
+        _, _ -> s
+      6 -> onNode MoveTopLevel
+      7 -> onNode MoveBottom
+      8 -> onNode Flatten
+      9 ->
+        let parents = [ Nothing ] <> map Just (groupIds s.model)
+            parent = fromMaybe Nothing (pickMaybe parents (rawAt raw 1))
+        in applySimCommand salt (NewGroup parent (userIndex parent s.model (rawAt raw 2))) s
+      10 -> onNode (\nid -> Rename nid ("R" <> show (pmod (rawAt raw 2) 1000)))
+      11 -> onNode (\nid -> Collapse nid (pmod (rawAt raw 2) 2 == 0))
+      12 -> applySimCommand salt (Import (importSnapshot (rawAt raw 1))) s
+      _ -> flushAll s
+  in
+    settleCheck (stepped { history = Array.snoc s.history (show effectiveOp <> ":" <> show (Array.take 4 raw)) })
+  where
+  salt = rawAt raw 5
+  onNode f = case pickMaybe (nodeIds s.model) (rawAt raw 1) of
+    Nothing -> s
+    Just nid -> applySimCommand salt (f nid) s
 
 spec :: Spec Unit
 spec = describe "Model.Command" do
@@ -123,7 +602,7 @@ spec = describe "Model.Command" do
         emptyModel
       r = applyCommand 0.0 (Flatten "W") m
     Map.lookup "W" r.model.nodes `shouldEqual` Nothing -- inner window dissolved
-    r.actions `shouldEqual` [ MoveTabToWindow 11 2 (-1), MoveTabToWindow 12 2 (-1) ] -- merged (appended) into the outer window
+    r.actions `shouldEqual` [ MoveTabToWindow 11 2 1, MoveTabToWindow 12 2 2 ] -- merged at W's old slot in the outer window
 
   it "closing a window drops its window binding but leaves nested groups untouched" do
     let
@@ -160,11 +639,19 @@ spec = describe "Model.Command" do
       activated = applyCommand 0.0 (Activate "n2") closed
       reopened = (applyBrowser 0.0 (openTab 99 1 0 "A" true) activated.model).model
     -- the window is still live, so the tab reopens back into it (not a new window)
-    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just "http://A") ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 0) (Just "http://A") ]
     -- same node id, now live and bound to the new tab; no extra node created
     (isLive <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just true
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
     Map.size reopened.nodes `shouldEqual` 2
+
+  it "restoring into a live window counts earlier pending siblings" do
+    let
+      closedBoth = outlinerClose "n3" 12 (outlinerClose "n2" 11 base)
+      withPending = closedBoth { pendingRestore = Map.insert 1 (Cons "n2" Nil) closedBoth.pendingRestore }
+      activated = applyCommand 0.0 (Activate "n3") withPending
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://B") ]
+    Map.lookup 1 activated.model.pendingRestore `shouldEqual` Just (Cons "n2" (Cons "n3" Nil))
 
   it "restoring rebinds the clicked node even when the recreated tab reports a different url" do
     let
@@ -366,6 +853,29 @@ spec = describe "Model.Command" do
             , nodeCount: 6
             }
 
+  it "property: one-by-one saved-group restores create tabs at saved live indices" $
+    quickCheck \(raw :: Array Int) ->
+      let
+        order = restoreOrder raw
+        restored = foldl restoreOne
+          { model: savedGroupModel, browser: [], nextTab: 100, windowId: Nothing }
+          order
+      in
+        { browser: restored.browser
+        , model: liveChildIds restored.model "g"
+        }
+          ===
+            { browser: restoreIds
+            , model: restoreIds
+            }
+
+  it "property: user command sequences preserve live tab order through browser actions" $
+    quickCheck \(raw :: Array (Array Int)) ->
+      let
+        final = flushAll (foldl simUserStep (settleCheck userSimInit) (Array.take 50 raw))
+      in
+        { order: final.failures, actions: final.actionFailures } === { order: [], actions: [] }
+
   -- The close rule: a browser-closed tab keeps its place as closed history ONLY if
   -- it was restored from history (it belongs in the tree) or the outliner itself
   -- closed it ("save & close"); a freshly-opened tab the user just closes is dropped,
@@ -464,10 +974,30 @@ spec = describe "Model.Command" do
       r.model.pendingRestoreWindows `shouldEqual` [] -- a fresh window node appears via onCreated
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
 
-    it "within its own window: stays a tree-only reorder (no browser action)" do
+    it "within its own window: moves the real browser tab" do
       let r = applyCommand 0.0 (Move "n3" (Just "n1") 0) base2
-      r.actions `shouldEqual` []
-      (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n3", "n2" ]
+      r.actions `shouldEqual` [ MoveTabToWindow 12 1 0 ]
+      (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n2", "n3" ]
+      let moved = (applyBrowser 0.0 (TabMoved { tabId: 12, windowId: 1, toIndex: 0 }) r.model).model
+      (_.children <$> Map.lookup "n1" moved.nodes) `shouldEqual` Just [ "n3", "n2" ]
+
+    it "drop before a live tab skips interleaved closed rows when choosing the browser index" do
+      let
+        closed = (defaultNode "nx" KTab 0.0) { parent = Just "n1", url = Just "http://x", title = "X", closedAt = Just 0.0 }
+        m = case Map.lookup "n1" base.nodes of
+          Just w ->
+            applyPatch
+              { upserts: [ w { children = [ "nx", "n2", "n3" ] }, closed ]
+              , removes: []
+              , roots: Nothing
+              }
+              base
+          Nothing -> base
+        r = applyCommand 0.0 (Drop "n3" "n2") m
+      r.actions `shouldEqual` [ MoveTabToWindow 12 1 0 ]
+      (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "nx", "n2", "n3" ]
+      let moved = (applyBrowser 0.0 (TabMoved { tabId: 12, windowId: 1, toIndex: 0 }) r.model).model
+      (_.children <$> Map.lookup "n1" moved.nodes) `shouldEqual` Just [ "nx", "n3", "n2" ]
 
   -- "Move to top level" pulls a nested node out to the root just after the root it
   -- belongs to; "Move to bottom" sends it to the very end. A non-live node moves

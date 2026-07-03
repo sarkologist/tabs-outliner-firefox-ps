@@ -157,7 +157,7 @@ test.describe("commands", () => {
     const kept = windows.find((w: any) => w.id === 1);
     expect(kept.tabs.map((t: any) => t.url)).toEqual(["http://keep"]);
     const restored = windows.find((w: any) => w.id !== 1);
-    expect(restored.tabs.map((t: any) => t.url).sort()).toEqual(["http://a", "http://b"]);
+    expect(restored.tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b"]);
   });
 
   test("drag reorders siblings", async ({ page }) => {
@@ -166,6 +166,8 @@ test.describe("commands", () => {
     expect(await titles(page)).toEqual(["Window", "Alpha", "Beta"]);
     await page.getByText("Beta").dragTo(page.getByText("Alpha"));
     await expect.poll(() => titles(page)).toEqual(["Window", "Beta", "Alpha"]);
+    const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+    expect(windows[0].tabs.map((t: any) => t.url)).toEqual(["http://b", "http://a"]);
   });
 
   test("shows a drop preview that tracks the landing spot and clears on drop", async ({ page }) => {

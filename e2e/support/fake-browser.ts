@@ -166,7 +166,7 @@ export function installFakeBrowser(seed: Seed) {
       create: (props: any) => {
         const id = ++tabSeq;
         const reportedUrl = seed?.redirectCreatedTabs && props.url ? props.url + "?redirected" : props.url;
-        driver.openTab({ id, windowId: props.windowId ?? firstWindowId(), url: reportedUrl, title: props.url ?? "", active: true });
+        driver.openTab({ id, windowId: props.windowId ?? firstWindowId(), index: props.index, url: reportedUrl, title: props.url ?? "", active: true });
         return Promise.resolve(tabInfo(tabs.get(id)));
       },
       remove: (id: number) => {
