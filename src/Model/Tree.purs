@@ -89,7 +89,20 @@ liveTabPreorder model root = Array.fromFoldable (go root Nil)
       in if n.kind == KTab && isLiveTab n then Cons id tail else tail
 
 liveTabCount :: Model -> NodeId -> Int
-liveTabCount model root = Array.length (liveTabPreorder model root)
+liveTabCount model root = liveTabCountInWindow model root root
+
+-- | Count live tabs in `root` as seen from `windowRoot`'s runtime tab strip.
+-- | A descendant live group belongs to its own browser window, so it contributes
+-- | zero tabs to the ancestor window.
+liveTabCountInWindow :: Model -> NodeId -> NodeId -> Int
+liveTabCountInWindow model windowRoot root = go root
+  where
+  go id = case Map.lookup id model.nodes of
+    Nothing -> 0
+    Just n | id /= windowRoot && n.kind == KGroup && n.windowId /= Nothing -> 0
+    Just n ->
+      let self = if n.kind == KTab && isLiveTab n then 1 else 0
+      in self + foldl (\count cid -> count + go cid) 0 n.children
 
 liveTabPreorderIndex :: Model -> NodeId -> NodeId -> Maybe Int
 liveTabPreorderIndex model root id = Array.elemIndex id (liveTabPreorder model root)
@@ -156,14 +169,6 @@ liveInsertSlot model windowRoot preferredParent liveIdx =
   isNestedLiveGroup :: NodeId -> Node -> Boolean
   isNestedLiveGroup id n = id /= windowRoot && n.kind == KGroup && n.windowId /= Nothing
 
-  runtimeLiveCount :: NodeId -> Int
-  runtimeLiveCount id = case Map.lookup id model.nodes of
-    Nothing -> 0
-    Just n | isNestedLiveGroup id n -> 0
-    Just n ->
-      let self = if n.kind == KTab && isLiveTab n then 1 else 0
-      in self + foldl (\count cid -> count + runtimeLiveCount cid) 0 n.children
-
   slotLiveIndex :: NodeId -> NodeId -> Int -> Maybe Int
   slotLiveIndex root parentId slot = go 0 root
     where
@@ -180,10 +185,10 @@ liveInsertSlot model windowRoot preferredParent liveIdx =
       Nothing -> Nothing
       Just { head, tail } -> case go acc head of
         Just idx -> Just idx
-        Nothing -> goChildren (acc + runtimeLiveCount head) tail
+        Nothing -> goChildren (acc + liveTabCountInWindow model windowRoot head) tail
 
   liveBefore slot children =
-    foldl (\n cid -> n + runtimeLiveCount cid)
+    foldl (\n cid -> n + liveTabCountInWindow model windowRoot cid)
       0
       (Array.take (clamp 0 (Array.length children) slot) children)
 

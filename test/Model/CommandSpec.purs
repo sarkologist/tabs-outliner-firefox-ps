@@ -12,7 +12,7 @@ import Model.Codec (Snapshot)
 import Model.Command (BrowserAction(..), Command(..), applyCommand, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Tree (applyPatch, insertAtClamped, liveTabCount, liveTabPreorder, liveWindowNode)
+import Model.Tree (applyPatch, insertAtClamped, liveTabCountInWindow, liveTabPreorder, liveWindowNode)
 import Model.Types (Kind(..), Model, NodeId, defaultNode, emptyModel, isLive, isLiveTab)
 import Test.QuickCheck ((===))
 import Test.Spec (Spec, describe, it)
@@ -257,7 +257,7 @@ liveSlotAfterDetachIn m movingId parentId index = case Map.lookup movingId m.nod
       children = if moving.parent == Just parent.id then Array.delete moving.id parent.children else parent.children
       slot = clamp 0 (Array.length children) index
     in
-      foldl (\n cid -> n + liveTabCount m cid) 0 (Array.take slot children)
+      foldl (\n cid -> n + liveTabCountInWindow m parent.id cid) 0 (Array.take slot children)
   _, _ -> index
 
 expectedMoveActions :: String -> NodeId -> Maybe NodeId -> Int -> Model -> Maybe { label :: String, actions :: Array BrowserAction }
@@ -738,6 +738,24 @@ spec = describe "Model.Command" do
         emptyModel
       activated = applyCommand 0.0 (Activate "n3") m0
     activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://b") ]
+
+  it "restoring into an outer live window ignores nested live-window tabs in the browser index" do
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "W" KGroup 0.0) { windowId = Just 1, title = "Outer", children = [ "A", "NW", "C", "B" ] }
+            , (defaultNode "A" KTab 0.0) { parent = Just "W", tabId = Just 11, url = Just "http://a", title = "A" }
+            , (defaultNode "NW" KGroup 0.0) { parent = Just "W", windowId = Just 2, title = "Inner", children = [ "X" ] }
+            , (defaultNode "X" KTab 0.0) { parent = Just "NW", tabId = Just 21, url = Just "http://x", title = "X" }
+            , (defaultNode "C" KTab 0.0) { parent = Just "W", tabId = Just 12, url = Just "http://c", title = "C" }
+            , (defaultNode "B" KTab 0.0) { parent = Just "W", url = Just "http://b", title = "B" }
+            ]
+        , removes: []
+        , roots: Just [ "W" ]
+        }
+        emptyModel
+      activated = applyCommand 0.0 (Activate "B") m0
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 2) (Just "http://b") ]
 
   -- The unification: a saved GROUP restores exactly like a saved window — its
   -- owning group goes live in place. Tab nesting is skipped when choosing that

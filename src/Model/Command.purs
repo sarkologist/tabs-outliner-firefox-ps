@@ -13,7 +13,7 @@ import Data.Argonaut.Encode (encodeJson)
 import Data.Array as Array
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
-import Data.Foldable (foldl)
+import Data.Foldable (foldl, foldr)
 import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
@@ -21,7 +21,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabCount, liveWindowNode, mergePatch, nearestGroupAncestor, pruneFrom, rootAncestor, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabCountInWindow, liveWindowNode, mergePatch, nearestGroupAncestor, pruneFrom, rootAncestor, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, defaultNode, emptyPatch, isLiveTab)
 
 data Command
@@ -334,9 +334,13 @@ applyCommandRaw now cmd model = case cmd of
           restoring = Set.fromFoldable
             (queued <> map _.id (Array.filter (\x -> x.target == IntoWindow wid) ready))
           counts n = isLiveTab n || Set.member n.id restoring
-          ordered = Array.mapMaybe
-            (\cid -> Map.lookup cid model.nodes >>= \n -> if n.kind == KTab && counts n then Just cid else Nothing)
-            (subtreeIds w.id model)
+          ordered = Array.fromFoldable (go w.id Nil)
+          go cid rest = case Map.lookup cid model.nodes of
+            Nothing -> rest
+            Just n | cid /= w.id && n.kind == KGroup && n.windowId /= Nothing -> rest
+            Just n ->
+              let tail = foldr go rest n.children
+              in if n.kind == KTab && counts n then Cons cid tail else tail
         Array.elemIndex id ordered
 
       -- Mark every closed tab we are reopening so a later *browser* close keeps it as
@@ -425,7 +429,7 @@ applyCommandRaw now cmd model = case cmd of
       base = if moving.parent == Just parent.id then Array.delete moving.id parent.children else parent.children
       slot = clamp 0 (Array.length base) index
     in
-      foldl (\n cid -> n + liveTabCount model cid) 0 (Array.take slot base)
+      foldl (\n cid -> n + liveTabCountInWindow model parent.id cid) 0 (Array.take slot base)
 
   -- Browser action(s) to re-home live `tabIds` to container `mParent` (their new
   -- owning window): into an already-live window -> move each there; into a
@@ -466,7 +470,7 @@ applyCommandRaw now cmd model = case cmd of
               Just pid | Just p <- Map.lookup pid model.nodes, Just w <- p.windowId ->
                 let
                   before = Array.takeWhile (_ /= nid) p.children
-                  baseIndex = foldl (\n cid -> n + liveTabCount model cid) 0 before
+                  baseIndex = foldl (\n cid -> n + liveTabCountInWindow model p.id cid) 0 before
                 in
                   { model: m, actions: Array.mapWithIndex (\i t -> MoveTabToWindow t w (baseIndex + i)) kidTabIds }
               _ -> rehome m node.parent kidTabIds
