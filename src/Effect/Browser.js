@@ -9,6 +9,13 @@ const BACKUP_ALARM = "tabs-outliner-automatic-backup";
 const BACKUP_ENABLED_KEY = "tabsOutlinerAutomaticBackupsEnabled";
 const BACKUP_LAST_SUCCESS_KEY = "tabsOutlinerAutomaticBackupLastSuccessfulAt";
 const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const SIDEBAR_PATH = "sidebar/sidebar.html";
+const FULL_SIZE_SIDEBAR_PATH = `${SIDEBAR_PATH}?view=window`;
+
+const outlinerPopupWindowIds = new Set();
+const pendingOutlinerPopupWindowIds = new Set();
+const fullSizePopupFocusRecency = [];
+let outlinerPopupCreationDepth = 0;
 
 // Key under which we stash a tab's outliner node id via browser.sessions. The
 // value survives a browser restart for any tab Firefox session-restores, giving
@@ -23,10 +30,56 @@ const getTabKey = (api, tabId) => {
   return Promise.resolve(s.getTabValue(tabId, NODE_KEY)).then((v) => v ?? null, () => null);
 };
 
+const extensionUrl = (api, path) => {
+  const rt = api && api.runtime;
+  return rt && typeof rt.getURL === "function" ? rt.getURL(path) : `moz-extension://extension-id/${path}`;
+};
+
+const isOutlinerSidebarUrl = (api, url) =>
+  typeof url === "string" && url.startsWith(extensionUrl(api, SIDEBAR_PATH));
+
+const isOutlinerWindow = (api, win) =>
+  (win?.tabs ?? []).some((tab) => isOutlinerSidebarUrl(api, tab.url));
+
+const noteFullSizePopup = (windowId) => {
+  if (typeof windowId !== "number") return;
+  outlinerPopupWindowIds.add(windowId);
+  pendingOutlinerPopupWindowIds.delete(windowId);
+  const i = fullSizePopupFocusRecency.indexOf(windowId);
+  if (i >= 0) fullSizePopupFocusRecency.splice(i, 1);
+  fullSizePopupFocusRecency.push(windowId);
+};
+
+const forgetFullSizePopup = (windowId) => {
+  outlinerPopupWindowIds.delete(windowId);
+  pendingOutlinerPopupWindowIds.delete(windowId);
+  const i = fullSizePopupFocusRecency.indexOf(windowId);
+  if (i >= 0) fullSizePopupFocusRecency.splice(i, 1);
+};
+
+const isKnownOrPendingOutlinerWindow = (windowId) =>
+  outlinerPopupWindowIds.has(windowId) || pendingOutlinerPopupWindowIds.has(windowId);
+
+const shouldIgnoreTab = (api, tab) => {
+  if (!tab) return false;
+  if (isKnownOrPendingOutlinerWindow(tab.windowId)) return true;
+  if (isOutlinerSidebarUrl(api, tab.url)) {
+    noteFullSizePopup(tab.windowId);
+    return true;
+  }
+  return false;
+};
+
 export const getAllWindowsImpl = (api) => () =>
   Promise.resolve(api.windows.getAll({ populate: true })).then((wins) =>
     Promise.all(
-      wins.map((w) =>
+      wins.filter((w) => {
+        if (isOutlinerWindow(api, w)) {
+          noteFullSizePopup(w.id);
+          return false;
+        }
+        return !isKnownOrPendingOutlinerWindow(w.id);
+      }).map((w) =>
         Promise.all(
           (w.tabs ?? []).map((t) =>
             getTabKey(api, t.id).then((nodeKey) => ({
@@ -67,7 +120,8 @@ export const getCurrentWindowIdImpl = (api) => () => {
 export const subscribeImpl = (api) => (sink) => () => {
   const t = api.tabs;
   const w = api.windows;
-  t.onCreated.addListener((tab) =>
+  t.onCreated.addListener((tab) => {
+    if (shouldIgnoreTab(api, tab)) return;
     sink.tabOpened({
       tabId: tab.id,
       windowId: tab.windowId,
@@ -77,26 +131,33 @@ export const subscribeImpl = (api) => (sink) => () => {
       title: tab.title ?? "",
       active: !!tab.active,
       favIconUrl: tab.favIconUrl ?? null,
-    })()
-  );
-  t.onRemoved.addListener((tabId) => sink.tabClosed(tabId)());
-  t.onUpdated.addListener((tabId, change, tab) =>
+    })();
+  });
+  t.onRemoved.addListener((tabId, info) => {
+    if (info && isKnownOrPendingOutlinerWindow(info.windowId)) return;
+    sink.tabClosed(tabId)();
+  });
+  t.onUpdated.addListener((tabId, change, tab) => {
+    if (shouldIgnoreTab(api, tab) || isOutlinerSidebarUrl(api, change.url)) return;
     sink.tabChanged({
       tabId,
       url: change.url ?? null,
       title: change.title ?? (tab && tab.title) ?? null,
       favIconUrl: change.favIconUrl ?? null,
-    })()
-  );
-  t.onActivated.addListener((info) =>
+    })();
+  });
+  t.onActivated.addListener((info) => {
+    if (isKnownOrPendingOutlinerWindow(info.windowId)) return;
     sink.tabActivated({ tabId: info.tabId, windowId: info.windowId })()
-  );
-  t.onMoved.addListener((tabId, info) =>
+  });
+  t.onMoved.addListener((tabId, info) => {
+    if (isKnownOrPendingOutlinerWindow(info.windowId)) return;
     sink.tabMoved({ tabId, windowId: info.windowId, toIndex: info.toIndex })()
-  );
-  t.onAttached.addListener((tabId, info) =>
+  });
+  t.onAttached.addListener((tabId, info) => {
+    if (isKnownOrPendingOutlinerWindow(info.newWindowId)) return;
     sink.tabAttached({ tabId, windowId: info.newWindowId, index: info.newPosition })()
-  );
+  });
   // Dragging a tab OUT to a brand-new window (tab tear-off) is not reliably
   // reported by onAttached in Firefox — the new window can be born already
   // holding the tab, with no onCreated/onAttached to observe — so onAttached
@@ -106,16 +167,37 @@ export const subscribeImpl = (api) => (sink) => () => {
   // For an ordinary window-to-window move (which does fire onAttached) this is a
   // harmless idempotent re-home; a tab that vanished (detach then close) get()s
   // nothing, so we leave it for onRemoved.
-  t.onDetached?.addListener((tabId) =>
+  t.onDetached?.addListener((tabId, info) => {
+    if (info && isKnownOrPendingOutlinerWindow(info.oldWindowId)) return;
     // Two-arg then: swallow only a tabs.get rejection (the tab was closed right
     // after detaching — onRemoved handles it), not a throw from the handler, which
     // should surface like every other listener's does.
     Promise.resolve(api.tabs.get(tabId)).then((tab) => {
-      if (tab) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
-    }, () => {})
-  );
-  w.onCreated.addListener((win) => sink.windowOpened(win.id)());
-  w.onRemoved.addListener((winId) => sink.windowClosed(winId)());
+      if (tab && !shouldIgnoreTab(api, tab)) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
+    }, () => {});
+  });
+  w.onCreated.addListener((win) => {
+    if (outlinerPopupCreationDepth > 0 && win.type !== "normal") {
+      pendingOutlinerPopupWindowIds.add(win.id);
+      return;
+    }
+    if (isKnownOrPendingOutlinerWindow(win.id)) return;
+    if (win.type === "popup") {
+      openFullSizeSidebarWindows(api).then((open) => {
+        if (open.some((w) => w.windowId === win.id)) return;
+        if (!isKnownOrPendingOutlinerWindow(win.id)) sink.windowOpened(win.id)();
+      });
+      return;
+    }
+    sink.windowOpened(win.id)();
+  });
+  w.onRemoved.addListener((winId) => {
+    if (isKnownOrPendingOutlinerWindow(winId)) {
+      forgetFullSizePopup(winId);
+      return;
+    }
+    sink.windowClosed(winId)();
+  });
 };
 
 export const focusTabImpl = (api) => (tabId) => () =>
@@ -153,6 +235,69 @@ export const newWindowWithTabsImpl = (api) => (tabIds) => () => {
 
 export const removeTabImpl = (api) => (tabId) => () =>
   Promise.resolve(api.tabs.remove(tabId));
+
+const openFullSizeSidebarWindows = (api) =>
+  Promise.resolve(api.windows.getAll({ populate: true, windowTypes: ["popup"] }))
+    .catch(() => [])
+    .then((wins) =>
+      wins
+        .filter((w) => isOutlinerWindow(api, w))
+        .map((w) => {
+          noteFullSizePopup(w.id);
+          return { windowId: w.id, focused: !!w.focused };
+        })
+    );
+
+const pickFullSizePopup = (open) => {
+  const openIds = new Set(open.map((w) => w.windowId));
+  for (let i = fullSizePopupFocusRecency.length - 1; i >= 0; i--) {
+    const windowId = fullSizePopupFocusRecency[i];
+    if (openIds.has(windowId)) return windowId;
+  }
+  const focused = open.find((w) => w.focused);
+  if (focused) return focused.windowId;
+  const ids = open.map((w) => w.windowId);
+  return ids.length ? Math.max(...ids) : null;
+};
+
+const createFullSizeOutliner = (api) => {
+  outlinerPopupCreationDepth++;
+  return Promise.resolve(
+    api.windows.create({
+      url: extensionUrl(api, FULL_SIZE_SIDEBAR_PATH),
+      type: "popup",
+      state: "maximized",
+      focused: true,
+    })
+  ).then(
+    (win) => {
+      noteFullSizePopup(win && win.id);
+      return undefined;
+    },
+    (err) => {
+      throw err;
+    }
+  ).finally(() => {
+    outlinerPopupCreationDepth = Math.max(0, outlinerPopupCreationDepth - 1);
+  });
+};
+
+export const openFullSizeOutlinerImpl = (api) => (sourceWindowId) => () =>
+  openFullSizeSidebarWindows(api).then((open) => {
+    const clickedFromFullSize =
+      sourceWindowId !== null && open.some((w) => w.windowId === sourceWindowId);
+    const target = clickedFromFullSize ? null : pickFullSizePopup(open);
+    if (target === null) return createFullSizeOutliner(api);
+    return Promise.resolve(api.windows.update(target, { focused: true })).then(
+      () => {
+        noteFullSizePopup(target);
+      },
+      () => {
+        forgetFullSizePopup(target);
+        return createFullSizeOutliner(api);
+      }
+    );
+  });
 
 export const getAutomaticBackupsEnabledImpl = (api) => () => {
   const local = api && api.storage && api.storage.local;

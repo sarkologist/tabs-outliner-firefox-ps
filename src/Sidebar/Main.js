@@ -114,3 +114,11 @@ export const openOptions = () => {
     browser.runtime.openOptionsPage();
   }
 };
+
+export const isFullSizeView = () => {
+  try {
+    return new URLSearchParams(globalThis.location?.search || "").get("view") === "window";
+  } catch (_) {
+    return false;
+  }
+};

@@ -60,6 +60,7 @@ foreign import scrollTreeTo :: Number -> Effect Unit
 foreign import onResize :: Effect Unit -> Effect Unit
 foreign import focusSearch :: Effect Unit
 foreign import openOptions :: Effect Unit
+foreign import isFullSizeView :: Effect Boolean
 
 -- height of one row in px at zoom 1 (matches the original's compact 18px).
 baseRowHeight :: Number
@@ -97,6 +98,7 @@ type State =
   , listener :: Maybe (HS.Listener Action)
   , myWindow :: Maybe Int
   , focusObserved :: Maybe Int -- last revealed focus index, so we follow focus without re-scrolling
+  , fullSizeView :: Boolean -- detached popup mode (?view=window), which never chases active tabs
   , profiling :: Boolean
   , bootProfiled :: Boolean -- the open profile is recorded once, on the first window load
   , opened :: Boolean -- false until the first live window loads; while false we land at the bottom
@@ -132,6 +134,7 @@ data Action
   | ImportLoaded String
   | ClearNotice
   | OpenOptions
+  | OpenFullSizeOutlinerClick
   | RunUndo
   | RunRedo
   | RunShortcut Sh.Cmd
@@ -142,7 +145,7 @@ component = H.mkComponent
       { api: Nothing, total: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
       , dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
       , viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing
-      , profiling: false, bootProfiled: false, opened: false
+      , fullSizeView: false, profiling: false, bootProfiled: false, opened: false
       }
   , render
   , eval: H.mkEval H.defaultEval { initialize = Just Initialize, handleAction = handleAction }
@@ -159,6 +162,7 @@ handleAction = case _ of
     api <- H.liftEffect getBrowser
     H.liftEffect allowDrops
     H.liftEffect keepFocused
+    fullSize <- H.liftEffect isFullSizeView
     z <- H.liftEffect getZoom
     { emitter, listener } <- H.liftEffect HS.create
     H.modify_ _ { api = Just api, zoom = clampZoom z, listener = Just listener }
@@ -176,7 +180,7 @@ handleAction = case _ of
     h <- H.liftEffect treeViewportHeight
     win <- H.liftAff (getCurrentWindowId api)
     tSetup <- H.liftEffect Profile.nowMs
-    H.modify_ _ { viewportH = h, myWindow = win, profiling = prof }
+    H.modify_ _ { viewportH = h, myWindow = win, fullSizeView = fullSize, profiling = prof }
     when prof $ H.liftEffect do
       Profile.record "boot.bootstrap" t0 -- doc load -> Initialize (bundle eval + Halogen)
       Profile.record "boot.setup" (tSetup - t0) -- subscribe / measure / window id
@@ -184,17 +188,20 @@ handleAction = case _ of
     -- fresh open against a suspended background otherwise waits for it to wake +
     -- reload the whole model (~½s on a big tree); this shows content immediately,
     -- then requestView swaps in the live window (and reveals the active tab).
-    cached <- H.liftEffect BootCache.load
-    case jsonParser cached >>= decodeView of
-      Right v -> do
-        let sb = max 0.0 (Int.toNumber v.total * (baseRowHeight * clampZoom z) - h)
-        H.modify_ _ { total = v.total, rows = v.rows, scrollTop = sb }
-        H.liftEffect (scrollTreeTo sb)
-        when prof (H.liftEffect (Profile.nowMs >>= Profile.record "boot.cached"))
-      Left _ -> pure unit
-    requestView true
+    unless fullSize do
+      cached <- H.liftEffect BootCache.load
+      case jsonParser cached >>= decodeView of
+        Right v -> do
+          let sb = max 0.0 (Int.toNumber v.total * (baseRowHeight * clampZoom z) - h)
+          H.modify_ _ { total = v.total, rows = v.rows, scrollTop = sb }
+          H.liftEffect (scrollTreeTo sb)
+          when prof (H.liftEffect (Profile.nowMs >>= Profile.record "boot.cached"))
+        Left _ -> pure unit
+    requestView (not fullSize)
 
-  Invalidate -> requestView true
+  Invalidate -> do
+    st <- H.get
+    requestView (not st.fullSizeView)
   Remeasure -> do
     h <- H.liftEffect treeViewportHeight
     H.modify_ _ { viewportH = h }
@@ -279,6 +286,9 @@ handleAction = case _ of
     Left msg -> H.modify_ _ { notice = Just msg }
   ClearNotice -> H.modify_ _ { notice = Nothing }
   OpenOptions -> H.liftEffect openOptions
+  OpenFullSizeOutlinerClick -> do
+    st <- H.get
+    sendRequest (OpenFullSizeOutliner st.myWindow)
   RunUndo -> sendRequest Undo
   RunRedo -> sendRequest Redo
   RunShortcut cmd -> case cmd of
@@ -318,9 +328,9 @@ attemptView reveal n = do
         -- land at the bottom on the first load (new windows / live nodes are there);
         -- after that the window simply follows the scroll position. Never while
         -- searching — results read top-down, so a query starts at the top.
-        tail = reveal && not st.opened && st.query == ""
+        tail = reveal && not st.fullSizeView && not st.opened && st.query == ""
         start = max 0 (Int.floor (st.scrollTop / rowH) - overscan)
-        vr = { start, count, query: st.query, myWindow: st.myWindow, wantFocus: reveal && st.query == "", tail }
+        vr = { start, count, query: st.query, myWindow: st.myWindow, wantFocus: reveal && not st.fullSizeView && st.query == "", tail }
       tReq <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
       resp <- H.liftAff (attempt (request api (encodeRequest (GetView vr))))
       tFetch <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
@@ -336,7 +346,7 @@ attemptView reveal n = do
               H.modify_ _ { scrollTop = sb }
               H.liftEffect (scrollTreeTo sb)
             -- cache the bottom window so the next (possibly cold) open paints it instantly
-            when (actualStart + count >= v.total && st.query == "") (H.liftEffect (BootCache.save (stringify json)))
+            when (not st.fullSizeView && actualStart + count >= v.total && st.query == "") (H.liftEffect (BootCache.save (stringify json)))
             when (reveal && st.query == "") (maybeReveal v.focusIndex)
             -- record the open profile once, when the FIRST window actually loads
             -- (which on a cold/suspended background is after it has woken + loaded,
@@ -411,6 +421,7 @@ render st =
           , iconBtn "new-group" "New group" "group" NewGroupTop
           , iconBtn "export" "Export" "export" ExportClick
           , iconBtn "import" "Import" "import" ImportClick
+          , iconBtn "open-full-size" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick
           , iconBtn "options" "Options" "gear" OpenOptions
           ]
       ]
