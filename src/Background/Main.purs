@@ -267,6 +267,9 @@ main = launchAff_ do
     Right Export -> do
       m <- liftEffect (Ref.read ref)
       pure (encodeSnapshot m)
+    Right (OpenFullSizeOutliner sourceWindowId) -> do
+      Browser.openFullSizeOutliner api sourceWindowId
+      pure ackJson
     Right GetAutomaticBackups -> do
       enabled <- Browser.getAutomaticBackupsEnabled api
       pure (encodeJson { enabled })

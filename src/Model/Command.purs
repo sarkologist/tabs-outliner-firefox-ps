@@ -512,7 +512,15 @@ restoreTargetOf model nid = case nearestGroupAncestor model nid of
 -- since new windows land at the bottom — that's where the live nodes are).
 type ViewReq = { start :: Int, count :: Int, query :: String, myWindow :: Maybe Int, wantFocus :: Boolean, tail :: Boolean }
 
-data Request = GetView ViewReq | RunCommand Command | Undo | Redo | Export | GetAutomaticBackups | SetAutomaticBackups Boolean
+data Request
+  = GetView ViewReq
+  | RunCommand Command
+  | Undo
+  | Redo
+  | Export
+  | OpenFullSizeOutliner (Maybe Int)
+  | GetAutomaticBackups
+  | SetAutomaticBackups Boolean
 
 encodeRequest :: Request -> Json
 encodeRequest (GetView r) = encodeJson
@@ -521,6 +529,7 @@ encodeRequest (RunCommand c) = encodeJson { tag: "command", body: encodeCommand 
 encodeRequest Undo = encodeJson { tag: "undo" }
 encodeRequest Redo = encodeJson { tag: "redo" }
 encodeRequest Export = encodeJson { tag: "export" }
+encodeRequest (OpenFullSizeOutliner sourceWindowId) = encodeJson { tag: "openFullSizeOutliner", sourceWindowId }
 encodeRequest GetAutomaticBackups = encodeJson { tag: "getAutomaticBackups" }
 encodeRequest (SetAutomaticBackups enabled) = encodeJson { tag: "setAutomaticBackups", enabled }
 
@@ -535,6 +544,7 @@ decodeRequest json = do
     "undo" -> Right Undo
     "redo" -> Right Redo
     "export" -> Right Export
+    "openFullSizeOutliner" -> (\r -> OpenFullSizeOutliner r.sourceWindowId) <$> (dec json :: Either String { sourceWindowId :: Maybe Int })
     "getAutomaticBackups" -> Right GetAutomaticBackups
     "setAutomaticBackups" -> (\r -> SetAutomaticBackups r.enabled) <$> (dec json :: Either String { enabled :: Boolean })
     other -> Left ("unknown request: " <> other)
