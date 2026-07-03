@@ -397,11 +397,22 @@ applyCommandRaw now cmd model = case cmd of
   moveLiveTab :: Node -> Maybe NodeId -> Int -> CmdResult
   moveLiveTab node mParent index = case node.tabId of
     Nothing -> noChange -- unreachable under the isLiveTab guard; keeps this total
-    Just t -> case mParent >>= (\pid -> Map.lookup pid model.nodes) >>= _.windowId of
-      -- into an already-live window: move the tab there at the dropped position
-      Just w -> actionsOnly [ MoveTabToWindow t w index ]
+    Just t -> case mParent of
+      Just pid | Just parent <- Map.lookup pid model.nodes, Just w <- parent.windowId ->
+        -- UI moves are expressed as child-array slots; tabs.move expects a live-tab
+        -- slot. Remove the moving node first so same-window reorders use the
+        -- post-detach coordinates that the browser will see.
+        actionsOnly [ MoveTabToWindow t w (liveSlotAfterDetach node parent index) ]
       -- new-window cases (a plain container goes live, or out to the root)
-      Nothing -> let r = rehome model mParent [ t ] in { model: r.model, patch: emptyPatch, actions: r.actions }
+      _ -> let r = rehome model mParent [ t ] in { model: r.model, patch: emptyPatch, actions: r.actions }
+
+  liveSlotAfterDetach :: Node -> Node -> Int -> Int
+  liveSlotAfterDetach moving parent index =
+    let
+      base = if moving.parent == Just parent.id then Array.delete moving.id parent.children else parent.children
+      slot = clamp 0 (Array.length base) index
+    in
+      Array.length (Array.filter (liveTabChild model) (Array.take slot base))
 
   -- Browser action(s) to re-home live `tabIds` to container `mParent` (their new
   -- owning window): into an already-live window -> move each there; into a

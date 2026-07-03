@@ -155,6 +155,8 @@ type SimWindow = { windowId :: Int, tabs :: Array SimTab }
 
 type OrderCheck = { window :: Int, browser :: Array Int, model :: Array Int, history :: Array String }
 
+type ActionCheck = { label :: String, expected :: Array BrowserAction, actual :: Array BrowserAction, history :: Array String }
+
 type UserSim =
   { model :: Model
   , windows :: Array SimWindow
@@ -163,6 +165,7 @@ type UserSim =
   , nextTab :: Int
   , nextWindow :: Int
   , failures :: Array OrderCheck
+  , actionFailures :: Array ActionCheck
   , history :: Array String
   }
 
@@ -182,6 +185,7 @@ userSimInit =
   , nextTab: 100
   , nextWindow: 50
   , failures: []
+  , actionFailures: []
   , history: []
   }
 
@@ -247,6 +251,49 @@ insertTabInto :: Int -> SimTab -> SimWindow -> { window :: SimWindow, index :: I
 insertTabInto requested tab win =
   let index = clampIndex requested (Array.length win.tabs)
   in { window: win { tabs = insertAtClamped index tab win.tabs }, index }
+
+liveChild :: Model -> NodeId -> Boolean
+liveChild m cid = case Map.lookup cid m.nodes of
+  Just n -> isLiveTab n
+  Nothing -> false
+
+liveSlotAfterDetachIn :: Model -> NodeId -> NodeId -> Int -> Int
+liveSlotAfterDetachIn m movingId parentId index = case Map.lookup movingId m.nodes, Map.lookup parentId m.nodes of
+  Just moving, Just parent ->
+    let
+      children = if moving.parent == Just parent.id then Array.delete moving.id parent.children else parent.children
+      slot = clamp 0 (Array.length children) index
+    in
+      Array.length (Array.filter (liveChild m) (Array.take slot children))
+  _, _ -> index
+
+expectedMoveActions :: String -> NodeId -> Maybe NodeId -> Int -> Model -> Maybe { label :: String, actions :: Array BrowserAction }
+expectedMoveActions label nid mParent index m = case Map.lookup nid m.nodes, mParent of
+  Just node, Just pid | isLiveTab node -> case node.tabId, Map.lookup pid m.nodes of
+    Just tabId, Just parent | Just windowId <- parent.windowId ->
+      Just { label, actions: [ MoveTabToWindow tabId windowId (liveSlotAfterDetachIn m nid pid index) ] }
+    _, _ -> Nothing
+  _, _ -> Nothing
+
+expectedCommandActions :: Command -> Model -> Maybe { label :: String, actions :: Array BrowserAction }
+expectedCommandActions cmd m = case cmd of
+  Move nid parent index -> expectedMoveActions ("move " <> nid) nid parent index m
+  Drop dragId targetId
+    | dragId == targetId -> Nothing
+    | otherwise -> case Map.lookup targetId m.nodes of
+        Just target | target.kind == KGroup ->
+          expectedMoveActions ("drop " <> dragId <> " onto group " <> targetId) dragId (Just target.id) (Array.length target.children) m
+        Just target ->
+          let
+            siblings = case target.parent of
+              Just pid -> fromMaybe [] (_.children <$> Map.lookup pid m.nodes)
+              Nothing -> m.roots
+            shrunk = Array.delete dragId siblings
+            idx = fromMaybe (Array.length shrunk) (Array.elemIndex targetId shrunk)
+          in
+            expectedMoveActions ("drop " <> dragId <> " before " <> targetId) dragId target.parent idx m
+        Nothing -> Nothing
+  _ -> Nothing
 
 enqueueEvents :: Array BrowserEvent -> UserSim -> UserSim
 enqueueEvents evs s = s { events = s.events <> evs }
@@ -374,8 +421,15 @@ applyBrowserAction salt s = case _ of
 
 applySimCommand :: Int -> Command -> UserSim -> UserSim
 applySimCommand salt cmd s =
-  let r = applyCommand 0.0 cmd s.model
-  in foldl (applyBrowserAction salt) (s { model = r.model }) r.actions
+  let
+    expected = expectedCommandActions cmd s.model
+    r = applyCommand 0.0 cmd s.model
+    checked = case expected of
+      Just e | e.actions /= r.actions ->
+        s { actionFailures = Array.snoc s.actionFailures { label: e.label, expected: e.actions, actual: r.actions, history: s.history } }
+      _ -> s
+  in
+    foldl (applyBrowserAction salt) (checked { model = r.model }) r.actions
 
 flushOne :: UserSim -> UserSim
 flushOne s = case Array.uncons s.events of
@@ -820,7 +874,7 @@ spec = describe "Model.Command" do
       let
         final = flushAll (foldl simUserStep (settleCheck userSimInit) (Array.take 50 raw))
       in
-        final.failures === []
+        { order: final.failures, actions: final.actionFailures } === { order: [], actions: [] }
 
   -- The close rule: a browser-closed tab keeps its place as closed history ONLY if
   -- it was restored from history (it belongs in the tree) or the outliner itself
@@ -926,6 +980,24 @@ spec = describe "Model.Command" do
       (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n2", "n3" ]
       let moved = (applyBrowser 0.0 (TabMoved { tabId: 12, windowId: 1, toIndex: 0 }) r.model).model
       (_.children <$> Map.lookup "n1" moved.nodes) `shouldEqual` Just [ "n3", "n2" ]
+
+    it "drop before a live tab skips interleaved closed rows when choosing the browser index" do
+      let
+        closed = (defaultNode "nx" KTab 0.0) { parent = Just "n1", url = Just "http://x", title = "X", closedAt = Just 0.0 }
+        m = case Map.lookup "n1" base.nodes of
+          Just w ->
+            applyPatch
+              { upserts: [ w { children = [ "nx", "n2", "n3" ] }, closed ]
+              , removes: []
+              , roots: Nothing
+              }
+              base
+          Nothing -> base
+        r = applyCommand 0.0 (Drop "n3" "n2") m
+      r.actions `shouldEqual` [ MoveTabToWindow 12 1 0 ]
+      (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "nx", "n2", "n3" ]
+      let moved = (applyBrowser 0.0 (TabMoved { tabId: 12, windowId: 1, toIndex: 0 }) r.model).model
+      (_.children <$> Map.lookup "n1" moved.nodes) `shouldEqual` Just [ "nx", "n3", "n2" ]
 
   -- "Move to top level" pulls a nested node out to the root just after the root it
   -- belongs to; "Move to bottom" sends it to the very end. A non-live node moves
