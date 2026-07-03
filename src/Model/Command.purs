@@ -364,10 +364,10 @@ applyCommandRaw now cmd model = case cmd of
     Just node
       -- reject a move into the node's own subtree (O(depth) upward walk)
       | mParent == Just nid || maybe false (\p -> isAncestorOrSelf nid p model) mParent -> noChange
-      -- a live tab changing its owning window (its immediate parent): drive the
-      -- real browser tab instead of editing the tree; the tree re-settles from the
-      -- resulting onAttached/onCreated events, so this emits no patch.
-      | isLiveTab node && mParent /= node.parent -> moveLiveTab node mParent index
+      -- a live tab move must drive the real browser tab, even within the same
+      -- window; the tree re-settles from tabs.onMoved/onAttached so live child
+      -- order stays the browser's tab order.
+      | isLiveTab node -> moveLiveTab node mParent index
       | otherwise ->
           let
             detached = detachUpserts node
@@ -435,8 +435,19 @@ applyCommandRaw now cmd model = case cmd of
             promote parentRef = Array.mapMaybe
               (\cid -> (\c -> c { parent = parentRef }) <$> Map.lookup cid model.nodes)
               kids
+            -- Flatten preserves the dissolved window's position in its parent.
+            -- If the parent is already a live browser window, move the real tabs
+            -- to that same live index instead of appending them.
+            rehomeFlatten m = case node.parent of
+              Just pid | Just p <- Map.lookup pid model.nodes, Just w <- p.windowId ->
+                let
+                  before = Array.takeWhile (_ /= nid) p.children
+                  baseIndex = Array.length (Array.filter (liveTabChild model) before)
+                in
+                  { model: m, actions: Array.mapWithIndex (\i t -> MoveTabToWindow t w (baseIndex + i)) kidTabIds }
+              _ -> rehome m node.parent kidTabIds
             withBrowser patch =
-              let br = rehome (applyPatch patch model) node.parent kidTabIds
+              let br = rehomeFlatten (applyPatch patch model)
               in { model: br.model, patch, actions: br.actions }
           in
             case node.parent of

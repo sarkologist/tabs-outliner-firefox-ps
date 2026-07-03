@@ -166,6 +166,8 @@ test.describe("commands", () => {
     expect(await titles(page)).toEqual(["Window", "Alpha", "Beta"]);
     await page.getByText("Beta").dragTo(page.getByText("Alpha"));
     await expect.poll(() => titles(page)).toEqual(["Window", "Beta", "Alpha"]);
+    const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+    expect(windows[0].tabs.map((t: any) => t.url)).toEqual(["http://b", "http://a"]);
   });
 
   test("shows a drop preview that tracks the landing spot and clears on drop", async ({ page }) => {
