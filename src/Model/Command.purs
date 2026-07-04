@@ -568,7 +568,26 @@ decodeRequest :: Json -> Either String Request
 decodeRequest json = do
   { tag } <- dec json :: Either String { tag :: String }
   case tag of
-    "getView" -> GetView <$> (dec json :: Either String ViewReq)
+    "getView" -> case (dec json :: Either String ViewReq) of
+      Right r -> Right (GetView r)
+      Left _ -> do
+        r <- dec json :: Either String
+          { start :: Int
+          , count :: Int
+          , query :: String
+          , myWindow :: Maybe Int
+          , wantFocus :: Boolean
+          , tail :: Boolean
+          }
+        Right (GetView
+          { start: r.start
+          , count: r.count
+          , query: r.query
+          , myWindow: r.myWindow
+          , wantFocus: r.wantFocus
+          , tail: r.tail
+          , targetNodeId: Nothing
+          })
     "command" -> do
       { body } <- dec json :: Either String { body :: Json }
       RunCommand <$> decodeCommand body
