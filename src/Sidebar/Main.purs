@@ -418,21 +418,24 @@ searchActive q = normalizeSearchQuery q /= ""
 toolbarStatus :: State -> String
 toolbarStatus st =
   if searchActive st.query then
-    show st.matchTotal <> " " <> plural st.matchTotal "match" <> " / " <> base
+    show st.matchTotal <> " / " <> base
   else base
   where
-  base = show st.nodeTotal <> " " <> plural st.nodeTotal "node" <> " / " <> show st.openTabTotal <> " open"
+  base = show st.nodeTotal <> " / " <> show st.openTabTotal
 
 toolbarStatusTitle :: State -> String
 toolbarStatusTitle st =
   if searchActive st.query then
-    show st.matchTotal <> " direct search " <> plural st.matchTotal "match" <> ", " <> base
+    show st.matchTotal <> " direct search " <> plural st.matchTotal "match" <> " / " <> base
   else base
   where
-  base = show st.nodeTotal <> " total " <> plural st.nodeTotal "node" <> ", " <> show st.openTabTotal <> " open " <> plural st.openTabTotal "tab"
+  base = show st.nodeTotal <> " " <> plural st.nodeTotal "node" <> " / " <> show st.openTabTotal <> " open"
 
 plural :: Int -> String -> String
-plural n word = if n == 1 then word else word <> "s"
+plural n word
+  | n == 1 = word
+  | word == "match" = "matches"
+  | otherwise = word <> "s"
 
 maybeReveal :: forall o. Int -> H.HalogenM State Action () o Aff Unit
 maybeReveal fi = do

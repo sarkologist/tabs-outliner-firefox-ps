@@ -189,13 +189,20 @@ test.describe("toolbar", () => {
     await expect.poll(() => scale().then(Number)).toBeLessThan(1);
   });
 
-  test("shows node and open-tab counts, with direct match count during search", async ({ page }) => {
+  test("shows compact counts, with full tooltip text", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await expect(page.locator("#toolbar-status")).toHaveText("3 nodes / 2 open");
+    await expect(page.locator("#toolbar-status")).toHaveText("3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "3 nodes / 2 open");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("aria-label", "3 nodes / 2 open");
 
     await page.locator("#search").fill("Alpha");
-    await expect(page.locator("#toolbar-status")).toHaveText("1 match / 3 nodes / 2 open");
+    await expect(page.locator("#toolbar-status")).toHaveText("1 / 3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "1 direct search match / 3 nodes / 2 open");
     await expect(page.locator("[role=treeitem]")).toHaveCount(2); // window ancestor + direct match
+
+    await page.locator("#search").fill("a");
+    await expect(page.locator("#toolbar-status")).toHaveText("2 / 3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "2 direct search matches / 3 nodes / 2 open");
   });
 
   test("shows all toolbar actions inline at wide widths", async ({ page }) => {
