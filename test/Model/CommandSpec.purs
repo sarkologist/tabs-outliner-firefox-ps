@@ -528,6 +528,23 @@ spec = describe "Model.Command" do
   it "collapse sets the flag" do
     (_.collapsed <$> Map.lookup "n1" (run (Collapse "n1" true) base).nodes) `shouldEqual` Just true
 
+  it "expandAncestors opens every collapsed ancestor and ignores missing nodes" do
+    let
+      nested = applyPatch
+        { upserts:
+            [ (defaultNode "A" KGroup 0.0) { children = [ "B" ], collapsed = true }
+            , (defaultNode "B" KGroup 0.0) { parent = Just "A", children = [ "C" ], collapsed = true }
+            , (defaultNode "C" KTab 0.0) { parent = Just "B" }
+            ]
+        , removes: []
+        , roots: Just [ "A" ]
+        }
+        emptyModel
+      expanded = run (ExpandAncestors "C") nested
+    (_.collapsed <$> Map.lookup "A" expanded.nodes) `shouldEqual` Just false
+    (_.collapsed <$> Map.lookup "B" expanded.nodes) `shouldEqual` Just false
+    run (ExpandAncestors "missing") nested `shouldEqual` nested
+
   it "rename sets a custom title" do
     (_.customTitle <$> Map.lookup "n2" (run (Rename "n2" "X") base).nodes) `shouldEqual` Just (Just "X")
 

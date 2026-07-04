@@ -8,6 +8,7 @@ module Model.View
   , OrderEntry
   , computeOrder
   , sliceView
+  , startForView
   , focusIndexOf
   , encodeView
   , decodeView
@@ -28,6 +29,7 @@ import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Model.Codec (kindStr, parseKind)
+import Model.Search (matchesSearch, normalizeSearchQuery)
 import Model.Scroll (activeTabInWindow)
 import Model.Tree (Entry, searchVisible, visible)
 import Model.Types (Kind, Model, NodeId, displayTitle, isLive)
@@ -50,6 +52,7 @@ type ViewRow =
   , collapsed :: Boolean
   , hasChildren :: Boolean
   , isLastRoot :: Boolean
+  , isSearchMatch :: Boolean
   }
 
 -- `serverMs` is the background's own compute time for this window (0 unless
@@ -60,7 +63,8 @@ type View = { total :: Int, rows :: Array ViewRow, focusIndex :: Int, serverMs :
 -- | `visible`/`searchVisible` are reused as-is; `withSubtreeEnds` is one O(N) pass.
 computeOrder :: String -> Model -> Array OrderEntry
 computeOrder query model =
-  withSubtreeEnds (if query == "" then visible model else searchVisible query model)
+  let q = normalizeSearchQuery query
+  in withSubtreeEnds (if q == "" then visible model else searchVisible q model)
 
 -- subtreeEnd[i] = first j>i whose depth <= depth[i] (else n). One left-to-right
 -- pass over a depth-monotone stack: arriving at depth d closes every still-open
@@ -85,8 +89,8 @@ withSubtreeEnds entries =
       }
 
 -- | Project the rows in window `[start, start+count)` of an already-computed order.
-sliceView :: Model -> Array OrderEntry -> Int -> Int -> Array ViewRow
-sliceView model order start count =
+sliceView :: Model -> String -> Array OrderEntry -> Int -> Int -> Array ViewRow
+sliceView model query order start count =
   let
     total = Array.length order
     -- clamp to the last legal window, so a start past a shrunk order (collapse/
@@ -95,10 +99,23 @@ sliceView model order start count =
     lastRoot = Array.last model.roots
     window = Array.slice s (s + count) order
   in
-    Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model lastRoot (s + off) oe) window)
+    Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model query lastRoot (s + off) oe) window)
 
-toRow :: Model -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
-toRow model lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
+-- | Resolve the start row for a view request. A target-centered request wins
+-- | over the caller's scroll start when the target exists in the current order.
+startForView :: Int -> Int -> Maybe NodeId -> Array OrderEntry -> Int
+startForView requested count targetNodeId order =
+  let
+    total = Array.length order
+    maxStart = max 0 (total - count)
+    centered i = i - div count 2
+  in
+    case targetNodeId >>= \target -> Array.findIndex (\o -> o.id == target) order of
+      Just i -> clamp 0 maxStart (centered i)
+      Nothing -> clamp 0 maxStart requested
+
+toRow :: Model -> String -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
+toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   { id: n.id
   , index: i
   , depth: oe.depth
@@ -110,6 +127,7 @@ toRow model lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   , collapsed: n.collapsed
   , hasChildren: not (Array.null n.children)
   , isLastRoot: Just n.id == lastRoot
+  , isSearchMatch: matchesSearch query n
   }
 
 -- | Flat index of this window's active tab in the order, or -1. O(order), so the
@@ -133,20 +151,21 @@ type RowWire =
   , collapsed :: Boolean
   , hasChildren :: Boolean
   , isLastRoot :: Boolean
+  , isSearchMatch :: Maybe Boolean
   }
 
 rowToWire :: ViewRow -> RowWire
 rowToWire r =
   { id: r.id, index: r.index, depth: r.depth, subtreeEnd: r.subtreeEnd, kind: kindStr r.kind
   , title: r.title, live: r.live, active: r.active, collapsed: r.collapsed
-  , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot
+  , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot, isSearchMatch: if r.isSearchMatch then Just true else Nothing
   }
 
 rowFromWire :: RowWire -> ViewRow
 rowFromWire r =
   { id: r.id, index: r.index, depth: r.depth, subtreeEnd: r.subtreeEnd, kind: parseKind r.kind
   , title: r.title, live: r.live, active: r.active, collapsed: r.collapsed
-  , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot
+  , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot, isSearchMatch: r.isSearchMatch == Just true
   }
 
 encodeView :: View -> Json

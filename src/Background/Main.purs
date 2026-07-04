@@ -35,7 +35,7 @@ import Model.Rematch (rematchOnStartup)
 import Model.Tree (mergePatch)
 import Model.Types (Patch)
 import Model.Undo (applyEntry, inversePatch, undoable)
-import Model.View (OrderEntry, computeOrder, encodeView, focusIndexOf, sliceView)
+import Model.View (OrderEntry, computeOrder, encodeView, focusIndexOf, sliceView, startForView)
 
 nowMs :: Effect Number
 nowMs = (unwrap <<< unInstant) <$> now
@@ -237,11 +237,11 @@ main = launchAff_ do
         total = Array.length order
         -- `tail` (the open default) asks for the last window without the sidebar
         -- needing to know `total` first.
-        start = if vr.tail then max 0 (total - vr.count) else vr.start
+        start = if vr.tail then max 0 (total - vr.count) else startForView vr.start vr.count vr.targetNodeId order
         focusIndex = case vr.myWindow of
           Just w | vr.wantFocus -> focusIndexOf w order m
           _ -> -1
-        rows = sliceView m order start vr.count
+        rows = sliceView m vr.query order start vr.count
       ts1 <- liftEffect Profile.nowMs
       pure (encodeView { total, rows, focusIndex, serverMs: ts1 - ts0 })
     Right (RunCommand cmd) -> do

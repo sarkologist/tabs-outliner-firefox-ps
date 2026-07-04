@@ -12,8 +12,8 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isNothing, maybe)
 import Data.Set (Set)
 import Data.Set as Set
-import Data.String as String
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, displayTitle, emptyPatch, isLive, isLiveTab)
+import Model.Search (matchesSearch, normalizeSearchQuery)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, emptyPatch, isLive, isLiveTab)
 
 -- | Apply a patch to a model: upsert nodes, delete removed ones, update roots,
 -- | and keep the live indexes current. Shared by the background (authority) and
@@ -326,17 +326,10 @@ ancestorClosure ids model = foldl (\s id -> goUp s (Just id)) Set.empty ids
 searchIds :: String -> Model -> Array NodeId
 searchIds query model =
   let
-    q = String.toLower query
-    match n =
-      String.contains (String.Pattern q) (String.toLower (displayTitle n))
-        || maybe' false (\u -> String.contains (String.Pattern q) (String.toLower u)) n.url
+    q = normalizeSearchQuery query
   in
-    Array.mapMaybe (\n -> if match n then Just n.id else Nothing)
+    Array.mapMaybe (\n -> if matchesSearch q n then Just n.id else Nothing)
       (Array.fromFoldable (Map.values model.nodes))
-  where
-  maybe' d f = case _ of
-    Nothing -> d
-    Just x -> f x
 
 -- Array helpers --------------------------------------------------------------
 
