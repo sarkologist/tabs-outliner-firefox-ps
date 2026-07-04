@@ -91,6 +91,7 @@ type State =
   , dragSpan :: Maybe { index :: Int, subtreeEnd :: Int } -- dragged node's visible span, for the cycle-safe preview
   , dropTarget :: Maybe NodeId
   , hover :: Maybe NodeId
+  , showInTreeFlash :: Maybe NodeId
   , query :: String
   , zoom :: Number
   , notice :: Maybe String
@@ -147,7 +148,7 @@ component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { api: Nothing, total: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
-      , dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
+      , dropTarget: Nothing, hover: Nothing, showInTreeFlash: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
       , viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing
       , fullSizeView: false, profiling: false, bootProfiled: false, opened: false
       }
@@ -259,7 +260,7 @@ handleAction = case _ of
     H.modify_ _ { dragId = Nothing, dragSpan = Nothing, dropTarget = Nothing }
 
   SetQuery q -> do
-    H.modify_ _ { query = q, scrollTop = 0.0, focusObserved = Nothing }
+    H.modify_ _ { query = q, scrollTop = 0.0, focusObserved = Nothing, showInTreeFlash = Nothing }
     H.liftEffect (scrollTreeTo 0.0)
     requestView false
   SearchKey k
@@ -268,12 +269,12 @@ handleAction = case _ of
   ClearSearch keepFocus -> do
     st <- H.get
     when (st.query /= "") do
-      H.modify_ _ { query = "", scrollTop = 0.0, focusObserved = Nothing }
+      H.modify_ _ { query = "", scrollTop = 0.0, focusObserved = Nothing, showInTreeFlash = Nothing }
       H.liftEffect (scrollTreeTo 0.0)
       requestView false
     when keepFocus (H.liftEffect focusSearch)
   ShowInTreeClick nid -> do
-    H.modify_ _ { query = "", scrollTop = 0.0, focusObserved = Nothing }
+    H.modify_ _ { query = "", scrollTop = 0.0, focusObserved = Nothing, showInTreeFlash = Nothing }
     H.liftEffect (scrollTreeTo 0.0)
     sendCommand (ExpandAncestors nid)
     requestViewTarget nid
@@ -403,8 +404,18 @@ maybeReveal fi = do
 
 maybeRevealTarget :: forall o. NodeId -> Array ViewRow -> H.HalogenM State Action () o Aff Unit
 maybeRevealTarget nid rows = case Array.find (\r -> r.id == nid) rows of
-  Just r -> revealRowIndex r.index
+  Just r -> do
+    revealRowIndex r.index
+    flashShowInTreeTarget nid
   Nothing -> pure unit
+
+flashShowInTreeTarget :: forall o. NodeId -> H.HalogenM State Action () o Aff Unit
+flashShowInTreeTarget nid = do
+  H.modify_ _ { showInTreeFlash = Just nid }
+  void $ H.fork do
+    H.liftAff (delay (Milliseconds 1400.0))
+    st <- H.get
+    when (st.showInTreeFlash == Just nid) (H.modify_ _ { showInTreeFlash = Nothing })
 
 revealRowIndex :: forall o. Int -> H.HalogenM State Action () o Aff Unit
 revealRowIndex idx = do
@@ -512,7 +523,7 @@ render st =
       Just hi -> buildGuide windowEntries hi
       Nothing -> emptyGuide
     _, _ -> emptyGuide
-  slot wi r = Tuple r.id (renderRow st.query (st.dragId == Just r.id) st.editing guide wi rowH r)
+  slot wi r = Tuple r.id (renderRow st.query (st.dragId == Just r.id) st.showInTreeFlash st.editing guide wi rowH r)
   dropSlots = case st.dragId, st.dropTarget, st.dragSpan of
     Just dragId, Just targetId, Just span | dragId /= targetId ->
       case Array.find (\r -> r.id == targetId) st.rows >>= dropPlacement span of
@@ -537,10 +548,10 @@ noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-renderRow :: String -> Boolean -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
-renderRow query dragging editing guide wi rowH r =
+renderRow :: String -> Boolean -> Maybe NodeId -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
+renderRow query dragging showInTreeFlash editing guide wi rowH r =
   HH.div
-    [ HP.classes (map ClassName (rowClasses dragging r))
+    [ HP.classes (map ClassName (rowClasses dragging showInTreeFlash r))
     , HP.attr (AttrName "data-node-id") r.id
     , HP.attr (AttrName "data-status") (statusClass r)
     , HP.attr (AttrName "role") "treeitem"
@@ -558,11 +569,12 @@ renderRow query dragging editing guide wi rowH r =
     ]
     [ toggleEl r, body query editing r, actionsEl r, guideLayer guide wi ]
 
-rowClasses :: Boolean -> ViewRow -> Array String
-rowClasses dragging r =
+rowClasses :: Boolean -> Maybe NodeId -> ViewRow -> Array String
+rowClasses dragging showInTreeFlash r =
   [ "row", statusClass r, kindClass r ]
     <> (if r.active && r.live then [ "active" ] else [])
     <> (if dragging then [ "dragging" ] else [])
+    <> (if showInTreeFlash == Just r.id then [ "show-in-tree-flash" ] else [])
 
 body :: String -> Maybe Editing -> ViewRow -> H.ComponentHTML Action () Aff
 body query editing r = case editing of

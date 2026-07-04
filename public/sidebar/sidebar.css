@@ -27,6 +27,8 @@
   --active-tab-border-color: color-mix(in srgb, Highlight 64%, CanvasText 12%);
   --active-tab-background: color-mix(in srgb, Highlight 8%, transparent);
   --active-tab-title-color: color-mix(in srgb, Highlight 72%, CanvasText 28%);
+  --show-in-tree-flash-background: color-mix(in srgb, Highlight 24%, transparent);
+  --show-in-tree-flash-ring: color-mix(in srgb, Highlight 70%, CanvasText 12%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -37,6 +39,8 @@
     --active-tab-border-color: color-mix(in srgb, Highlight 96%, CanvasText 18%);
     --active-tab-background: color-mix(in srgb, Highlight 28%, transparent);
     --active-tab-title-color: color-mix(in srgb, Highlight 88%, CanvasText 12%);
+    --show-in-tree-flash-background: color-mix(in srgb, Highlight 34%, transparent);
+    --show-in-tree-flash-ring: color-mix(in srgb, Highlight 92%, CanvasText 12%);
   }
 }
 
@@ -304,6 +308,43 @@ body {
 .row.closed {
   color: color-mix(in srgb, CanvasText 58%, transparent);
   border-left-color: color-mix(in srgb, CanvasText 22%, transparent);
+}
+
+/* "Show in tree" reveal marker ------------------------------------------- */
+
+.row.show-in-tree-flash {
+  animation: show-in-tree-flash 1400ms ease-out;
+}
+
+@keyframes show-in-tree-flash {
+  0% {
+    background: var(--show-in-tree-flash-background);
+    box-shadow: inset 0 0 0 1px var(--show-in-tree-flash-ring);
+  }
+  45% {
+    background: color-mix(in srgb, Highlight 14%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--show-in-tree-flash-ring) 72%, transparent);
+  }
+  100% {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row.show-in-tree-flash {
+    animation: none;
+    background: var(--show-in-tree-flash-background);
+    box-shadow: inset 0 0 0 1px var(--show-in-tree-flash-ring);
+  }
+}
+
+@media (forced-colors: active) {
+  .row.show-in-tree-flash {
+    animation: none;
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
 }
 
 /* Toggle (twisty) + leaf spacer ------------------------------------------- */

@@ -151,9 +151,12 @@ test.describe("toolbar", () => {
 
     await expect(page.locator("#search")).toHaveValue("");
     await expect(page.locator("#clear-search")).toBeHidden();
-    await expect(page.getByText("Tab 70", { exact: true })).toBeVisible();
+    await expect(result).toBeVisible();
+    await expect(result).toHaveClass(/show-in-tree-flash/);
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(1);
     await expect.poll(() => treeScrollTop(page)).toBeGreaterThan(0);
     await expect(page.getByText("Tab 69", { exact: true })).toBeVisible();
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(0, { timeout: 2500 });
   });
 
   test("zoom changes the font scale", async ({ page }) => {
