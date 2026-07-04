@@ -34,7 +34,7 @@ import Model.Codec (kindStr, parseKind)
 import Model.Search (matchesSearch, normalizeSearchQuery)
 import Model.Scroll (activeTabInWindow)
 import Model.Tree (Entry, searchVisible, visible)
-import Model.Types (Kind, Model, NodeId, displayTitle, isLive)
+import Model.Types (Kind(..), Model, NodeId, displayTitle, isLive)
 
 -- A visible-order entry tagged with the flat index just past its subtree (used by
 -- the drop preview to land a drop after a collapsed/expanded group's whole span).
@@ -152,7 +152,14 @@ focusIndexOf myWindow order model = case activeTabInWindow myWindow model of
 viewStats :: String -> Model -> ViewStats
 viewStats query model =
   { nodeTotal: Map.size model.nodes
-  , openTabTotal: Map.size model.byTab
+  , openTabTotal:
+      foldlWithIndex
+        (\tabId total nodeId -> case Map.lookup nodeId model.nodes of
+          Just node | node.kind == KTab && node.tabId == Just tabId -> total + 1
+          _ -> total
+        )
+        0
+        model.byTab
   , matchTotal:
       if normalizeSearchQuery query == "" then 0
       else

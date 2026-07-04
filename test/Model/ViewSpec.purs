@@ -72,6 +72,15 @@ spec = describe "Model.View" do
     viewStats "c" m `shouldEqual` { nodeTotal: 5, openTabTotal: 1, matchTotal: 1 }
     viewStats "" m `shouldEqual` { nodeTotal: 5, openTabTotal: 1, matchTotal: 0 }
 
+  it "ignores stale byTab entries when computing open tab stats" do
+    let
+      stale =
+        m
+          { nodes = Map.insert "A" ((node "A" KTab (Just "W") []) { title = "A" }) m.nodes
+          , byTab = Map.fromFoldable [ Tuple 11 "A", Tuple 12 "missing" ]
+          }
+    viewStats "" stale `shouldEqual` { nodeTotal: 5, openTabTotal: 0, matchTotal: 0 }
+
   it "round-trips view stats on the wire" do
     let
       rows = sliceView m "" (computeOrder "" m) 0 1
