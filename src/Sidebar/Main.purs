@@ -567,7 +567,7 @@ renderRow query dragging showInTreeFlash editing guide wi rowH r =
     , HE.onDrop \_ -> DropOn r.id
     , HE.onDragEnd \_ -> DragEnd
     ]
-    [ toggleEl r, body query editing r, actionsEl r, guideLayer guide wi ]
+    [ toggleEl r, body query editing r, actionsEl query r, guideLayer guide wi ]
 
 rowClasses :: Boolean -> Maybe NodeId -> ViewRow -> Array String
 rowClasses dragging showInTreeFlash r =
@@ -597,12 +597,12 @@ titleContent query r =
     | s.isMatch = HH.span [ HP.class_ (ClassName "title-search-match") ] [ HH.text s.text ]
     | otherwise = HH.text s.text
 
-actionsEl :: ViewRow -> H.ComponentHTML Action () Aff
-actionsEl r = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons r)
+actionsEl :: String -> ViewRow -> H.ComponentHTML Action () Aff
+actionsEl query r = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons query r)
 
-buttons :: ViewRow -> Array (H.ComponentHTML Action () Aff)
-buttons r =
-  (if r.isSearchMatch then [ btn "btn-show-in-tree" "Show in tree" "locate" (ShowInTreeClick r.id) ] else [])
+buttons :: String -> ViewRow -> Array (H.ComponentHTML Action () Aff)
+buttons query r =
+  (if searchActive query then [ btn "btn-show-in-tree" "Show in tree" "locate" (ShowInTreeClick r.id) ] else [])
     <> [ btn "btn-rename" "Rename" "pencil" (StartRename r.id r.title) ]
     <> (if r.live then [ btn "btn-close" "Close" "close-circle" (CloseClick r.id) ] else [])
     <> (if r.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick r.id) ] else [])

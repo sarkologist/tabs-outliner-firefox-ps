@@ -143,7 +143,7 @@ test.describe("toolbar", () => {
     await expect(page.getByText("Tab 70", { exact: true })).toHaveCount(0);
     await page.locator("#search").fill("Tab 70");
     await expect(page.getByText("Tab 70", { exact: true })).toBeVisible();
-    await expect(rowOf(page, "Window").locator(".btn-show-in-tree")).toHaveCount(0);
+    await expect(rowOf(page, "Window").locator(".btn-show-in-tree")).toHaveCount(1);
 
     const result = rowOf(page, "Tab 70");
     await result.hover();
