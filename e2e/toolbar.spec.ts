@@ -230,6 +230,15 @@ test.describe("toolbar", () => {
 
     await page.locator(".toolbar-more-summary").click();
     await expect(page.locator("#new-group-menu")).toBeVisible();
+    await expect
+      .poll(async () =>
+        page.locator("#new-group-menu").evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return top === el || !!top?.closest("#new-group-menu");
+        }),
+      )
+      .toBe(true);
     await page.locator("#new-group-menu").click();
     await expect(groupRows(page)).toHaveCount(1);
   });
