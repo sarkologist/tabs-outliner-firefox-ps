@@ -77,6 +77,7 @@ const node = (over: Record<string, unknown>) => ({
 });
 
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
+const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "New group" });
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 const treeScrollTop = (page: Page) => page.locator("#tree").evaluate((el) => (el as HTMLElement).scrollTop);
 
@@ -186,6 +187,51 @@ test.describe("toolbar", () => {
     await page.locator("#zoom-out").click();
     await page.locator("#zoom-out").click();
     await expect.poll(() => scale().then(Number)).toBeLessThan(1);
+  });
+
+  test("shows node and open-tab counts, with direct match count during search", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.locator("#toolbar-status")).toHaveText("3 nodes / 2 open");
+
+    await page.locator("#search").fill("Alpha");
+    await expect(page.locator("#toolbar-status")).toHaveText("1 match / 3 nodes / 2 open");
+    await expect(page.locator("[role=treeitem]")).toHaveCount(2); // window ancestor + direct match
+  });
+
+  test("shows all toolbar actions inline at wide widths", async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    for (const id of [
+      "undo",
+      "redo",
+      "zoom-out",
+      "zoom-in",
+      "new-group",
+      "export",
+      "import",
+      "open-full-size",
+      "options",
+    ]) {
+      await expect(page.locator(`#${id}`)).toBeVisible();
+    }
+    await expect(page.locator(".toolbar-more")).toBeHidden();
+  });
+
+  test("folds toolbar actions into More instead of wrapping when narrow", async ({ page }) => {
+    await page.setViewportSize({ width: 300, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    await expect(page.locator(".toolbar-more")).toBeVisible();
+    await expect(page.locator("#export")).toBeHidden();
+    await expect(page.locator("#open-full-size")).toBeHidden();
+    await expect(page.locator("#new-group")).toBeHidden();
+    await expect.poll(() => page.locator("#toolbar").evaluate((el) => el.getBoundingClientRect().height)).toBeLessThanOrEqual(45);
+
+    await page.locator(".toolbar-more-summary").click();
+    await expect(page.locator("#new-group-menu")).toBeVisible();
+    await page.locator("#new-group-menu").click();
+    await expect(groupRows(page)).toHaveCount(1);
   });
 
   test("export downloads the outline as JSON", async ({ page }) => {
