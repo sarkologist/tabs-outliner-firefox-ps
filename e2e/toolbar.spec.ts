@@ -218,6 +218,23 @@ test.describe("toolbar", () => {
     await expect(page.locator(".toolbar-more")).toBeHidden();
   });
 
+  test("keeps full-size inline after undo and redo at narrow widths", async ({ page }) => {
+    await page.setViewportSize({ width: 380, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    await expect(page.locator(".toolbar-more")).toBeVisible();
+    await expect(page.locator("#export")).toBeHidden();
+    await expect(page.locator("#options")).toBeHidden();
+    await expect(page.locator("#open-full-size")).toBeVisible();
+
+    const xs = await page.locator("#undo, #redo, #open-full-size").evaluateAll((els) =>
+      els.map((el) => ({ id: el.id, left: el.getBoundingClientRect().left })),
+    );
+    expect(xs.map((x) => x.id)).toEqual(["undo", "redo", "open-full-size"]);
+    expect(xs[0].left).toBeLessThan(xs[1].left);
+    expect(xs[1].left).toBeLessThan(xs[2].left);
+  });
+
   test("folds toolbar actions into More instead of wrapping when narrow", async ({ page }) => {
     await page.setViewportSize({ width: 300, height: 600 });
     await bootBackgroundAndSidebar(page, seed);
@@ -229,6 +246,7 @@ test.describe("toolbar", () => {
     await expect.poll(() => page.locator("#toolbar").evaluate((el) => el.getBoundingClientRect().height)).toBeLessThanOrEqual(45);
 
     await page.locator(".toolbar-more-summary").click();
+    await expect(page.locator("#open-full-size-menu")).toBeVisible();
     await expect(page.locator("#new-group-menu")).toBeVisible();
     await expect
       .poll(async () =>
@@ -239,8 +257,13 @@ test.describe("toolbar", () => {
         }),
       )
       .toBe(true);
+    await page.locator("#tree").click({ position: { x: 5, y: 5 } });
+    await expect(page.locator("#new-group-menu")).toBeHidden();
+
+    await page.locator(".toolbar-more-summary").click();
     await page.locator("#new-group-menu").click();
     await expect(groupRows(page)).toHaveCount(1);
+    await expect(page.locator("#new-group-menu")).toBeHidden();
   });
 
   test("export downloads the outline as JSON", async ({ page }) => {

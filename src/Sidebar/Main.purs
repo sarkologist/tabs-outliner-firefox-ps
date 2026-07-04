@@ -62,6 +62,7 @@ foreign import onResize :: Effect Unit -> Effect Unit
 foreign import focusSearch :: Effect Unit
 foreign import openOptions :: Effect Unit
 foreign import isFullSizeView :: Effect Boolean
+foreign import closeToolbarMoreOnOutsideClick :: Effect Unit
 
 -- height of one row in px at zoom 1 (matches the original's compact 18px).
 baseRowHeight :: Number
@@ -170,6 +171,7 @@ handleAction = case _ of
     api <- H.liftEffect getBrowser
     H.liftEffect allowDrops
     H.liftEffect keepFocused
+    H.liftEffect closeToolbarMoreOnOutsideClick
     fullSize <- H.liftEffect isFullSizeView
     z <- H.liftEffect getZoom
     { emitter, listener } <- H.liftEffect HS.create
@@ -534,13 +536,13 @@ render st =
               [ HH.text (toolbarStatus st) ]
           , toolbarSlot "priority-very-narrow" (iconBtn "undo" "Undo (Ctrl+Z)" "undo" RunUndo)
           , toolbarSlot "priority-very-narrow" (iconBtn "redo" "Redo (Ctrl+Shift+Z)" "redo" RunRedo)
+          , toolbarSlot "priority-very-narrow" (iconBtn "open-full-size" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick)
           , toolbarSlot "priority-medium" (textBtn "zoom-out" "Zoom out" "A−" (Zoom (1.0 / 1.1)))
           , toolbarSlot "priority-medium" (textBtn "zoom-in" "Zoom in" "A+" (Zoom 1.1)
           )
           , toolbarSlot "priority-very-narrow" (iconBtn "new-group" "New group" "group" NewGroupTop)
           , toolbarSlot "priority-medium" (iconBtn "export" "Export" "export" ExportClick)
           , toolbarSlot "priority-medium" (iconBtn "import" "Import" "import" ImportClick)
-          , toolbarSlot "priority-narrow" (iconBtn "open-full-size" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick)
           , toolbarSlot "priority-narrow" (iconBtn "options" "Options" "gear" OpenOptions)
           , toolbarMore
           ]
@@ -607,10 +609,10 @@ render st =
           , menuTextBtn "zoom-in-menu" "Zoom in" "A+" (Zoom 1.1) "overflow-medium"
           , menuIconBtn "export-menu" "Export" "export" ExportClick "overflow-medium"
           , menuIconBtn "import-menu" "Import" "import" ImportClick "overflow-medium"
-          , menuIconBtn "open-full-size-menu" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick "overflow-narrow"
           , menuIconBtn "options-menu" "Options" "gear" OpenOptions "overflow-narrow"
           , menuIconBtn "undo-menu" "Undo (Ctrl+Z)" "undo" RunUndo "overflow-very-narrow"
           , menuIconBtn "redo-menu" "Redo (Ctrl+Shift+Z)" "redo" RunRedo "overflow-very-narrow"
+          , menuIconBtn "open-full-size-menu" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick "overflow-very-narrow"
           , menuIconBtn "new-group-menu" "New group" "group" NewGroupTop "overflow-very-narrow"
           ]
       ]
