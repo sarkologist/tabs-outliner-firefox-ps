@@ -602,6 +602,8 @@ actionsEl query r = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons qu
 
 buttons :: String -> ViewRow -> Array (H.ComponentHTML Action () Aff)
 buttons query r =
+  -- In search mode the projection contains only direct matches and their path
+  -- ancestors, so every rendered row can be revealed in the normal tree.
   (if searchActive query then [ btn "btn-show-in-tree" "Show in tree" "locate" (ShowInTreeClick r.id) ] else [])
     <> [ btn "btn-rename" "Rename" "pencil" (StartRename r.id r.title) ]
     <> (if r.live then [ btn "btn-close" "Close" "close-circle" (CloseClick r.id) ] else [])

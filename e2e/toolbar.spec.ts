@@ -159,6 +159,24 @@ test.describe("toolbar", () => {
     await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(0, { timeout: 2500 });
   });
 
+  test("show in tree works from search ancestor rows", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, tallSeed);
+    await expect(page.locator(".btn-show-in-tree")).toHaveCount(0);
+    await page.locator(".toggle").first().click(); // collapse the window
+    await page.locator("#search").fill("Tab 70");
+
+    const windowRow = rowOf(page, "Window");
+    await expect(windowRow.locator(".btn-show-in-tree")).toHaveCount(1);
+    await windowRow.hover();
+    await windowRow.locator(".btn-show-in-tree").click();
+
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(windowRow).toBeVisible();
+    await expect(windowRow).toHaveClass(/show-in-tree-flash/);
+    await expect(page.locator(".btn-show-in-tree")).toHaveCount(0);
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(0, { timeout: 2500 });
+  });
+
   test("zoom changes the font scale", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     const scale = () =>
