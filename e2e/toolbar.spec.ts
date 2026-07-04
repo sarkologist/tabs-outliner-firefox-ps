@@ -31,6 +31,32 @@ const seed = {
   ],
 };
 
+const searchSeed = {
+  windows: [
+    {
+      id: 1,
+      tabs: [
+        { id: 11, url: "http://a", title: "AlphaAlpha", active: true },
+        { id: 12, url: "https://needle-url.example/path", title: "Plain" },
+      ],
+    },
+  ],
+};
+
+const tallSeed = {
+  windows: [
+    {
+      id: 1,
+      tabs: Array.from({ length: 90 }, (_, i) => ({
+        id: 200 + i,
+        url: `http://t${i}`,
+        title: `Tab ${i}`,
+        active: i === 0,
+      })),
+    },
+  ],
+};
+
 const node = (over: Record<string, unknown>) => ({
   id: "",
   kind: "tab",
@@ -50,6 +76,10 @@ const node = (over: Record<string, unknown>) => ({
   ...over,
 });
 
+const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
+const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+const treeScrollTop = (page: Page) => page.locator("#tree").evaluate((el) => (el as HTMLElement).scrollTop);
+
 test.describe("toolbar", () => {
   test("search filters to matches and their ancestors", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
@@ -67,6 +97,84 @@ test.describe("toolbar", () => {
     await expect(page.getByText("Beta")).toHaveCount(0);
     await page.locator("#search").fill("Beta");
     await expect(page.getByText("Beta")).toBeVisible(); // search ignores collapse
+  });
+
+  test("clear search button clears, restores the outline, and focuses search", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await page.locator("#search").fill("Alph");
+    await expect(page.locator("#clear-search")).toBeVisible();
+    await expect(page.getByText("Beta")).toHaveCount(0);
+    await page.locator("#clear-search").click();
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(page.locator("#search")).toBeFocused();
+    await expect(page.locator("#clear-search")).toBeHidden();
+    await expect(page.getByText("Beta")).toBeVisible();
+  });
+
+  test("Escape clears search from the input and from body focus", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await page.locator("#search").fill("Alph");
+    await page.locator("#search").press("Escape");
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(page.locator("#search")).toBeFocused();
+    await expect(page.getByText("Beta")).toBeVisible();
+
+    await page.locator("#search").fill("Bet");
+    await expect(page.getByText("Alpha")).toHaveCount(0);
+    await blur(page);
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(page.getByText("Alpha")).toBeVisible();
+  });
+
+  test("search highlights title matches but not URL-only matches", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, searchSeed);
+    await page.locator("#search").fill("alpha");
+    await expect(rowOf(page, "AlphaAlpha").locator(".title-search-match")).toHaveText(["Alpha", "Alpha"]);
+
+    await page.locator("#search").fill("needle-url");
+    await expect(rowOf(page, "Plain")).toBeVisible();
+    await expect(rowOf(page, "Plain").locator(".title-search-match")).toHaveCount(0);
+  });
+
+  test("show in tree clears search, expands ancestors, and jumps to the result", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, tallSeed);
+    await page.locator(".toggle").first().click(); // collapse the window
+    await expect(page.getByText("Tab 70", { exact: true })).toHaveCount(0);
+    await page.locator("#search").fill("Tab 70");
+    await expect(page.getByText("Tab 70", { exact: true })).toBeVisible();
+    await expect(rowOf(page, "Window").locator(".btn-show-in-tree")).toHaveCount(1);
+
+    const result = rowOf(page, "Tab 70");
+    await result.hover();
+    await result.locator(".btn-show-in-tree").click();
+
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(page.locator("#clear-search")).toBeHidden();
+    await expect(result).toBeVisible();
+    await expect(result).toHaveClass(/show-in-tree-flash/);
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(1);
+    await expect.poll(() => treeScrollTop(page)).toBeGreaterThan(0);
+    await expect(page.getByText("Tab 69", { exact: true })).toBeVisible();
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(0, { timeout: 2500 });
+  });
+
+  test("show in tree works from search ancestor rows", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, tallSeed);
+    await expect(page.locator(".btn-show-in-tree")).toHaveCount(0);
+    await page.locator(".toggle").first().click(); // collapse the window
+    await page.locator("#search").fill("Tab 70");
+
+    const windowRow = rowOf(page, "Window");
+    await expect(windowRow.locator(".btn-show-in-tree")).toHaveCount(1);
+    await windowRow.hover();
+    await windowRow.locator(".btn-show-in-tree").click();
+
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(windowRow).toBeVisible();
+    await expect(windowRow).toHaveClass(/show-in-tree-flash/);
+    await expect(page.locator(".btn-show-in-tree")).toHaveCount(0);
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(0, { timeout: 2500 });
   });
 
   test("zoom changes the font scale", async ({ page }) => {

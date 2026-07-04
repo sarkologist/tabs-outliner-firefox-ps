@@ -18,7 +18,7 @@ node id kind parent children = (defaultNode id kind 0.0) { parent = parent, chil
 -- a projected row, only the fields dropPlacement reads
 row :: String -> Int -> Int -> Int -> Kind -> ViewRow
 row id index depth subtreeEnd kind =
-  { id, index, depth, subtreeEnd, kind, title: "", live: false, active: false, collapsed: false, hasChildren: false, isLastRoot: false }
+  { id, index, depth, subtreeEnd, kind, title: "", live: false, active: false, collapsed: false, hasChildren: false, isLastRoot: false, isSearchMatch: false }
 
 childrenOf :: String -> Model -> Maybe (Array String)
 childrenOf id m = _.children <$> Map.lookup id m.nodes

@@ -2,14 +2,16 @@ module Test.Model.CommandSpec where
 
 import Prelude
 
+import Data.Argonaut.Encode (encodeJson)
 import Data.Array as Array
+import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.List (List(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Codec (Snapshot)
-import Model.Command (BrowserAction(..), Command(..), applyCommand, wrapRootTabsModel)
+import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch, insertAtClamped, liveTabCountInWindow, liveTabPreorder, liveWindowNode)
@@ -525,8 +527,48 @@ simUserStep s raw =
 
 spec :: Spec Unit
 spec = describe "Model.Command" do
+  it "decodes older getView requests without a target node" do
+    let
+      req = encodeJson
+        { tag: "getView"
+        , start: 4
+        , count: 12
+        , query: "abc"
+        , myWindow: (Just 7 :: Maybe Int)
+        , wantFocus: true
+        , tail: false
+        }
+    case decodeRequest req of
+      Right (GetView r) -> r `shouldEqual`
+        { start: 4
+        , count: 12
+        , query: "abc"
+        , myWindow: Just 7
+        , wantFocus: true
+        , tail: false
+        , targetNodeId: Nothing
+        }
+      _ -> false `shouldEqual` true
+
   it "collapse sets the flag" do
     (_.collapsed <$> Map.lookup "n1" (run (Collapse "n1" true) base).nodes) `shouldEqual` Just true
+
+  it "expandAncestors opens every collapsed ancestor and ignores missing nodes" do
+    let
+      nested = applyPatch
+        { upserts:
+            [ (defaultNode "A" KGroup 0.0) { children = [ "B" ], collapsed = true }
+            , (defaultNode "B" KGroup 0.0) { parent = Just "A", children = [ "C" ], collapsed = true }
+            , (defaultNode "C" KTab 0.0) { parent = Just "B" }
+            ]
+        , removes: []
+        , roots: Just [ "A" ]
+        }
+        emptyModel
+      expanded = run (ExpandAncestors "C") nested
+    (_.collapsed <$> Map.lookup "A" expanded.nodes) `shouldEqual` Just false
+    (_.collapsed <$> Map.lookup "B" expanded.nodes) `shouldEqual` Just false
+    run (ExpandAncestors "missing") nested `shouldEqual` nested
 
   it "rename sets a custom title" do
     (_.customTitle <$> Map.lookup "n2" (run (Rename "n2" "X") base).nodes) `shouldEqual` Just (Just "X")

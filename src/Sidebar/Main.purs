@@ -42,6 +42,7 @@ import Model.Drop (dropPlacement)
 import Model.Guide (Guide, buildGuide, emptyGuide, guideBottom, guideTop)
 import Model.PortableImport (portableToSnapshot)
 import Model.Scroll as Scroll
+import Model.Search (normalizeSearchQuery, segmentSearchText)
 import Model.Shortcuts as Sh
 import Model.Types (Kind(..), NodeId)
 import Model.View (ViewRow, decodeView)
@@ -90,6 +91,7 @@ type State =
   , dragSpan :: Maybe { index :: Int, subtreeEnd :: Int } -- dragged node's visible span, for the cycle-safe preview
   , dropTarget :: Maybe NodeId
   , hover :: Maybe NodeId
+  , showInTreeFlash :: Maybe NodeId
   , query :: String
   , zoom :: Number
   , notice :: Maybe String
@@ -128,6 +130,9 @@ data Action
   | DragEnd
   | SetHover (Maybe NodeId)
   | SetQuery String
+  | SearchKey String
+  | ClearSearch Boolean
+  | ShowInTreeClick NodeId
   | Zoom Number
   | ExportClick
   | ImportClick
@@ -143,7 +148,7 @@ component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { api: Nothing, total: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
-      , dropTarget: Nothing, hover: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
+      , dropTarget: Nothing, hover: Nothing, showInTreeFlash: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
       , viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing
       , fullSizeView: false, profiling: false, bootProfiled: false, opened: false
       }
@@ -255,9 +260,24 @@ handleAction = case _ of
     H.modify_ _ { dragId = Nothing, dragSpan = Nothing, dropTarget = Nothing }
 
   SetQuery q -> do
-    H.modify_ _ { query = q, scrollTop = 0.0, focusObserved = Nothing }
+    H.modify_ _ { query = q, scrollTop = 0.0, focusObserved = Nothing, showInTreeFlash = Nothing }
     H.liftEffect (scrollTreeTo 0.0)
     requestView false
+  SearchKey k
+    | k == "Escape" -> handleAction (ClearSearch true)
+    | otherwise -> pure unit
+  ClearSearch keepFocus -> do
+    st <- H.get
+    when (st.query /= "") do
+      H.modify_ _ { query = "", scrollTop = 0.0, focusObserved = Nothing, showInTreeFlash = Nothing }
+      H.liftEffect (scrollTreeTo 0.0)
+      requestView false
+    when keepFocus (H.liftEffect focusSearch)
+  ShowInTreeClick nid -> do
+    H.modify_ _ { query = "", scrollTop = 0.0, focusObserved = Nothing, showInTreeFlash = Nothing }
+    H.liftEffect (scrollTreeTo 0.0)
+    sendCommand (ExpandAncestors nid)
+    requestViewTarget nid
   Zoom factor -> do
     st <- H.get
     let z = clampZoom (st.zoom * factor)
@@ -308,15 +328,18 @@ handleAction = case _ of
 -- | index *changed* (tracked in `focusObserved`), so unrelated updates and the
 -- | user's own scrolling are left alone, and never during search.
 requestView :: forall o. Boolean -> H.HalogenM State Action () o Aff Unit
-requestView reveal = attemptView reveal 20
+requestView reveal = attemptView reveal Nothing 20
+
+requestViewTarget :: forall o. NodeId -> H.HalogenM State Action () o Aff Unit
+requestViewTarget nid = attemptView false (Just nid) 20
 
 -- | Fetch the window; on failure (a suspended background still waking up, a flaky
 -- | wake-delivery) retry a bounded number of times. The retry is *forked* so it
 -- | never blocks the action queue, and each attempt re-reads state so it always
 -- | fetches the current window. The background's post-boot ping is the primary
 -- | recovery path; this is the belt-and-suspenders.
-attemptView :: forall o. Boolean -> Int -> H.HalogenM State Action () o Aff Unit
-attemptView reveal n = do
+attemptView :: forall o. Boolean -> Maybe NodeId -> Int -> H.HalogenM State Action () o Aff Unit
+attemptView reveal target n = do
   st <- H.get
   case st.api of
     Nothing -> pure unit
@@ -328,9 +351,10 @@ attemptView reveal n = do
         -- land at the bottom on the first load (new windows / live nodes are there);
         -- after that the window simply follows the scroll position. Never while
         -- searching — results read top-down, so a query starts at the top.
-        tail = reveal && not st.fullSizeView && not st.opened && st.query == ""
+        activeSearch = searchActive st.query
+        tail = target == Nothing && reveal && not st.fullSizeView && not st.opened && not activeSearch
         start = max 0 (Int.floor (st.scrollTop / rowH) - overscan)
-        vr = { start, count, query: st.query, myWindow: st.myWindow, wantFocus: reveal && not st.fullSizeView && st.query == "", tail }
+        vr = { start, count, query: st.query, myWindow: st.myWindow, wantFocus: reveal && not st.fullSizeView && not activeSearch, tail, targetNodeId: target }
       tReq <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
       resp <- H.liftAff (attempt (request api (encodeRequest (GetView vr))))
       tFetch <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
@@ -339,15 +363,17 @@ attemptView reveal n = do
           Right v -> do
             tDecode <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
             -- `tail` ignores `start`; the bg served the last window, so mirror its start.
-            let actualStart = if tail then max 0 (v.total - count) else start
+            let actualStart = if tail then max 0 (v.total - count) else fromMaybe start (_.index <$> Array.head v.rows)
             H.modify_ _ { total = v.total, rows = v.rows, reqStart = actualStart, opened = true }
             when tail do
               let sb = max 0.0 (Int.toNumber v.total * rowH - st.viewportH)
               H.modify_ _ { scrollTop = sb }
               H.liftEffect (scrollTreeTo sb)
             -- cache the bottom window so the next (possibly cold) open paints it instantly
-            when (not st.fullSizeView && actualStart + count >= v.total && st.query == "") (H.liftEffect (BootCache.save (stringify json)))
-            when (reveal && st.query == "") (maybeReveal v.focusIndex)
+            when (target == Nothing && not st.fullSizeView && actualStart + count >= v.total && not activeSearch) (H.liftEffect (BootCache.save (stringify json)))
+            case target of
+              Just nid -> maybeRevealTarget nid v.rows
+              Nothing -> when (reveal && not activeSearch) (maybeReveal v.focusIndex)
             -- record the open profile once, when the FIRST window actually loads
             -- (which on a cold/suspended background is after it has woken + loaded,
             -- so boot.firstWindow / boot.paint reveal that wait).
@@ -364,19 +390,44 @@ attemptView reveal n = do
   where
   retry = when (n > 1) $ void $ H.fork do
     H.liftAff (delay (Milliseconds 200.0))
-    attemptView reveal (n - 1)
+    attemptView reveal target (n - 1)
+
+searchActive :: String -> Boolean
+searchActive q = normalizeSearchQuery q /= ""
 
 maybeReveal :: forall o. Int -> H.HalogenM State Action () o Aff Unit
 maybeReveal fi = do
   st <- H.get
   when (fi >= 0 && Just fi /= st.focusObserved) do
     H.modify_ _ { focusObserved = Just fi }
-    let
-      rowH = baseRowHeight * st.zoom
-      geom = { rowHeight: rowH, viewportHeight: st.viewportH, contentHeight: Int.toNumber st.total * rowH, scrollTop: st.scrollTop }
-    case Scroll.revealScrollTop geom fi of
-      Just top -> H.liftEffect (scrollTreeTo top)
-      Nothing -> pure unit
+    revealRowIndex fi
+
+maybeRevealTarget :: forall o. NodeId -> Array ViewRow -> H.HalogenM State Action () o Aff Unit
+maybeRevealTarget nid rows = case Array.find (\r -> r.id == nid) rows of
+  Just r -> do
+    revealRowIndex r.index
+    flashShowInTreeTarget nid
+  Nothing -> pure unit
+
+flashShowInTreeTarget :: forall o. NodeId -> H.HalogenM State Action () o Aff Unit
+flashShowInTreeTarget nid = do
+  H.modify_ _ { showInTreeFlash = Just nid }
+  void $ H.fork do
+    H.liftAff (delay (Milliseconds 1400.0))
+    st <- H.get
+    when (st.showInTreeFlash == Just nid) (H.modify_ _ { showInTreeFlash = Nothing })
+
+revealRowIndex :: forall o. Int -> H.HalogenM State Action () o Aff Unit
+revealRowIndex idx = do
+  st <- H.get
+  let
+    rowH = baseRowHeight * st.zoom
+    geom = { rowHeight: rowH, viewportHeight: st.viewportH, contentHeight: Int.toNumber st.total * rowH, scrollTop: st.scrollTop }
+  case Scroll.revealScrollTop geom idx of
+    Just top -> do
+      H.modify_ _ { scrollTop = top }
+      H.liftEffect (scrollTreeTo top)
+    Nothing -> pure unit
 
 sendCommand :: forall o. Command -> H.HalogenM State Action () o Aff Unit
 sendCommand = sendRequest <<< RunCommand
@@ -392,6 +443,7 @@ sendRequest req = do
 
 editorShortcut :: String -> Maybe Action
 editorShortcut = case _ of
+  "Escape" -> Just (ClearSearch false)
   "Ctrl+z" -> Just RunUndo
   "Meta+z" -> Just RunUndo
   "Ctrl+Shift+z" -> Just RunRedo
@@ -413,7 +465,28 @@ render :: State -> H.ComponentHTML Action () Aff
 render st =
   HH.div [ HP.id "app", HP.style ("--font-scale:" <> show st.zoom) ]
     ( [ HH.div [ HP.id "toolbar" ]
-          [ HH.input [ HP.id "search", HP.placeholder "Search", HP.value st.query, HE.onValueInput SetQuery ]
+          [ HH.span [ HP.class_ (ClassName "search-wrap") ]
+              [ HH.input
+                  [ HP.id "search"
+                  , HP.attr (AttrName "type") "search"
+                  , HP.attr (AttrName "aria-label") "Search tabs"
+                  , HP.attr (AttrName "autocomplete") "off"
+                  , HP.attr (AttrName "spellcheck") "false"
+                  , HP.placeholder "Search"
+                  , HP.value st.query
+                  , HE.onValueInput SetQuery
+                  , HE.onKeyDown (SearchKey <<< key)
+                  ]
+              , HH.button
+                  ( [ HP.id "clear-search"
+                    , HP.title "Clear search"
+                    , HP.attr (AttrName "aria-label") "Clear search"
+                    , HE.onClick \_ -> ClearSearch true
+                    ]
+                      <> if searchActive st.query then [] else [ HP.attr (AttrName "hidden") "" ]
+                  )
+                  [ toolbarIcon "x" ]
+              ]
           , iconBtn "undo" "Undo (Ctrl+Z)" "undo" RunUndo
           , iconBtn "redo" "Redo (Ctrl+Shift+Z)" "redo" RunRedo
           , textBtn "zoom-out" "Zoom out" "A−" (Zoom (1.0 / 1.1))
@@ -450,7 +523,7 @@ render st =
       Just hi -> buildGuide windowEntries hi
       Nothing -> emptyGuide
     _, _ -> emptyGuide
-  slot wi r = Tuple r.id (renderRow (st.dragId == Just r.id) st.editing guide wi rowH r)
+  slot wi r = Tuple r.id (renderRow st.query (st.dragId == Just r.id) st.showInTreeFlash st.editing guide wi rowH r)
   dropSlots = case st.dragId, st.dropTarget, st.dragSpan of
     Just dragId, Just targetId, Just span | dragId /= targetId ->
       case Array.find (\r -> r.id == targetId) st.rows >>= dropPlacement span of
@@ -475,10 +548,10 @@ noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-renderRow :: Boolean -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
-renderRow dragging editing guide wi rowH r =
+renderRow :: String -> Boolean -> Maybe NodeId -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
+renderRow query dragging showInTreeFlash editing guide wi rowH r =
   HH.div
-    [ HP.classes (map ClassName (rowClasses dragging r))
+    [ HP.classes (map ClassName (rowClasses dragging showInTreeFlash r))
     , HP.attr (AttrName "data-node-id") r.id
     , HP.attr (AttrName "data-status") (statusClass r)
     , HP.attr (AttrName "role") "treeitem"
@@ -494,16 +567,17 @@ renderRow dragging editing guide wi rowH r =
     , HE.onDrop \_ -> DropOn r.id
     , HE.onDragEnd \_ -> DragEnd
     ]
-    [ toggleEl r, body editing r, actionsEl r, guideLayer guide wi ]
+    [ toggleEl r, body query editing r, actionsEl query r, guideLayer guide wi ]
 
-rowClasses :: Boolean -> ViewRow -> Array String
-rowClasses dragging r =
+rowClasses :: Boolean -> Maybe NodeId -> ViewRow -> Array String
+rowClasses dragging showInTreeFlash r =
   [ "row", statusClass r, kindClass r ]
     <> (if r.active && r.live then [ "active" ] else [])
     <> (if dragging then [ "dragging" ] else [])
+    <> (if showInTreeFlash == Just r.id then [ "show-in-tree-flash" ] else [])
 
-body :: Maybe Editing -> ViewRow -> H.ComponentHTML Action () Aff
-body editing r = case editing of
+body :: String -> Maybe Editing -> ViewRow -> H.ComponentHTML Action () Aff
+body query editing r = case editing of
   Just e | e.id == r.id ->
     HH.input
       [ HP.class_ (ClassName "rename-input")
@@ -513,14 +587,25 @@ body editing r = case editing of
       , HE.onBlur \_ -> CommitRename
       ]
   _ ->
-    HH.span [ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow r.id ] [ HH.text r.title ]
+    HH.span [ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow r.id ] (titleContent query r)
 
-actionsEl :: ViewRow -> H.ComponentHTML Action () Aff
-actionsEl r = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons r)
+titleContent :: String -> ViewRow -> Array (H.ComponentHTML Action () Aff)
+titleContent query r =
+  map segmentEl (segmentSearchText r.title (if r.isSearchMatch then query else ""))
+  where
+  segmentEl s
+    | s.isMatch = HH.span [ HP.class_ (ClassName "title-search-match") ] [ HH.text s.text ]
+    | otherwise = HH.text s.text
 
-buttons :: ViewRow -> Array (H.ComponentHTML Action () Aff)
-buttons r =
-  [ btn "btn-rename" "Rename" "pencil" (StartRename r.id r.title) ]
+actionsEl :: String -> ViewRow -> H.ComponentHTML Action () Aff
+actionsEl query r = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons query r)
+
+buttons :: String -> ViewRow -> Array (H.ComponentHTML Action () Aff)
+buttons query r =
+  -- In search mode the projection contains only direct matches and their path
+  -- ancestors, so every rendered row can be revealed in the normal tree.
+  (if searchActive query then [ btn "btn-show-in-tree" "Show in tree" "locate" (ShowInTreeClick r.id) ] else [])
+    <> [ btn "btn-rename" "Rename" "pencil" (StartRename r.id r.title) ]
     <> (if r.live then [ btn "btn-close" "Close" "close-circle" (CloseClick r.id) ] else [])
     <> (if r.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick r.id) ] else [])
     <> (if r.depth > 0 then [ btn "btn-to-top-level" "Move to top level" "root-outdent" (MoveTopLevelClick r.id) ] else [])

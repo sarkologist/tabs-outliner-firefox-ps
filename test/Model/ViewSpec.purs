@@ -7,7 +7,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
-import Model.View (computeOrder, focusIndexOf, sliceView)
+import Model.View (computeOrder, focusIndexOf, sliceView, startForView)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -37,7 +37,7 @@ spec = describe "Model.View" do
       `shouldEqual` [ Tuple "W" 3, Tuple "A" 2, Tuple "B" 3, Tuple "G" 5, Tuple "C" 5 ]
 
   it "sliceView windows the order, keeping absolute indices and subtree ends" do
-    let rows = sliceView m (computeOrder "" m) 1 2
+    let rows = sliceView m "" (computeOrder "" m) 1 2
     map _.id rows `shouldEqual` [ "A", "B" ]
     map _.index rows `shouldEqual` [ 1, 2 ]
     map _.subtreeEnd rows `shouldEqual` [ 2, 3 ]
@@ -45,7 +45,7 @@ spec = describe "Model.View" do
     (_.hasChildren <$> Array.head rows) `shouldEqual` Just false
 
   it "the first row carries its window/last-root flags" do
-    let rows = sliceView m (computeOrder "" m) 0 1
+    let rows = sliceView m "" (computeOrder "" m) 0 1
     map _.hasChildren rows `shouldEqual` [ true ] -- W has children
     map _.isLastRoot rows `shouldEqual` [ false ] -- G is the last root
 
@@ -54,3 +54,14 @@ spec = describe "Model.View" do
 
   it "focusIndexOf is -1 when the window has no active tab" do
     focusIndexOf 99 (computeOrder "" m) m `shouldEqual` (-1)
+
+  it "marks only direct search matches, not ancestor path rows" do
+    let rows = sliceView m "c" (computeOrder "c" m) 0 2
+    map (\r -> Tuple r.id r.isSearchMatch) rows `shouldEqual` [ Tuple "G" false, Tuple "C" true ]
+
+  it "centers a target row and clamps to the order bounds" do
+    let order = computeOrder "" m
+    startForView 0 3 (Just "C") order `shouldEqual` 2
+    startForView 0 3 (Just "W") order `shouldEqual` 0
+    startForView 4 3 Nothing order `shouldEqual` 2
+    startForView 4 3 (Just "missing") order `shouldEqual` 2
