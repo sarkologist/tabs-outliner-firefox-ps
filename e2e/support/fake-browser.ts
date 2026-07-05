@@ -20,6 +20,11 @@ export type Seed = {
   // its onCreated than was requested (as Firefox does — normalization/redirect),
   // so restore must rebind by window, not by exact url
   redirectCreatedTabs?: boolean;
+  // Simulate Firefox briefly announcing the full-size outliner popup as a
+  // normal window with a "New Tab" before the extension URL arrives.
+  fullSizePopupReportsNormalNewTab?: boolean;
+  // Simulate the popup's first tabs.onCreated arriving before windows.onCreated.
+  fullSizePopupReportsTabBeforeWindow?: boolean;
 };
 
 export function installFakeBrowser(seed: Seed) {
@@ -155,18 +160,30 @@ export function installFakeBrowser(seed: Seed) {
           currentWindowId = id;
         }
         const type = props.type ?? "normal";
+        const urls = Array.isArray(props.url) ? props.url : props.url != null ? [props.url] : [];
+        const reportsNormalNewTab =
+          !!seed?.fullSizePopupReportsNormalNewTab &&
+          type === "popup" &&
+          urls.some((u: string) => String(u).includes("/sidebar/sidebar.html?view=window"));
         wins.set(id, { id, tabIds: [], type, focused: props.focused !== false });
-        ev.winCreated._emit({ id, type, focused: props.focused !== false });
+        const openCreatedUrls = () => {
+          urls.forEach((u: string, i: number) => {
+            const tabId = ++tabSeq;
+            if (reportsNormalNewTab) {
+              driver.openTab({ id: tabId, windowId: id, url: "about:newtab", title: "New Tab", active: i === 0 });
+              driver.updateTab(tabId, { url: u, title: u });
+            } else {
+              driver.openTab({ id: tabId, windowId: id, url: u, title: u, active: i === 0 });
+            }
+          });
+        };
+        if (reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow) openCreatedUrls();
+        ev.winCreated._emit({ id, type: reportsNormalNewTab ? "normal" : type, focused: props.focused !== false });
         if (props.tabId != null) {
           // create a window holding an existing tab: onCreated (above) then the
           // tab's onAttached into it — the order the background relies on
           driver.attachTab(props.tabId, id, 0);
-        } else {
-          const urls = Array.isArray(props.url) ? props.url : props.url != null ? [props.url] : [];
-          urls.forEach((u: string, i: number) =>
-            driver.openTab({ id: ++tabSeq, windowId: id, url: u, title: u, active: i === 0 })
-          );
-        }
+        } else if (!(reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow)) openCreatedUrls();
         const win = wins.get(id)!;
         return Promise.resolve({ id, type: win.type, focused: win.focused, tabs: win.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },
