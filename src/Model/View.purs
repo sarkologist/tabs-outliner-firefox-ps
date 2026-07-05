@@ -5,11 +5,13 @@
 module Model.View
   ( ViewRow
   , View
+  , ViewStats
   , OrderEntry
   , computeOrder
   , sliceView
   , startForView
   , focusIndexOf
+  , viewStats
   , encodeView
   , decodeView
   ) where
@@ -32,7 +34,7 @@ import Model.Codec (kindStr, parseKind)
 import Model.Search (matchesSearch, normalizeSearchQuery)
 import Model.Scroll (activeTabInWindow)
 import Model.Tree (Entry, searchVisible, visible)
-import Model.Types (Kind, Model, NodeId, displayTitle, isLive)
+import Model.Types (Kind(..), Model, NodeId, displayTitle, isLive)
 
 -- A visible-order entry tagged with the flat index just past its subtree (used by
 -- the drop preview to land a drop after a collapsed/expanded group's whole span).
@@ -57,7 +59,17 @@ type ViewRow =
 
 -- `serverMs` is the background's own compute time for this window (0 unless
 -- profiling), so the sidebar can split the round-trip into compute vs transport.
-type View = { total :: Int, rows :: Array ViewRow, focusIndex :: Int, serverMs :: Number }
+type View =
+  { total :: Int
+  , rows :: Array ViewRow
+  , focusIndex :: Int
+  , serverMs :: Number
+  , nodeTotal :: Int
+  , openTabTotal :: Int
+  , matchTotal :: Int
+  }
+
+type ViewStats = { nodeTotal :: Int, openTabTotal :: Int, matchTotal :: Int }
 
 -- | The full visible order for a query, each entry tagged with its subtree end.
 -- | `visible`/`searchVisible` are reused as-is; `withSubtreeEnds` is one O(N) pass.
@@ -137,6 +149,26 @@ focusIndexOf myWindow order model = case activeTabInWindow myWindow model of
   Just tid -> fromMaybe (-1) (Array.findIndex (\o -> o.id == tid) order)
   Nothing -> -1
 
+viewStats :: String -> Model -> ViewStats
+viewStats query model =
+  { nodeTotal: Map.size model.nodes
+  , openTabTotal:
+      foldlWithIndex
+        (\tabId total nodeId -> case Map.lookup nodeId model.nodes of
+          Just node | node.kind == KTab && node.tabId == Just tabId -> total + 1
+          _ -> total
+        )
+        0
+        model.byTab
+  , matchTotal:
+      if normalizeSearchQuery query == "" then 0
+      else
+        foldl
+          (\n node -> if matchesSearch query node then n + 1 else n)
+          0
+          (Map.values model.nodes)
+  }
+
 -- Wire codec: Kind travels as a string (reusing Codec's kind tags). ----------
 
 type RowWire =
@@ -169,10 +201,35 @@ rowFromWire r =
   }
 
 encodeView :: View -> Json
-encodeView v = encodeJson { total: v.total, rows: map rowToWire v.rows, focusIndex: v.focusIndex, serverMs: v.serverMs }
+encodeView v = encodeJson
+  { total: v.total
+  , rows: map rowToWire v.rows
+  , focusIndex: v.focusIndex
+  , serverMs: v.serverMs
+  , nodeTotal: v.nodeTotal
+  , openTabTotal: v.openTabTotal
+  , matchTotal: v.matchTotal
+  }
 
 decodeView :: Json -> Either String View
 decodeView json = do
   rec <- lmap printJsonDecodeError
-    (decodeJson json :: Either _ { total :: Int, rows :: Array RowWire, focusIndex :: Int, serverMs :: Number })
-  pure { total: rec.total, rows: map rowFromWire rec.rows, focusIndex: rec.focusIndex, serverMs: rec.serverMs }
+    ( decodeJson json :: Either _
+        { total :: Int
+        , rows :: Array RowWire
+        , focusIndex :: Int
+        , serverMs :: Number
+        , nodeTotal :: Maybe Int
+        , openTabTotal :: Maybe Int
+        , matchTotal :: Maybe Int
+        }
+    )
+  pure
+    { total: rec.total
+    , rows: map rowFromWire rec.rows
+    , focusIndex: rec.focusIndex
+    , serverMs: rec.serverMs
+    , nodeTotal: fromMaybe rec.total rec.nodeTotal
+    , openTabTotal: fromMaybe 0 rec.openTabTotal
+    , matchTotal: fromMaybe 0 rec.matchTotal
+    }

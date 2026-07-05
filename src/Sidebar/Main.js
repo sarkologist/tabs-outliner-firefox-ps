@@ -37,6 +37,24 @@ export const keepFocused = () => {
   );
 };
 
+export const closeToolbarMoreOnOutsideClick = () => {
+  document.addEventListener("click", (e) => {
+    const details = document.querySelector(".toolbar-more[open]");
+    if (!details) return;
+
+    const target = e.target;
+    if (!(target instanceof Node)) {
+      details.open = false;
+      return;
+    }
+
+    const clickedMenuItem = target instanceof Element && !!target.closest(".overflow-menu-item");
+    if (!details.contains(target) || clickedMenuItem) {
+      details.open = false;
+    }
+  });
+};
+
 // Download a string as a file via a Blob URL (no downloads permission needed).
 export const downloadJson = (filename) => (content) => () => {
   const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));

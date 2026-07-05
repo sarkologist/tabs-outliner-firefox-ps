@@ -62,6 +62,7 @@ foreign import onResize :: Effect Unit -> Effect Unit
 foreign import focusSearch :: Effect Unit
 foreign import openOptions :: Effect Unit
 foreign import isFullSizeView :: Effect Boolean
+foreign import closeToolbarMoreOnOutsideClick :: Effect Unit
 
 -- height of one row in px at zoom 1 (matches the original's compact 18px).
 baseRowHeight :: Number
@@ -84,6 +85,9 @@ type Editing = { id :: NodeId, text :: String }
 type State =
   { api :: Maybe BrowserApi
   , total :: Int
+  , nodeTotal :: Int
+  , openTabTotal :: Int
+  , matchTotal :: Int
   , rows :: Array ViewRow
   , reqStart :: Int -- start index of the currently-loaded window
   , editing :: Maybe Editing
@@ -147,7 +151,7 @@ data Action
 component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
-      { api: Nothing, total: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
+      { api: Nothing, total: 0, nodeTotal: 0, openTabTotal: 0, matchTotal: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
       , dropTarget: Nothing, hover: Nothing, showInTreeFlash: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
       , viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing
       , fullSizeView: false, profiling: false, bootProfiled: false, opened: false
@@ -167,6 +171,7 @@ handleAction = case _ of
     api <- H.liftEffect getBrowser
     H.liftEffect allowDrops
     H.liftEffect keepFocused
+    H.liftEffect closeToolbarMoreOnOutsideClick
     fullSize <- H.liftEffect isFullSizeView
     z <- H.liftEffect getZoom
     { emitter, listener } <- H.liftEffect HS.create
@@ -198,7 +203,14 @@ handleAction = case _ of
       case jsonParser cached >>= decodeView of
         Right v -> do
           let sb = max 0.0 (Int.toNumber v.total * (baseRowHeight * clampZoom z) - h)
-          H.modify_ _ { total = v.total, rows = v.rows, scrollTop = sb }
+          H.modify_ _
+            { total = v.total
+            , nodeTotal = v.nodeTotal
+            , openTabTotal = v.openTabTotal
+            , matchTotal = v.matchTotal
+            , rows = v.rows
+            , scrollTop = sb
+            }
           H.liftEffect (scrollTreeTo sb)
           when prof (H.liftEffect (Profile.nowMs >>= Profile.record "boot.cached"))
         Left _ -> pure unit
@@ -364,7 +376,15 @@ attemptView reveal target n = do
             tDecode <- if st.profiling then H.liftEffect Profile.nowMs else pure 0.0
             -- `tail` ignores `start`; the bg served the last window, so mirror its start.
             let actualStart = if tail then max 0 (v.total - count) else fromMaybe start (_.index <$> Array.head v.rows)
-            H.modify_ _ { total = v.total, rows = v.rows, reqStart = actualStart, opened = true }
+            H.modify_ _
+              { total = v.total
+              , nodeTotal = v.nodeTotal
+              , openTabTotal = v.openTabTotal
+              , matchTotal = v.matchTotal
+              , rows = v.rows
+              , reqStart = actualStart
+              , opened = true
+              }
             when tail do
               let sb = max 0.0 (Int.toNumber v.total * rowH - st.viewportH)
               H.modify_ _ { scrollTop = sb }
@@ -394,6 +414,28 @@ attemptView reveal target n = do
 
 searchActive :: String -> Boolean
 searchActive q = normalizeSearchQuery q /= ""
+
+toolbarStatus :: State -> String
+toolbarStatus st =
+  if searchActive st.query then
+    show st.matchTotal <> " / " <> base
+  else base
+  where
+  base = show st.nodeTotal <> " / " <> show st.openTabTotal
+
+toolbarStatusTitle :: State -> String
+toolbarStatusTitle st =
+  if searchActive st.query then
+    show st.matchTotal <> " direct search " <> plural st.matchTotal "match" <> " / " <> base
+  else base
+  where
+  base = show st.nodeTotal <> " " <> plural st.nodeTotal "node" <> " / " <> show st.openTabTotal <> " open"
+
+plural :: Int -> String -> String
+plural n word
+  | n == 1 = word
+  | word == "match" = "matches"
+  | otherwise = word <> "s"
 
 maybeReveal :: forall o. Int -> H.HalogenM State Action () o Aff Unit
 maybeReveal fi = do
@@ -465,7 +507,8 @@ render :: State -> H.ComponentHTML Action () Aff
 render st =
   HH.div [ HP.id "app", HP.style ("--font-scale:" <> show st.zoom) ]
     ( [ HH.div [ HP.id "toolbar" ]
-          [ HH.span [ HP.class_ (ClassName "search-wrap") ]
+          [ HH.h1 [ HP.class_ (ClassName "toolbar-title") ] [ HH.text "Tabs" ]
+          , HH.span [ HP.class_ (ClassName "search-wrap") ]
               [ HH.input
                   [ HP.id "search"
                   , HP.attr (AttrName "type") "search"
@@ -487,15 +530,24 @@ render st =
                   )
                   [ toolbarIcon "x" ]
               ]
-          , iconBtn "undo" "Undo (Ctrl+Z)" "undo" RunUndo
-          , iconBtn "redo" "Redo (Ctrl+Shift+Z)" "redo" RunRedo
-          , textBtn "zoom-out" "Zoom out" "A−" (Zoom (1.0 / 1.1))
-          , textBtn "zoom-in" "Zoom in" "A+" (Zoom 1.1)
-          , iconBtn "new-group" "New group" "group" NewGroupTop
-          , iconBtn "export" "Export" "export" ExportClick
-          , iconBtn "import" "Import" "import" ImportClick
-          , iconBtn "open-full-size" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick
-          , iconBtn "options" "Options" "gear" OpenOptions
+          , HH.span
+              [ HP.id "toolbar-status"
+              , HP.class_ (ClassName "toolbar-status")
+              , HP.title (toolbarStatusTitle st)
+              , HP.attr (AttrName "aria-label") (toolbarStatusTitle st)
+              ]
+              [ HH.text (toolbarStatus st) ]
+          , toolbarSlot "priority-very-narrow" (iconBtn "undo" "Undo (Ctrl+Z)" "undo" RunUndo)
+          , toolbarSlot "priority-very-narrow" (iconBtn "redo" "Redo (Ctrl+Shift+Z)" "redo" RunRedo)
+          , toolbarSlot "priority-very-narrow" (iconBtn "open-full-size" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick)
+          , toolbarSlot "priority-medium" (textBtn "zoom-out" "Zoom out" "A−" (Zoom (1.0 / 1.1)))
+          , toolbarSlot "priority-medium" (textBtn "zoom-in" "Zoom in" "A+" (Zoom 1.1)
+          )
+          , toolbarSlot "priority-very-narrow" (iconBtn "new-group" "New group" "group" NewGroupTop)
+          , toolbarSlot "priority-medium" (iconBtn "export" "Export" "export" ExportClick)
+          , toolbarSlot "priority-medium" (iconBtn "import" "Import" "import" ImportClick)
+          , toolbarSlot "priority-narrow" (iconBtn "options" "Options" "gear" OpenOptions)
+          , toolbarMore
           ]
       ]
         <> noticeBanner st.notice
@@ -541,7 +593,52 @@ render st =
   iconBtn i label name act =
     HH.button [ HP.id i, HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ] [ toolbarIcon name ]
   textBtn i label glyph act =
-    HH.button [ HP.id i, HP.title label, HE.onClick \_ -> act ] [ HH.text glyph ]
+    HH.button [ HP.id i, HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ] [ HH.text glyph ]
+  toolbarSlot priority child =
+    HH.span [ HP.classes (map ClassName [ "toolbar-slot", priority ]) ] [ child ]
+  toolbarMore =
+    HH.element (ElemName "details")
+      [ HP.class_ (ClassName "toolbar-more") ]
+      [ HH.element (ElemName "summary")
+          [ HP.class_ (ClassName "toolbar-more-summary")
+          , HP.title "More actions"
+          , HP.attr (AttrName "aria-label") "More actions"
+          , HP.attr (AttrName "aria-haspopup") "menu"
+          ]
+          [ toolbarIcon "more-horizontal" ]
+      , HH.div
+          [ HP.class_ (ClassName "overflow-menu"), HP.attr (AttrName "role") "menu" ]
+          [ menuTextBtn "zoom-out-menu" "Zoom out" "A−" (Zoom (1.0 / 1.1)) "overflow-medium"
+          , menuTextBtn "zoom-in-menu" "Zoom in" "A+" (Zoom 1.1) "overflow-medium"
+          , menuIconBtn "export-menu" "Export" "export" ExportClick "overflow-medium"
+          , menuIconBtn "import-menu" "Import" "import" ImportClick "overflow-medium"
+          , menuIconBtn "options-menu" "Options" "gear" OpenOptions "overflow-narrow"
+          , menuIconBtn "undo-menu" "Undo (Ctrl+Z)" "undo" RunUndo "overflow-very-narrow"
+          , menuIconBtn "redo-menu" "Redo (Ctrl+Shift+Z)" "redo" RunRedo "overflow-very-narrow"
+          , menuIconBtn "open-full-size-menu" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick "overflow-very-narrow"
+          , menuIconBtn "new-group-menu" "New group" "group" NewGroupTop "overflow-very-narrow"
+          ]
+      ]
+  menuIconBtn i label name act priority =
+    HH.button
+      [ HP.id i
+      , HP.classes (map ClassName [ "overflow-menu-item", priority ])
+      , HP.title label
+      , HP.attr (AttrName "aria-label") label
+      , HP.attr (AttrName "role") "menuitem"
+      , HE.onClick \_ -> act
+      ]
+      [ toolbarIcon name, HH.span_ [ HH.text label ] ]
+  menuTextBtn i label glyph act priority =
+    HH.button
+      [ HP.id i
+      , HP.classes (map ClassName [ "overflow-menu-item", priority ])
+      , HP.title label
+      , HP.attr (AttrName "aria-label") label
+      , HP.attr (AttrName "role") "menuitem"
+      , HE.onClick \_ -> act
+      ]
+      [ HH.span [ HP.class_ (ClassName "overflow-text-icon") ] [ HH.text glyph ], HH.span_ [ HH.text label ] ]
 
 noticeBanner :: Maybe String -> Array (H.ComponentHTML Action () Aff)
 noticeBanner = case _ of

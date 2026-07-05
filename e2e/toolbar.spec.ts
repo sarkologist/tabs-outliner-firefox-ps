@@ -77,6 +77,7 @@ const node = (over: Record<string, unknown>) => ({
 });
 
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
+const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "New group" });
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 const treeScrollTop = (page: Page) => page.locator("#tree").evaluate((el) => (el as HTMLElement).scrollTop);
 
@@ -186,6 +187,90 @@ test.describe("toolbar", () => {
     await page.locator("#zoom-out").click();
     await page.locator("#zoom-out").click();
     await expect.poll(() => scale().then(Number)).toBeLessThan(1);
+  });
+
+  test("shows compact counts, with full tooltip text", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.locator("#toolbar-status")).toHaveText("3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "3 nodes / 2 open");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("aria-label", "3 nodes / 2 open");
+
+    await page.locator("#search").fill("Alpha");
+    await expect(page.locator("#toolbar-status")).toHaveText("1 / 3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "1 direct search match / 3 nodes / 2 open");
+    await expect(page.locator("[role=treeitem]")).toHaveCount(2); // window ancestor + direct match
+
+    await page.locator("#search").fill("a");
+    await expect(page.locator("#toolbar-status")).toHaveText("2 / 3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "2 direct search matches / 3 nodes / 2 open");
+  });
+
+  test("shows all toolbar actions inline at wide widths", async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    for (const id of [
+      "undo",
+      "redo",
+      "zoom-out",
+      "zoom-in",
+      "new-group",
+      "export",
+      "import",
+      "open-full-size",
+      "options",
+    ]) {
+      await expect(page.locator(`#${id}`)).toBeVisible();
+    }
+    await expect(page.locator(".toolbar-more")).toBeHidden();
+  });
+
+  test("keeps full-size inline after undo and redo at narrow widths", async ({ page }) => {
+    await page.setViewportSize({ width: 380, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    await expect(page.locator(".toolbar-more")).toBeVisible();
+    await expect(page.locator("#export")).toBeHidden();
+    await expect(page.locator("#options")).toBeHidden();
+    await expect(page.locator("#open-full-size")).toBeVisible();
+
+    const xs = await page.locator("#undo, #redo, #open-full-size").evaluateAll((els) =>
+      els.map((el) => ({ id: el.id, left: el.getBoundingClientRect().left })),
+    );
+    expect(xs.map((x) => x.id)).toEqual(["undo", "redo", "open-full-size"]);
+    expect(xs[0].left).toBeLessThan(xs[1].left);
+    expect(xs[1].left).toBeLessThan(xs[2].left);
+  });
+
+  test("folds toolbar actions into More instead of wrapping when narrow", async ({ page }) => {
+    await page.setViewportSize({ width: 300, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    await expect(page.locator(".toolbar-more")).toBeVisible();
+    await expect(page.locator("#export")).toBeHidden();
+    await expect(page.locator("#open-full-size")).toBeHidden();
+    await expect(page.locator("#new-group")).toBeHidden();
+    await expect.poll(() => page.locator("#toolbar").evaluate((el) => el.getBoundingClientRect().height)).toBeLessThanOrEqual(45);
+
+    await page.locator(".toolbar-more-summary").click();
+    await expect(page.locator("#open-full-size-menu")).toBeVisible();
+    await expect(page.locator("#new-group-menu")).toBeVisible();
+    await expect
+      .poll(async () =>
+        page.locator("#new-group-menu").evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return top === el || !!top?.closest("#new-group-menu");
+        }),
+      )
+      .toBe(true);
+    await page.locator("#tree").click({ position: { x: 5, y: 5 } });
+    await expect(page.locator("#new-group-menu")).toBeHidden();
+
+    await page.locator(".toolbar-more-summary").click();
+    await page.locator("#new-group-menu").click();
+    await expect(groupRows(page)).toHaveCount(1);
+    await expect(page.locator("#new-group-menu")).toBeHidden();
   });
 
   test("export downloads the outline as JSON", async ({ page }) => {

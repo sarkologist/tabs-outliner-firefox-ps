@@ -76,10 +76,11 @@ body {
 #toolbar {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 10;
   flex: none;
+  container-type: inline-size;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
   padding: 8px 10px;
@@ -87,11 +88,19 @@ body {
   background: Canvas;
 }
 
+.toolbar-title {
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .search-wrap {
   position: relative;
   display: flex;
-  flex: 1 1 100px;
-  min-width: 60px;
+  flex: 1 1 76px;
+  min-width: 52px;
 }
 
 #search {
@@ -117,11 +126,12 @@ body {
 #toolbar button {
   display: inline-flex;
   flex: 0 0 auto;
+  width: 24px;
   min-width: 24px;
   height: 24px;
   align-items: center;
   justify-content: center;
-  padding: 0 5px;
+  padding: 0;
   border: 0;
   border-radius: 4px;
   color: inherit;
@@ -142,6 +152,145 @@ body {
 
 #toolbar button:hover {
   background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+.toolbar-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 152px;
+  overflow: hidden;
+  color: color-mix(in srgb, CanvasText 62%, transparent);
+  font-size: 11px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar-slot {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.toolbar-more {
+  position: relative;
+  display: none;
+  flex: 0 0 auto;
+}
+
+.toolbar-more-summary {
+  box-sizing: border-box;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.toolbar-more-summary::-webkit-details-marker {
+  display: none;
+}
+
+.toolbar-more-summary:hover {
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+.overflow-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 3;
+  display: none;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 6px;
+  background: Canvas;
+  box-shadow: 0 8px 22px color-mix(in srgb, CanvasText 18%, transparent);
+}
+
+.toolbar-more[open] .overflow-menu {
+  display: grid;
+}
+
+#toolbar .overflow-menu-item {
+  display: none;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  height: auto;
+  align-items: center;
+  justify-content: stretch;
+  padding: 0 9px;
+  border-radius: 4px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-align: left;
+}
+
+#toolbar .overflow-menu-item:hover,
+#toolbar .overflow-menu-item:focus {
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+  outline: none;
+}
+
+.overflow-text-icon {
+  display: inline-flex;
+  width: 15px;
+  justify-content: center;
+  font-weight: 600;
+}
+
+@container (max-width: 560px) {
+  .priority-medium {
+    display: none;
+  }
+
+  .toolbar-more {
+    display: inline-flex;
+  }
+
+  #toolbar .overflow-medium {
+    display: grid;
+  }
+}
+
+@container (max-width: 430px) {
+  .priority-narrow {
+    display: none;
+  }
+
+  #toolbar .overflow-narrow {
+    display: grid;
+  }
+}
+
+@container (max-width: 340px) {
+  .priority-very-narrow {
+    display: none;
+  }
+
+  .toolbar-title {
+    display: none;
+  }
+
+  .toolbar-status {
+    max-width: 96px;
+  }
+
+  #toolbar .overflow-very-narrow {
+    display: grid;
+  }
+}
+
+@container (max-width: 240px) {
+  .toolbar-status {
+    max-width: 70px;
+  }
 }
 
 /* Notice banner (import errors) ------------------------------------------- */
