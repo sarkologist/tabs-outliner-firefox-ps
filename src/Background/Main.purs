@@ -58,6 +58,7 @@ main = launchAff_ do
   kickRef <- liftEffect (Ref.new (pure unit :: Effect Unit))
   backupPendingRef <- liftEffect (Ref.new false)
   backupKickRef <- liftEffect (Ref.new (pure unit :: Effect Unit))
+  liftEffect $ Browser.initSidebarAction api
   liftEffect $ Browser.subscribe api \ev -> do
     Ref.modify_ (\q -> Array.snoc q ev) queueRef
     join (Ref.read kickRef)

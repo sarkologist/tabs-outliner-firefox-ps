@@ -5,6 +5,15 @@
 
 export const getBrowser = () => globalThis.browser;
 
+export const initSidebarActionImpl = (api) => () => {
+  const action = api && api.action;
+  const sidebar = api && api.sidebarAction;
+  if (!action?.onClicked || typeof sidebar?.open !== "function") return;
+  action.onClicked.addListener(() => {
+    Promise.resolve(sidebar.open()).catch(() => {});
+  });
+};
+
 const BACKUP_ALARM = "tabs-outliner-automatic-backup";
 const BACKUP_ENABLED_KEY = "tabsOutlinerAutomaticBackupsEnabled";
 const BACKUP_LAST_SUCCESS_KEY = "tabsOutlinerAutomaticBackupLastSuccessfulAt";
@@ -239,8 +248,9 @@ export const createTabImpl = (api) => (windowId) => (index) => (url) => () => {
   return Promise.resolve(api.tabs.create(props));
 };
 
-export const createWindowImpl = (api) => (urls) => () =>
-  Promise.resolve(api.windows.create({ url: urls }));
+export const createWindowImpl = (api) => (urls) => () => {
+  return Promise.resolve(api.windows.create({ type: "normal", url: urls })).then(() => undefined);
+};
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
 // tabs.onAttached.
@@ -252,9 +262,10 @@ export const moveTabToWindowImpl = (api) => (tabId) => (windowId) => (index) => 
 export const newWindowWithTabsImpl = (api) => (tabIds) => () => {
   if (tabIds.length === 0) return Promise.resolve();
   const [first, ...rest] = tabIds;
-  return Promise.resolve(api.windows.create({ tabId: first })).then((w) =>
+  const created = api.windows.create({ type: "normal", tabId: first });
+  return Promise.resolve(created).then((w) =>
     Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 })))
-  );
+  ).then(() => undefined);
 };
 
 export const removeTabImpl = (api) => (tabId) => () =>

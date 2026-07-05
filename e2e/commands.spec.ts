@@ -14,6 +14,8 @@ const seed = {
 };
 
 const focusLog = (page: Page) => page.evaluate(() => (globalThis as any).__fake.focusLog as number[]);
+const windowCreateLog = (page: Page) =>
+  page.evaluate(() => (globalThis as any).__fake.windowCreateLog as Array<Record<string, unknown>>);
 const titles = (page: Page) => page.locator("[role=treeitem] .title").allInnerTexts();
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
 const windowUrls = (page: Page) =>
@@ -148,6 +150,7 @@ test.describe("commands", () => {
     const group = nodes.find((n) => n.title === "Group")!;
     expect(beta.parent).toBe(group.id);
     expect(group.windowId).not.toBeNull();
+    expect(await windowCreateLog(page)).toContainEqual(expect.objectContaining({ type: "normal", tabId: 12 }));
   });
 
   test("clicking a closed tab restores it (re-binds the node, no duplicate)", async ({ page }) => {
@@ -244,6 +247,9 @@ test.describe("commands", () => {
     expect(kept.tabs.map((t: any) => t.url)).toEqual(["http://keep"]);
     const restored = windows.find((w: any) => w.id !== 1);
     expect(restored.tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b"]);
+    expect(await windowCreateLog(page)).toContainEqual(
+      expect.objectContaining({ type: "normal", url: ["http://a", "http://b"] })
+    );
   });
 
   test("restoring a closed window restores its tabs in order", async ({ page }) => {
