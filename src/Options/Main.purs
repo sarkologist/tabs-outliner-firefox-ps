@@ -153,7 +153,7 @@ handleAction = case _ of
 
   ResetOne cmd -> do
     st <- H.get
-    let next = Object.delete (Sh.keyOf cmd) st.overrides
+    let next = deleteShortcutOverride cmd st.overrides
     H.liftEffect (Settings.setShortcuts next)
     H.modify_ _ { overrides = next }
 
@@ -244,6 +244,13 @@ row st cmd =
       HH.span [ HP.class_ (ClassName "recording") ] [ HH.text "Press keys… (Esc to cancel)" ]
     else
       HH.span [ HP.class_ (ClassName "kbd") ] [ HH.text (Sh.formatCombo (Sh.bindingFor st.overrides cmd)) ]
+
+deleteShortcutOverride :: Sh.Cmd -> Object String -> Object String
+deleteShortcutOverride cmd =
+  let withoutCurrent = Object.delete (Sh.keyOf cmd)
+  in case cmd of
+    Sh.Group -> Object.delete "newGroup" <<< withoutCurrent
+    _ -> withoutCurrent
 
 -- | The browser-level sidebar-toggle command. Editable here when the commands
 -- | API is present; otherwise a note points at Firefox's own shortcut manager.

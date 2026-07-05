@@ -120,14 +120,14 @@ spec = describe "Model.Reconcile" do
     Map.lookup 11 m.byTab `shouldEqual` Just "n2"
     Map.lookup 1 m.byWindow `shouldEqual` Just "n1"
 
-  it "nests a same-window opener tab under its opener while preserving preorder" do
+  it "places a same-window opener tab directly under the window" do
     let
       m0 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false ]
       m = (applyBrowser 0.0
         (TabOpened { tabId: 13, windowId: 1, openerTabId: Just 11, index: 1, url: Just "http://C", title: "C", active: false, favIconUrl: Nothing })
         m0).model
-    (_.parent <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just "n2")
-    (_.children <$> Map.lookup "n2" m.nodes) `shouldEqual` Just [ "n4" ]
+    (_.parent <$> Map.lookup "n4" m.nodes) `shouldEqual` Just (Just "n1")
+    (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n4", "n3" ]
     liveOrder m `shouldEqual` [ 11, 13, 12 ]
 
   it "falls back to the window when an opener is missing, closed, or cross-window" do

@@ -50,8 +50,8 @@ spec = describe "Model.Scroll" do
       activeTabInWindow 1 fixture `shouldEqual` Just "t2"
     it "scopes to the asked window (each window has its own active tab)" do
       activeTabInWindow 2 fixture `shouldEqual` Just "t4"
-    it "finds an active tab nested under a group inside the window" do
-      activeTabInWindow 3 fixture `shouldEqual` Just "t5"
+    it "does not treat a tab nested under a plain group as owned by the window" do
+      activeTabInWindow 3 fixture `shouldEqual` Nothing
     it "does not cross into a nested live window boundary" do
       let m = mk [ win "outer" 1 [ "inner" ], win "inner" 2 [ "t" ], tab "t" 22 true ] [ "outer" ]
       activeTabInWindow 1 m `shouldEqual` Nothing

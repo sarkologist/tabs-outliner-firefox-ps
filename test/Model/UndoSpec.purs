@@ -2,13 +2,14 @@ module Test.Model.UndoSpec where
 
 import Prelude
 
+import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Model.Command (BrowserAction(..), Command(..), applyCommand)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Tree (applyPatch)
+import Model.Tree (applyPatch, insertAtClamped)
 import Model.Types (Kind(..), Model, defaultNode, emptyModel, isLive)
 import Model.Undo (applyEntry, inversePatch, undoable)
 import Test.Spec (Spec, describe, it)
@@ -24,6 +25,31 @@ runEvents = foldl (\m e -> (applyBrowser 0.0 e m).model) emptyModel
 -- window n1 with live tabs n2 (tab 11, "A") and n3 (tab 12, "B")
 base :: Model
 base = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false ]
+
+closedBase :: Model
+closedBase =
+  let
+    close n = n { tabId = Nothing, active = false, closedAt = Just 0.0 }
+    upserts = Array.mapMaybe (\id -> close <$> Map.lookup id base.nodes) [ "n2", "n3" ]
+  in
+    applyPatch { upserts, removes: [], roots: Nothing } base
+
+insertGroup :: Maybe String -> Int -> Model -> Model
+insertGroup mParent index model =
+  let
+    effParent = case mParent of
+      Just pid | Map.member pid model.nodes -> mParent
+      _ -> Nothing
+    nid = "n" <> show model.nextId
+    g = (defaultNode nid KGroup 0.0) { title = "Group", parent = effParent }
+    parentUpsert = case effParent >>= (\pid -> Map.lookup pid model.nodes) of
+      Just p -> [ p { children = insertAtClamped index nid p.children } ]
+      Nothing -> []
+    rootsM = case effParent of
+      Nothing -> Just (insertAtClamped index nid model.roots)
+      Just _ -> Nothing
+  in
+    (applyPatch { upserts: [ g ] <> parentUpsert, removes: [], roots: rootsM } model) { nextId = model.nextId + 1 }
 
 -- apply a command, then undo it: apply the inverse (computed against the
 -- pre-command model) to the post-command model.
@@ -43,7 +69,7 @@ spec = describe "Model.Undo" do
     undoable (Delete "n1") `shouldEqual` true
     undoable (Move "n1" Nothing 0) `shouldEqual` true
     undoable (Flatten "n1") `shouldEqual` true
-    undoable (NewGroup Nothing 0) `shouldEqual` true
+    undoable (Group "n1") `shouldEqual` true
     undoable (Import { nodes: [], roots: [] }) `shouldEqual` true
 
   it "undo of rename restores the prior (absent) custom title" do
@@ -56,14 +82,16 @@ spec = describe "Model.Undo" do
     (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n2", "n3" ]
     back.roots `shouldEqual` [ "n1" ]
 
-  it "undo of new group removes the created node and restores roots" do
-    let back = undone (NewGroup Nothing 0) base
+  it "undo of group unwraps the node and removes the wrapper" do
+    let back = undone (Group "n2") closedBase
     Map.member "n4" back.nodes `shouldEqual` false
     back.roots `shouldEqual` [ "n1" ]
+    (_.parent <$> Map.lookup "n2" back.nodes) `shouldEqual` Just (Just "n1")
+    (_.children <$> Map.lookup "n1" back.nodes) `shouldEqual` Just [ "n2", "n3" ]
 
   it "undo of flatten restores the dissolved group and its children" do
     let
-      m1 = (applyCommand 0.0 (NewGroup Nothing 0) base).model -- group n4 at roots[0]
+      m1 = insertGroup Nothing 0 base -- group n4 at roots[0]
       m2 = (applyCommand 0.0 (Move "n1" (Just "n4") 0) m1).model -- window n1 under the group
       back = undone (Flatten "n4") m2
     (_.kind <$> Map.lookup "n4" back.nodes) `shouldEqual` Just KGroup
@@ -98,7 +126,7 @@ spec = describe "Model.Undo" do
 
   it "redo re-applies exactly what undo reverted" do
     let
-      m0 = (applyCommand 0.0 (NewGroup (Just "n1") 0) base).model -- group n4 under n1
+      m0 = insertGroup (Just "n1") 0 base -- group n4 under n1
       r = applyCommand 0.0 (Move "n4" Nothing 0) m0 -- move the group out to the root
       undoStep = applyEntry 0.0 (inversePatch 0.0 m0 r.patch) r.model
       redoStep = applyEntry 0.0 undoStep.inverse undoStep.model
@@ -110,7 +138,7 @@ spec = describe "Model.Undo" do
 
   it "undo does not drop a window that opened since the command" do
     let
-      m0 = (applyCommand 0.0 (NewGroup Nothing 0) base).model -- roots [n4, n1]
+      m0 = insertGroup Nothing 0 base -- roots [n4, n1]
       del = applyCommand 0.0 (Delete "n4") m0 -- roots [n1]
       entry = inversePatch 0.0 m0 del.patch -- roots Just [n4, n1]
       -- a browser window opens after the delete, appending a fresh root (n5)
@@ -148,7 +176,7 @@ spec = describe "Model.Undo" do
 
   it "undo of a move keeps a tab opened in the parent meanwhile (no orphan)" do
     let
-      m0 = (applyCommand 0.0 (NewGroup (Just "n1") 0) base).model -- group n4 first under n1: [n4, n2, n3]
+      m0 = insertGroup (Just "n1") 0 base -- group n4 first under n1: [n4, n2, n3]
       moved = applyCommand 0.0 (Move "n4" Nothing 0) m0 -- n4 out of window n1 to the root
       entry = inversePatch 0.0 m0 moved.patch
       -- a new tab (n5, tab 13) opens in window 1 after the move, before the undo

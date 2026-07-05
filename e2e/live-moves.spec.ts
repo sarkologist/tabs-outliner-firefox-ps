@@ -9,6 +9,13 @@ const windowUrls = (page: Page) =>
       .sort()
   );
 
+const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
+const clickAction = async (page: Page, text: string, btn: string) => {
+  const row = rowOf(page, text);
+  await row.hover();
+  await row.locator(btn).click();
+};
+
 test.describe("live-tab moves drive the browser", () => {
   test("dragging a live tab into another window moves the real tab there", async ({ page }) => {
     await bootBackgroundAndSidebar(page, {
@@ -47,18 +54,19 @@ test.describe("live-tab moves drive the browser", () => {
     });
     await expect(page.getByText("Beta")).toBeVisible();
 
-    // a fresh group at the top, then drag Beta into it
-    await page.locator("#new-group").click();
-    const group = page.locator("[role=treeitem]").filter({ hasText: "New group" });
+    // make a saved group around closed Alpha, then drag Beta into it
+    await clickAction(page, "Alpha", ".btn-close");
+    await clickAction(page, "Alpha", ".btn-group");
+    const group = page.locator("[role=treeitem]").filter({ hasText: "Group" });
     await expect(group).toHaveCount(1);
     await page.getByText("Beta").dragTo(group.locator(".title"));
 
-    // a brand-new browser window now holds Beta; window 1 keeps Alpha
-    await expect.poll(() => windowUrls(page)).toEqual([["http://a"], ["http://b"]]);
+    // a brand-new browser window now holds Beta; Alpha is closed history
+    await expect.poll(() => windowUrls(page)).toEqual([["http://b"]]);
 
     // the group node itself went live (bound to the new window) and owns Beta
     const nodes = await readNodes(page);
-    const grp = nodes.find((n) => n.title === "New group");
+    const grp = nodes.find((n) => n.title === "Group");
     expect(grp.windowId).not.toBeNull();
     const beta = nodes.find((n) => n.title === "Beta");
     expect(beta.parent).toBe(grp.id);

@@ -45,6 +45,24 @@ base2 = runEvents [ openTab 11 1 0 "A" true, openTab 12 1 1 "B" false, openTab 2
 run :: Command -> Model -> Model
 run c m = (applyCommand 0.0 c m).model
 
+insertGroup :: Maybe NodeId -> Int -> Model -> Model
+insertGroup mParent index model =
+  let
+    effParent = case mParent of
+      Just pid | Map.member pid model.nodes -> mParent
+      _ -> Nothing
+    nid = "n" <> show model.nextId
+    g = (defaultNode nid KGroup 0.0) { title = "Group", parent = effParent }
+    parentUpsert = case effParent >>= (\pid -> Map.lookup pid model.nodes) of
+      Just p -> [ p { children = insertAtClamped index nid p.children } ]
+      Nothing -> []
+    rootsM = case effParent of
+      Nothing -> Just (insertAtClamped index nid model.roots)
+      Just _ -> Nothing
+    patch = { upserts: [ g ] <> parentUpsert, removes: [], roots: rootsM }
+  in
+    (applyPatch patch model) { nextId = model.nextId + 1 }
+
 -- Close a live tab the way the outliner's "Close (keep history)" does: emit the
 -- removal, then feed the resulting browser onRemoved back as an outliner-initiated
 -- close, so the node is KEPT as closed history. (A plain browser close of a fresh,
@@ -509,10 +527,7 @@ simUserStep s raw =
       6 -> onNode MoveTopLevel
       7 -> onNode MoveBottom
       8 -> onNode Flatten
-      9 ->
-        let parents = [ Nothing ] <> map Just (groupIds s.model)
-            parent = fromMaybe Nothing (pickMaybe parents (rawAt raw 1))
-        in applySimCommand salt (NewGroup parent (userIndex parent s.model (rawAt raw 2))) s
+      9 -> onNode Group
       10 -> onNode (\nid -> Rename nid ("R" <> show (pmod (rawAt raw 2) 1000)))
       11 -> onNode (\nid -> Collapse nid (pmod (rawAt raw 2) 2 == 0))
       12 -> applySimCommand salt (Import (importSnapshot (rawAt raw 1))) s
@@ -585,17 +600,36 @@ spec = describe "Model.Command" do
     (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n3" ]
     r.actions `shouldEqual` [ RemoveTab 11 ]
 
+  it "group wraps a closed tab in a saved group" do
+    let
+      closed = outlinerClose "n2" 11 base
+      r = applyCommand 0.0 (Group "n2") closed
+    r.actions `shouldEqual` []
+    (_.kind <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just KGroup
+    (_.children <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just [ "n2" ]
+    (_.parent <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just (Just "n1")
+    (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n4")
+    (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n4", "n3" ]
+
+  it "group wraps a live tab and makes the wrapper await a new window" do
+    let r = applyCommand 0.0 (Group "n2") base
+    r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+    (map _.node r.model.pendingRestoreWindows) `shouldEqual` [ "n4" ]
+    (_.children <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just [ "n2" ]
+    (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n4")
+    (_.children <$> Map.lookup "n1" r.model.nodes) `shouldEqual` Just [ "n4", "n3" ]
+
   it "move re-parents a (non-live) node to the root" do
     let
-      m0 = run (NewGroup (Just "n1") 0) base -- group n4 as n1's first child
+      m0 = insertGroup (Just "n1") 0 base -- group n4 as n1's first child
       m = run (Move "n4" Nothing 0) m0
     (_.parent <$> Map.lookup "n4" m.nodes) `shouldEqual` Just Nothing
     (_.children <$> Map.lookup "n1" m.nodes) `shouldEqual` Just [ "n2", "n3" ]
     m.roots `shouldEqual` [ "n4", "n1" ]
 
-  it "new group then flatten promotes children and removes the group" do
+  it "saved group fixture then flatten promotes children and removes the group" do
     let
-      m1 = run (NewGroup Nothing 0) base -- group n4 at roots[0]
+      m1 = insertGroup Nothing 0 base -- group n4 at roots[0]
       m2 = run (Move "n1" (Just "n4") 0) m1 -- window n1 under the group (a non-live move)
       m3 = run (Flatten "n4") m2
     (_.kind <$> Map.lookup "n4" m1.nodes) `shouldEqual` Just KGroup
@@ -642,7 +676,7 @@ spec = describe "Model.Command" do
 
   it "closing a window drops its window binding but leaves nested groups untouched" do
     let
-      withGroup = run (NewGroup (Just "n1") 0) base -- group n4 under window n1
+      withGroup = insertGroup (Just "n1") 0 base -- group n4 under window n1
       closed = (applyBrowser 0.0 (WindowClosed { windowId: 1 }) withGroup).model
     -- the window container is no longer live: its windowId binding is gone, so it
     -- now reads as a plain saved group
@@ -734,10 +768,10 @@ spec = describe "Model.Command" do
     reopened.roots `shouldEqual` [ "n1" ]
     Map.size reopened.nodes `shouldEqual` 3
 
-  it "restoring a closed window with nested tabs opens one window in preorder" do
+  it "restoring a closed window with nested tabs restores only direct children" do
     let
-      -- closed window n1 = [ A(n2 -> B(n3)), C(n4) ]; tab nesting is semantic, not
-      -- a browser-window boundary, so all three tabs restore into n1's one window.
+      -- closed window n1 = [ A(n2 -> B(n3)), C(n4) ]; only A and C are direct
+      -- window children, so B waits until it is restored explicitly.
       m0 = applyPatch
         { upserts:
             [ (defaultNode "n1" KGroup 0.0) { title = "W", children = [ "n2", "n4" ] }
@@ -753,19 +787,18 @@ spec = describe "Model.Command" do
       reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
         [ WindowOpened { windowId: 5 }
         , openTab 51 5 0 "a" true
-        , openTab 52 5 1 "b" false
-        , openTab 53 5 2 "c" false
+        , openTab 52 5 1 "c" false
         ]
-    activated.actions `shouldEqual` [ CreateWindow [ "http://a", "http://b", "http://c" ] ]
+    activated.actions `shouldEqual` [ CreateWindow [ "http://a", "http://c" ] ]
     (map _.node activated.model.pendingRestoreWindows) `shouldEqual` [ "n1" ]
-    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "n2" (Cons "n3" (Cons "n4" Nil)) ]
+    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "n2" (Cons "n4" Nil) ]
     (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 5)
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 51)
-    (_.tabId <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just (Just 52)
-    (_.tabId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 53)
-    liveChildIds reopened "n1" `shouldEqual` [ "n2", "n3", "n4" ]
+    (_.tabId <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just Nothing
+    (_.tabId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 52)
+    liveChildIds reopened "n1" `shouldEqual` [ "n2", "n4" ]
 
-  it "restoring a nested tab into a live window uses preorder for the browser index" do
+  it "restoring a tab nested under a tab opens in the current window" do
     let
       m0 = applyPatch
         { upserts:
@@ -779,7 +812,7 @@ spec = describe "Model.Command" do
         }
         emptyModel
       activated = applyCommand 0.0 (Activate "n3") m0
-    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://b") ]
+    activated.actions `shouldEqual` [ CreateTab Nothing Nothing (Just "http://b") ]
 
   it "restoring into an outer live window ignores nested live-window tabs in the browser index" do
     let
@@ -799,10 +832,9 @@ spec = describe "Model.Command" do
       activated = applyCommand 0.0 (Activate "B") m0
     activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 2) (Just "http://b") ]
 
-  -- The unification: a saved GROUP restores exactly like a saved window — its
-  -- owning group goes live in place. Tab nesting is skipped when choosing that
-  -- runtime group/window boundary.
-  it "restoring a closed window with a nested group binds each tab to its own node" do
+  -- The unification: a saved GROUP restores exactly like a saved window, but
+  -- only for its immediate tab children.
+  it "restoring a closed window with a nested group leaves the nested group closed" do
     let
       -- closed window n1 = [ A(n2), group n3 = [ B(n4) ], C(n5) ] — all closed, with urls
       m0 = applyPatch
@@ -818,21 +850,20 @@ spec = describe "Model.Command" do
         }
         emptyModel
       activated = applyCommand 0.0 (Activate "n1") m0
-      -- window 5 reopens n1's own tabs (A, C); window 6 reopens the group's tab (B).
+      -- window 5 reopens n1's own tabs (A, C); the nested group's tab (B) waits
+      -- until that group itself is activated.
       -- the recreated tabs report redirected urls, so only window+order matching works.
       reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
         [ WindowOpened { windowId: 5 }
         , openTabU 51 5 0 "http://a?x" "A"
         , openTabU 52 5 1 "http://c?x" "C"
-        , WindowOpened { windowId: 6 }
-        , openTabU 61 6 0 "http://b?x" "B"
         ]
     -- each closed node rebinds to its OWN recreated tab — C is not crossed with B
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 51) -- A
     (_.tabId <$> Map.lookup "n5" reopened.nodes) `shouldEqual` Just (Just 52) -- C
-    (_.tabId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 61) -- B, in the group's window
+    (_.tabId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just Nothing -- B waits under the nested group
     (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 5)
-    (_.windowId <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just (Just 6)
+    (_.windowId <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just Nothing
 
   it "restoring a saved group lights it up as a new window in place (group goes live)" do
     let
@@ -1036,7 +1067,7 @@ spec = describe "Model.Command" do
 
     it "into a saved group: the group goes live as a new window (queued to rebind)" do
       let
-        withGroup = (applyCommand 0.0 (NewGroup Nothing 0) base2).model -- group n6 at root
+        withGroup = insertGroup Nothing 0 base2 -- group n6 at root
         r = applyCommand 0.0 (Move "n2" (Just "n6") 0) withGroup
       r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
       -- n6 binds when its window opens; it carries no tabs to rebind (the dragged
@@ -1048,7 +1079,7 @@ spec = describe "Model.Command" do
     it "property: live-tab rehome to a saved group tolerates either window/attach event order" $
       quickCheck \(windowFirst :: Boolean) ->
         let
-          withGroup = (applyCommand 0.0 (NewGroup Nothing 0) base2).model -- group n6 at root
+          withGroup = insertGroup Nothing 0 base2 -- group n6 at root
           r = applyCommand 0.0 (Move "n2" (Just "n6") 0) withGroup
           win = WindowOpened { windowId: 5 }
           attach = TabAttached { tabId: 11, windowId: 5, index: 0 }
@@ -1200,7 +1231,7 @@ spec = describe "Model.Command" do
   -- which marks it as a deliberate label worth keeping.
   describe "pruning emptied groups" do
     -- group n4 at root containing a child group n5 (base.nextId is 4)
-    let nested = run (NewGroup (Just "n4") 0) (run (NewGroup Nothing 0) base)
+    let nested = insertGroup (Just "n4") 0 (insertGroup Nothing 0 base)
 
     it "moving a group's last child out prunes the now-empty group" do
       let m = run (Move "n5" Nothing 0) nested
@@ -1220,7 +1251,7 @@ spec = describe "Model.Command" do
 
     it "pruning cascades up, stopping at a renamed ancestor" do
       let
-        deep = run (NewGroup (Just "n5") 0) nested -- group n6 inside n5 inside n4
+        deep = insertGroup (Just "n5") 0 nested -- group n6 inside n5 inside n4
         renamed = run (Rename "n4" "Keep") deep -- keep the outer group
         m = run (Move "n6" Nothing 0) renamed -- empty n5 -> prune n5 -> n4 empty but kept
       Map.lookup "n5" m.nodes `shouldEqual` Nothing

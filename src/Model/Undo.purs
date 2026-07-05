@@ -169,6 +169,6 @@ undoable = case _ of
   MoveTopLevel _ -> true
   MoveBottom _ -> true
   Flatten _ -> true
-  NewGroup _ _ -> true
+  Group _ -> true
   Import _ -> true
   Drop _ _ -> true -- resolves to a Move; a live-tab drop is excluded by `relocates`

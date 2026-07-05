@@ -77,7 +77,6 @@ const node = (over: Record<string, unknown>) => ({
 });
 
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
-const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "New group" });
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 const treeScrollTop = (page: Page) => page.locator("#tree").evaluate((el) => (el as HTMLElement).scrollTop);
 
@@ -214,7 +213,6 @@ test.describe("toolbar", () => {
       "redo",
       "zoom-out",
       "zoom-in",
-      "new-group",
       "export",
       "import",
       "open-full-size",
@@ -249,28 +247,14 @@ test.describe("toolbar", () => {
     await expect(page.locator(".toolbar-more")).toBeVisible();
     await expect(page.locator("#export")).toBeHidden();
     await expect(page.locator("#open-full-size")).toBeHidden();
-    await expect(page.locator("#new-group")).toBeHidden();
+    await expect(page.locator("#new-group")).toHaveCount(0);
+    await expect(page.locator("#new-group-menu")).toHaveCount(0);
     await expect.poll(() => page.locator("#toolbar").evaluate((el) => el.getBoundingClientRect().height)).toBeLessThanOrEqual(45);
 
     await page.locator(".toolbar-more-summary").click();
     await expect(page.locator("#open-full-size-menu")).toBeVisible();
-    await expect(page.locator("#new-group-menu")).toBeVisible();
-    await expect
-      .poll(async () =>
-        page.locator("#new-group-menu").evaluate((el) => {
-          const r = el.getBoundingClientRect();
-          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-          return top === el || !!top?.closest("#new-group-menu");
-        }),
-      )
-      .toBe(true);
     await page.locator("#tree").click({ position: { x: 5, y: 5 } });
-    await expect(page.locator("#new-group-menu")).toBeHidden();
-
-    await page.locator(".toolbar-more-summary").click();
-    await page.locator("#new-group-menu").click();
-    await expect(groupRows(page)).toHaveCount(1);
-    await expect(page.locator("#new-group-menu")).toBeHidden();
+    await expect(page.locator("#open-full-size-menu")).toBeHidden();
   });
 
   test("export downloads the outline as JSON", async ({ page }) => {

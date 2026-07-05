@@ -34,7 +34,7 @@ import Foreign.Object as Object
 
 -- | Every action a keyboard shortcut can trigger in the sidebar.
 data Cmd
-  = NewGroup
+  = Group
   | FocusSearch
   | ZoomIn
   | ZoomOut
@@ -50,13 +50,13 @@ instance showCmd :: Show Cmd where
 
 -- | Stable order; also the order shown on the options page.
 allCmds :: Array Cmd
-allCmds = [ NewGroup, FocusSearch, ZoomIn, ZoomOut, ResetZoom, Export, Import ]
+allCmds = [ Group, FocusSearch, ZoomIn, ZoomOut, ResetZoom, Export, Import ]
 
 -- | Stable key under which an override for this command is persisted. Never
 -- | localized — changing these orphans existing user overrides.
 keyOf :: Cmd -> String
 keyOf = case _ of
-  NewGroup -> "newGroup"
+  Group -> "group"
   FocusSearch -> "focusSearch"
   ZoomIn -> "zoomIn"
   ZoomOut -> "zoomOut"
@@ -67,7 +67,7 @@ keyOf = case _ of
 -- | Human label shown on the options page.
 labelOf :: Cmd -> String
 labelOf = case _ of
-  NewGroup -> "New group"
+  Group -> "Group"
   FocusSearch -> "Focus search"
   ZoomIn -> "Zoom in"
   ZoomOut -> "Zoom out"
@@ -80,7 +80,7 @@ labelOf = case _ of
 -- | re-bindable from the options page.
 defaultBinding :: Cmd -> String
 defaultBinding = case _ of
-  NewGroup -> "n"
+  Group -> "n"
   FocusSearch -> "/"
   ZoomIn -> "="
   ZoomOut -> "-"
@@ -93,7 +93,14 @@ defaultBinding = case _ of
 bindingFor :: Object String -> Cmd -> String
 bindingFor overrides c = case Object.lookup (keyOf c) overrides of
   Just s | s /= "" -> s
-  _ -> defaultBinding c
+  _ -> case legacyKeyOf c >>= \k -> Object.lookup k overrides of
+    Just s | s /= "" -> s
+    _ -> defaultBinding c
+
+legacyKeyOf :: Cmd -> Maybe String
+legacyKeyOf = case _ of
+  Group -> Just "newGroup"
+  _ -> Nothing
 
 -- | Which command (if any) a pressed combo triggers, honoring overrides.
 cmdForCombo :: Object String -> String -> Maybe Cmd

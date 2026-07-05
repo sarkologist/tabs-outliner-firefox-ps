@@ -120,9 +120,9 @@ data Action
   | CloseClick NodeId
   | DeleteClick NodeId
   | FlattenClick NodeId
+  | GroupClick NodeId
   | MoveTopLevelClick NodeId
   | MoveBottomClick NodeId
-  | NewGroupTop
   | StartRename NodeId String
   | EditInput String
   | EditKey String
@@ -238,9 +238,9 @@ handleAction = case _ of
   CloseClick nid -> sendCommand (CloseNode nid)
   DeleteClick nid -> sendCommand (Delete nid)
   FlattenClick nid -> sendCommand (Flatten nid)
+  GroupClick nid -> sendCommand (Group nid)
   MoveTopLevelClick nid -> sendCommand (MoveTopLevel nid)
   MoveBottomClick nid -> sendCommand (MoveBottom nid)
-  NewGroupTop -> sendCommand (NewGroup Nothing 0)
 
   StartRename nid text -> H.modify_ _ { editing = Just { id: nid, text }, hover = Nothing }
   EditInput text -> H.modify_ \s -> s { editing = map (_ { text = text }) s.editing }
@@ -324,7 +324,11 @@ handleAction = case _ of
   RunUndo -> sendRequest Undo
   RunRedo -> sendRequest Redo
   RunShortcut cmd -> case cmd of
-    Sh.NewGroup -> handleAction NewGroupTop
+    Sh.Group -> do
+      st <- H.get
+      case st.hover of
+        Just nid -> handleAction (GroupClick nid)
+        Nothing -> pure unit
     Sh.FocusSearch -> H.liftEffect focusSearch
     Sh.ZoomIn -> handleAction (Zoom 1.1)
     Sh.ZoomOut -> handleAction (Zoom (1.0 / 1.1))
@@ -543,7 +547,6 @@ render st =
           , toolbarSlot "priority-medium" (textBtn "zoom-out" "Zoom out" "A−" (Zoom (1.0 / 1.1)))
           , toolbarSlot "priority-medium" (textBtn "zoom-in" "Zoom in" "A+" (Zoom 1.1)
           )
-          , toolbarSlot "priority-very-narrow" (iconBtn "new-group" "New group" "group" NewGroupTop)
           , toolbarSlot "priority-medium" (iconBtn "export" "Export" "export" ExportClick)
           , toolbarSlot "priority-medium" (iconBtn "import" "Import" "import" ImportClick)
           , toolbarSlot "priority-narrow" (iconBtn "options" "Options" "gear" OpenOptions)
@@ -616,7 +619,6 @@ render st =
           , menuIconBtn "undo-menu" "Undo (Ctrl+Z)" "undo" RunUndo "overflow-very-narrow"
           , menuIconBtn "redo-menu" "Redo (Ctrl+Shift+Z)" "redo" RunRedo "overflow-very-narrow"
           , menuIconBtn "open-full-size-menu" "Open full-size outliner" "expand" OpenFullSizeOutlinerClick "overflow-very-narrow"
-          , menuIconBtn "new-group-menu" "New group" "group" NewGroupTop "overflow-very-narrow"
           ]
       ]
   menuIconBtn i label name act priority =
@@ -702,6 +704,7 @@ buttons query r =
   -- In search mode the projection contains only direct matches and their path
   -- ancestors, so every rendered row can be revealed in the normal tree.
   (if searchActive query then [ btn "btn-show-in-tree" "Show in tree" "locate" (ShowInTreeClick r.id) ] else [])
+    <> [ btn "btn-group" "Group" "group" (GroupClick r.id) ]
     <> [ btn "btn-rename" "Rename" "pencil" (StartRename r.id r.title) ]
     <> (if r.live then [ btn "btn-close" "Close" "close-circle" (CloseClick r.id) ] else [])
     <> (if r.kind == KGroup then [ btn "btn-flatten" "Flatten" "flatten" (FlattenClick r.id) ] else [])

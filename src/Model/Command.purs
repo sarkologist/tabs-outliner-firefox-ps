@@ -13,7 +13,7 @@ import Data.Argonaut.Encode (encodeJson)
 import Data.Array as Array
 import Data.Bifunctor (lmap)
 import Data.Either (Either(..))
-import Data.Foldable (foldl, foldr)
+import Data.Foldable (foldl)
 import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
@@ -21,7 +21,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabCountInWindow, liveWindowNode, mergePatch, nearestGroupAncestor, pruneFrom, rootAncestor, subtreeIds)
+import Model.Tree (applyPatch, directGroupParent, insertAtClamped, isAncestorOrSelf, liveTabCountInWindow, liveWindowNode, mergePatch, pruneFrom, rootAncestor, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, defaultNode, emptyPatch, isLiveTab)
 
 data Command
@@ -35,7 +35,7 @@ data Command
   | MoveTopLevel NodeId -- pull a nested node out to the root, just after its root ancestor
   | MoveBottom NodeId -- pull a node out to the very bottom of the root list
   | Flatten NodeId -- dissolve a group, promoting its children
-  | NewGroup (Maybe NodeId) Int -- new folder under parent at index
+  | Group NodeId -- wrap a node in a group/window
   | Import Snapshot -- add an exported outline as inert, restorable top-level nodes
   | Drop NodeId NodeId -- drag dragId onto targetId; resolved here to a Move
 
@@ -65,8 +65,8 @@ instance showBrowserAction :: Show BrowserAction where
   show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
   show (RemoveTab t) = "RemoveTab " <> show t
 
--- | Where a restored tab should reopen, decided by its nearest group ancestor.
--- | Tab nesting is semantic history; only groups bind/create browser windows.
+-- | Where a restored tab should reopen, decided by its direct group parent.
+-- | Tabs nested under tabs do not inherit a group/window owner.
 data RestoreTarget
   = IntoWindow Int -- parent already live as a window (reopen the tab back into it)
   | IntoNewWindow NodeId -- saved-container parent (its tabs open one new window it goes live as)
@@ -75,6 +75,9 @@ data RestoreTarget
 derive instance eqRestoreTarget :: Eq RestoreTarget
 
 type CmdResult = { model :: Model, patch :: Patch, actions :: Array BrowserAction }
+
+groupTitle :: String
+groupTitle = "Group"
 
 -- | Run a command, then restore the invariant that a tab never sits bare at the
 -- | root (every KTab has a container parent). Wrapping is centralized here so it
@@ -104,7 +107,7 @@ wrapRootTabsModel now model =
   let
     wrap a rootId = case Map.lookup rootId model.nodes of
       Just n | n.kind == KTab && not (isLiveTab n) ->
-        let g = (defaultNode ("n" <> show a.nid) KGroup now) { title = "New group", children = [ rootId ] }
+        let g = (defaultNode ("n" <> show a.nid) KGroup now) { title = groupTitle, children = [ rootId ] }
         in { roots: Array.snoc a.roots g.id, ups: a.ups <> [ g, n { parent = Just g.id } ], nid: a.nid + 1 }
       _ -> a { roots = Array.snoc a.roots rootId }
     acc = foldl wrap { roots: [], ups: [], nid: model.nextId } model.roots
@@ -137,7 +140,7 @@ applyCommandRaw now cmd model = case cmd of
   -- tabIds as outliner-initiated, letting Model.Reconcile keep them (even a
   -- restored tab, which a *browser* close would instead drop).
   CloseNode nid ->
-    let tabIds = liveTabIds nid
+    let tabIds = ownedLiveTabIds nid
     in
       { model: model { closingTabs = Set.union model.closingTabs (Set.fromFoldable tabIds) }
       , patch: emptyPatch
@@ -154,7 +157,7 @@ applyCommandRaw now cmd model = case cmd of
         patch = { upserts: parentUpserts, removes: ids, roots: rootsM }
       in
         withPrune node.parent
-          { model: applyPatch patch model, patch, actions: map RemoveTab (liveTabIds nid) }
+          { model: applyPatch patch model, patch, actions: map RemoveTab (subtreeLiveTabIds nid) }
 
   Move nid mParent index -> move nid mParent index
 
@@ -177,22 +180,7 @@ applyCommandRaw now cmd model = case cmd of
 
   Flatten nid -> flatten nid
 
-  NewGroup mParent index ->
-    let
-      -- fall back to top-level if the named parent doesn't exist
-      effParent = case mParent of
-        Just pid | Map.member pid model.nodes -> mParent
-        _ -> Nothing
-      nid = "n" <> show model.nextId
-      g = (defaultNode nid KGroup now) { title = "New group", parent = effParent }
-      patch =
-        { upserts: [ g ] <> insertUpserts effParent index nid
-        , removes: []
-        , roots: rootInsert effParent index nid
-        }
-      model' = (applyPatch patch model) { nextId = model.nextId + 1 }
-    in
-      { model: model', patch, actions: [] }
+  Group nid -> groupNode nid
 
   Import snap ->
     let
@@ -277,9 +265,17 @@ applyCommandRaw now cmd model = case cmd of
     Nothing -> r
     Just pid -> let p = pruneFrom pid r.model in { model: p.model, patch: mergePatch r.patch p.patch, actions: r.actions }
 
-  -- live tab ids in the subtree rooted at nid (a tabId is present only on a live tab)
-  liveTabIds :: NodeId -> Array Int
-  liveTabIds nid = Array.mapMaybe
+  -- live tab ids owned by nid under direct ownership.
+  ownedLiveTabIds :: NodeId -> Array Int
+  ownedLiveTabIds nid = case Map.lookup nid model.nodes of
+    Just n | n.kind == KTab -> Array.fromFoldable n.tabId
+    Just n | n.kind == KGroup ->
+      Array.mapMaybe (\cid -> Map.lookup cid model.nodes >>= \c -> if c.kind == KTab then c.tabId else Nothing) n.children
+    _ -> []
+
+  -- live tab ids in the whole subtree, for destructive delete.
+  subtreeLiveTabIds :: NodeId -> Array Int
+  subtreeLiveTabIds nid = Array.mapMaybe
     (\i -> Map.lookup i model.nodes >>= _.tabId)
     (subtreeIds nid model)
 
@@ -291,12 +287,13 @@ applyCommandRaw now cmd model = case cmd of
       Nothing -> []
     Nothing -> []
 
-  -- restore: re-open every closed tab in the subtree, re-binding to existing
+  -- restore: re-open this closed tab, or the immediate closed tab children of
+  -- this group, re-binding to existing
   -- nodes via pendingRestore (keyed by the window each tab is recreated in) when
-  -- each onCreated arrives. Tab parents are skipped when choosing the runtime
-  -- container: the nearest group ancestor owns the browser window. A live group
+  -- each onCreated arrives. Only the direct group parent chooses the runtime
+  -- container. A live group
   -- reopens tabs back into its window; a saved group opens one new window and
-  -- goes live in place; a tab with no group ancestor reopens in the current window.
+  -- goes live in place; a tab with no group parent reopens in the current window.
   restore :: NodeId -> CmdResult
   restore nid =
     let
@@ -305,8 +302,7 @@ applyCommandRaw now cmd model = case cmd of
             <> Array.concatMap (Array.fromFoldable <<< _.tabs) model.pendingRestoreWindows
         )
       queuedWindows = Set.fromFoldable (map _.node model.pendingRestoreWindows)
-      closedTabs = Array.filter (\n -> n.kind == KTab && not (isLiveTab n))
-        (Array.mapMaybe (\i -> Map.lookup i model.nodes) (subtreeIds nid model))
+      closedTabs = restoreTabs nid
       -- only tabs with a url can be reopened; keep subtree (preorder) order
       tagged = Array.mapMaybe
         ( \n ->
@@ -357,13 +353,11 @@ applyCommandRaw now cmd model = case cmd of
           restoring = Set.fromFoldable
             (queued <> map _.id (Array.filter (\x -> x.target == IntoWindow wid) ready))
           counts n = isLiveTab n || Set.member n.id restoring
-          ordered = Array.fromFoldable (go w.id Nil)
-          go cid rest = case Map.lookup cid model.nodes of
-            Nothing -> rest
-            Just n | cid /= w.id && n.kind == KGroup && n.windowId /= Nothing -> rest
-            Just n ->
-              let tail = foldr go rest n.children
-              in if n.kind == KTab && counts n then Cons cid tail else tail
+          ordered = case Map.lookup w.id model.nodes of
+            Nothing -> []
+            Just wn -> Array.filter
+              (\cid -> maybe false counts (Map.lookup cid model.nodes))
+              wn.children
         Array.elemIndex id ordered
 
       -- Mark every closed tab we are reopening so a later *browser* close keeps it as
@@ -385,18 +379,40 @@ applyCommandRaw now cmd model = case cmd of
       , actions: windowActions <> tabActions
       }
 
-  -- insert child id into mParent's children at index (returns the parent upsert)
-  insertUpserts :: Maybe NodeId -> Int -> NodeId -> Array Node
-  insertUpserts mParent index child = case mParent of
-    Just pid -> case Map.lookup pid model.nodes of
-      Just p -> [ p { children = insertAtClamped index child p.children } ]
-      Nothing -> []
-    Nothing -> []
+  restoreTabs :: NodeId -> Array Node
+  restoreTabs nid = case Map.lookup nid model.nodes of
+    Just n | n.kind == KTab && not (isLiveTab n) -> [ n ]
+    Just n | n.kind == KGroup ->
+      Array.mapMaybe
+        ( \cid -> case Map.lookup cid model.nodes of
+            Just c | c.kind == KTab && not (isLiveTab c) -> Just c
+            _ -> Nothing
+        )
+        n.children
+    _ -> []
 
-  rootInsert :: Maybe NodeId -> Int -> NodeId -> Maybe (Array NodeId)
-  rootInsert mParent index child = case mParent of
-    Nothing -> Just (insertAtClamped index child model.roots)
-    Just _ -> Nothing
+  groupNode :: NodeId -> CmdResult
+  groupNode nid = case Map.lookup nid model.nodes of
+    Nothing -> noChange
+    Just node ->
+      let
+        gid = "n" <> show model.nextId
+        g = (defaultNode gid KGroup now) { title = groupTitle, parent = node.parent, children = [ nid ] }
+        node' = node { parent = Just gid }
+        parentUpserts = case node.parent >>= (\pid -> Map.lookup pid model.nodes) of
+          Just p -> [ p { children = spliceReplace nid [ gid ] p.children } ]
+          Nothing -> []
+        rootsM = if Array.elem nid model.roots then Just (spliceReplace nid [ gid ] model.roots) else Nothing
+        patch = { upserts: [ g, node' ] <> parentUpserts, removes: [], roots: rootsM }
+        model' = (applyPatch patch model) { nextId = model.nextId + 1 }
+      in
+        case node.tabId of
+          Just t ->
+            { model: model' { pendingRestoreWindows = pushPending gid model'.pendingRestoreWindows }
+            , patch
+            , actions: [ NewWindowWithTabs [ t ] ]
+            }
+          Nothing -> { model: model', patch, actions: [] }
 
   move :: NodeId -> Maybe NodeId -> Int -> CmdResult
   move nid mParent index = case Map.lookup nid model.nodes of
@@ -516,12 +532,11 @@ spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 pushPending :: NodeId -> Array PendingWindow -> Array PendingWindow
 pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.snoc xs { node: pid, tabs: Nil }
 
--- | Where a closed tab node should reopen. Tab parents are not window boundaries:
--- | the nearest group ancestor owns the runtime window. A live group -> back into
--- | that window; a saved group -> a new window that the group goes live as; no
--- | group ancestor (a bare root tab) -> the current window.
+-- | Where a closed tab node should reopen. Only a direct group parent owns the
+-- | runtime window. A live group -> back into that window; a saved group -> a new
+-- | window that the group goes live as; no group parent -> the current window.
 restoreTargetOf :: Model -> NodeId -> RestoreTarget
-restoreTargetOf model nid = case nearestGroupAncestor model nid of
+restoreTargetOf model nid = case directGroupParent model nid of
   Just p
     | Just wid <- p.windowId -> IntoWindow wid
     | otherwise -> IntoNewWindow p.id
@@ -613,7 +628,7 @@ encodeCommand = case _ of
   MoveTopLevel nid -> encodeJson { tag: "moveTopLevel", id: nid }
   MoveBottom nid -> encodeJson { tag: "moveBottom", id: nid }
   Flatten nid -> encodeJson { tag: "flatten", id: nid }
-  NewGroup parent index -> encodeJson { tag: "newGroup", parent, index }
+  Group nid -> encodeJson { tag: "group", id: nid }
   Import snap -> encodeJson { tag: "import", body: encodeSnapshotData snap }
   Drop drag target -> encodeJson { tag: "drop", drag, target }
 
@@ -631,7 +646,7 @@ decodeCommand json = do
     "moveTopLevel" -> (\r -> MoveTopLevel r.id) <$> (dec json :: Either String { id :: NodeId })
     "moveBottom" -> (\r -> MoveBottom r.id) <$> (dec json :: Either String { id :: NodeId })
     "flatten" -> (\r -> Flatten r.id) <$> (dec json :: Either String { id :: NodeId })
-    "newGroup" -> (\r -> NewGroup r.parent r.index) <$> (dec json :: Either String { parent :: Maybe NodeId, index :: Int })
+    "group" -> (\r -> Group r.id) <$> (dec json :: Either String { id :: NodeId })
     "import" -> do
       { body } <- dec json :: Either String { body :: Json }
       Import <$> decodeSnapshot body

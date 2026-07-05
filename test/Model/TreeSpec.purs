@@ -5,7 +5,7 @@ import Prelude
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Model.Tree (applyPatch, insertAtClamped, insertAtLive, isLiveWindow, liveInsertIndex, liveInsertSlot, liveTabPreorder, moveWithin, nearestGroupAncestor, rootAncestor, searchVisible, subtreeIds, visible)
+import Model.Tree (applyPatch, directGroupParent, insertAtClamped, insertAtLive, isLiveWindow, liveInsertIndex, liveInsertSlot, liveTabPreorder, moveWithin, rootAncestor, searchVisible, subtreeIds, visible)
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -67,7 +67,7 @@ spec = describe "Model.Tree" do
       subtreeIds "C" fixture `shouldEqual` [ "C", "D" ]
       subtreeIds "A" fixture `shouldEqual` [ "A", "B", "C", "D" ]
 
-  describe "nested tab helpers" do
+  describe "direct tab ownership helpers" do
     let
       nested = applyPatch
         { upserts:
@@ -80,13 +80,14 @@ spec = describe "Model.Tree" do
         , roots: Just [ "W" ]
         }
         emptyModel
-    it "lists live tabs in preorder through tab nesting" do
-      liveTabPreorder nested "W" `shouldEqual` [ "A", "B", "C" ]
-    it "finds the nearest group ancestor, skipping tab parents" do
-      (_.id <$> nearestGroupAncestor nested "B") `shouldEqual` Just "W"
-    it "prefers an opener slot when it exactly matches browser order" do
-      liveInsertSlot nested "W" (Just "A") 1 `shouldEqual` { parent: "A", index: 0 }
-    it "falls back to direct window placement when that exactly matches" do
+    it "lists only immediate live tab children" do
+      liveTabPreorder nested "W" `shouldEqual` [ "A", "C" ]
+    it "finds only a direct group parent" do
+      (_.id <$> directGroupParent nested "A") `shouldEqual` Just "W"
+      directGroupParent nested "B" `shouldEqual` Nothing
+    it "ignores opener parents and inserts directly in the window" do
+      liveInsertSlot nested "W" (Just "A") 1 `shouldEqual` { parent: "W", index: 1 }
+    it "appends after the direct live children" do
       liveInsertSlot nested "W" Nothing 3 `shouldEqual` { parent: "W", index: 2 }
     it "does not count or enter nested live-window groups for an outer window slot" do
       let
@@ -140,7 +141,7 @@ spec = describe "Model.Tree" do
       rootAncestor "X" cyclic `shouldEqual` "X"
 
   describe "isLiveWindow" do
-    it "is true for a container with a live tab descendant, false otherwise" do
+    it "is true for a container with an immediate live tab child, false otherwise" do
       let
         liveTab = (defaultNode "t" KTab 0.0) { tabId = Just 1 }
         parentTab = (defaultNode "pt" KTab 0.0) { parent = Just "nw", children = [ "nt" ] }
@@ -159,7 +160,7 @@ spec = describe "Model.Tree" do
       (isLiveWindow m <$> Map.lookup "w" m.nodes) `shouldEqual` Just true
       (isLiveWindow m <$> Map.lookup "g" m.nodes) `shouldEqual` Just false -- empty container
       (isLiveWindow m <$> Map.lookup "h" m.nodes) `shouldEqual` Just false -- only a closed-tab child
-      (isLiveWindow m <$> Map.lookup "nw" m.nodes) `shouldEqual` Just true -- nested live tab descendant
+      (isLiveWindow m <$> Map.lookup "nw" m.nodes) `shouldEqual` Just false -- nested tab descendants are not owned
       (isLiveWindow m <$> Map.lookup "t" m.nodes) `shouldEqual` Just false -- a tab is never a window
 
   describe "array helpers" do

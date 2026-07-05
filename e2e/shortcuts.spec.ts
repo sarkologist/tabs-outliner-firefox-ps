@@ -17,9 +17,8 @@ const seed = {
 const fontScale = (page: Page) =>
   page.locator("#app").evaluate((el) => Number((el as HTMLElement).style.getPropertyValue("--font-scale")));
 
-// Group rows in the tree only — scoped to [role=treeitem] so the toolbar's own
-// "New group" button (same label) never counts.
-const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "New group" });
+const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
+const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "Group" });
 
 // Make sure the keydown lands on <body>, not a lingering focused input.
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -45,10 +44,11 @@ async function bootOptionsWithCommands(page: Page): Promise<void> {
 }
 
 test.describe("sidebar keyboard shortcuts", () => {
-  test("the New group shortcut (default n) adds a folder", async ({ page }) => {
+  test("the Group shortcut (default n) wraps the hovered row", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
     await expect(groupRows(page)).toHaveCount(0);
+    await rowOf(page, "Alpha").hover();
     await blur(page);
     await page.keyboard.press("n");
     await expect(groupRows(page)).toHaveCount(1);
@@ -77,7 +77,7 @@ test.describe("sidebar keyboard shortcuts", () => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
     await page.locator("#search").click();
-    await page.keyboard.type("n"); // would create a group if the shortcut fired
+    await page.keyboard.type("n"); // would group the hovered row if the shortcut fired
     await expect(page.locator("#search")).toHaveValue("n");
     await page.waitForTimeout(300); // let any erroneous command round-trip land
     await expect(groupRows(page)).toHaveCount(0);
@@ -86,6 +86,7 @@ test.describe("sidebar keyboard shortcuts", () => {
   test("auto-repeat (held key) does not re-fire a shortcut", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
+    await rowOf(page, "Alpha").hover();
     await blur(page);
     // a repeat keydown (as the browser sends while a key is held) is ignored
     await page.evaluate(() =>
@@ -101,8 +102,9 @@ test.describe("sidebar keyboard shortcuts", () => {
   test("a user override re-binds a command, picked up live (no reload)", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
-    // remap New group from "n" to "g" after the sidebar is already running
-    await page.evaluate(() => localStorage.setItem("shortcuts", JSON.stringify({ newGroup: "g" })));
+    // remap Group from "n" to "g" after the sidebar is already running
+    await page.evaluate(() => localStorage.setItem("shortcuts", JSON.stringify({ group: "g" })));
+    await rowOf(page, "Alpha").hover();
     await blur(page);
     // the newly-bound key creates a group (proves the override is read live)...
     await page.keyboard.press("g");
@@ -117,19 +119,19 @@ test.describe("sidebar keyboard shortcuts", () => {
 test.describe("options page", () => {
   test("records a new binding and persists it", async ({ page }) => {
     await bootOptions(page);
-    const row = page.locator("#shortcuts tr", { hasText: "New group" });
+    const row = page.locator("#shortcuts tr", { hasText: "Group" });
     await expect(row.locator(".kbd")).toHaveText("N"); // formatted default
     await row.getByRole("button", { name: "Change", exact: true }).click();
     await expect(row.locator(".recording")).toBeVisible();
     await page.keyboard.press("g");
     await expect(row.locator(".kbd")).toHaveText("G");
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("shortcuts") || "{}"));
-    expect(stored).toEqual({ newGroup: "g" });
+    expect(stored).toEqual({ group: "g" });
   });
 
   test("Reset restores a command's default", async ({ page }) => {
     await bootOptions(page, { newGroup: "g" });
-    const row = page.locator("#shortcuts tr", { hasText: "New group" });
+    const row = page.locator("#shortcuts tr", { hasText: "Group" });
     await expect(row.locator(".kbd")).toHaveText("G");
     await row.getByRole("button", { name: "Reset", exact: true }).click();
     await expect(row.locator(".kbd")).toHaveText("N");
@@ -138,8 +140,8 @@ test.describe("options page", () => {
   });
 
   test("warns when two actions share a binding", async ({ page }) => {
-    // bind New group to "/", which collides with Focus search's default
-    await bootOptions(page, { newGroup: "/" });
+    // bind Group to "/", which collides with Focus search's default
+    await bootOptions(page, { group: "/" });
     await expect(page.locator(".warn")).toBeVisible();
     await expect(page.locator(".warn")).toContainText("more than one action");
   });

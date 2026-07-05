@@ -24,7 +24,7 @@ import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
-import Model.Tree (insertAtClamped, liveInsertSlot, nearestGroupAncestor)
+import Model.Tree (directGroupParent, insertAtClamped, liveInsertSlot)
 import Model.Types (Kind(..), Model, Node, NodeId, RuntimeTab, RuntimeWindow, defaultNode, isLiveTab)
 
 type Acc =
@@ -138,8 +138,7 @@ addToPool m n = case n.url of
   Just u -> Map.alter (Just <<< maybe (List.singleton n.id) (Cons n.id)) u m
   Nothing -> m
 
--- url -> the group/window that owns a prior-live tab with that url. Tab parents
--- are semantic nesting, not browser window boundaries.
+-- url -> the group/window that directly owns a prior-live tab with that url.
 addUrlWindow :: Model -> Map String NodeId -> Node -> Map String NodeId
 addUrlWindow model m n = case n.url, owningGroupId model n.id of
   Just u, Just p -> Map.insert u p m
@@ -161,7 +160,7 @@ accModel a =
   }
 
 owningGroupId :: Model -> NodeId -> Maybe NodeId
-owningGroupId model nid = _.id <$> nearestGroupAncestor model nid
+owningGroupId model nid = _.id <$> directGroupParent model nid
 
 processWindow :: Number -> Map String NodeId -> Acc -> RuntimeWindow -> Acc
 processWindow now urlToWin acc cw =
@@ -301,10 +300,7 @@ freshTab :: Number -> NodeId -> Acc -> RuntimeTab -> Acc
 freshTab now winId acc ct =
   let
     model = accModel acc
-    preferredParent = ct.openerTabId >>= \openerTabId -> do
-      opener <- Map.lookup openerTabId acc.byTab
-      if owningGroupId model opener == Just winId then Just opener else Nothing
-    slot = liveInsertSlot model winId preferredParent ct.index
+    slot = liveInsertSlot model winId Nothing ct.index
     nid = mkId acc.nextId
     n = (defaultNode nid KTab now)
       { title = ct.title, url = ct.url, favIconUrl = ct.favIconUrl, active = ct.active, tabId = Just ct.tabId, parent = Just slot.parent }

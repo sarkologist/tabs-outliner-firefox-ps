@@ -24,7 +24,7 @@ design that still delivers the essential product.
   brings the subtree back as restorable history (its live tabs were already closed).
 - Search the outline, including matches inside collapsed groups.
 - Font zoom and JSON export/import of the outline.
-- **Configurable keyboard shortcuts** for the toolbar actions (new group, focus search, zoom,
+- **Configurable keyboard shortcuts** for actions (group hovered row, focus search, zoom,
   export, import), editable on a dedicated options page — plus a browser-level shortcut to
   toggle the sidebar open/closed (default `Ctrl+Shift+Y`, `Cmd+Shift+Y` on macOS; unset on
   Linux, where it collides with Firefox's Downloads). The toggle is editable right on the

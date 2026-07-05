@@ -56,12 +56,37 @@ test.describe("commands", () => {
     await expect(page.getByText("Alpha")).toHaveCount(0);
   });
 
-  test("new group adds a folder at the top", async ({ page }) => {
+  test("group wraps a closed tab in a saved group", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await page.locator("#new-group").click();
-    // scope to the tree: the toolbar's own "New group" button shares this text,
-    // so an unscoped getByText is a strict-mode race (button vs. created node)
-    await expect(page.locator("[role=treeitem]").filter({ hasText: "New group" })).toHaveCount(1);
+    await clickAction(page, "Beta", ".btn-close");
+    await clickAction(page, "Beta", ".btn-group");
+
+    const nodes = await readNodes(page);
+    const beta = nodes.find((n) => n.title === "Beta")!;
+    const group = nodes.find((n) => n.title === "Group")!;
+    expect(beta.parent).toBe(group.id);
+    expect(group.windowId ?? null).toBeNull();
+    await expect(page.locator("[role=treeitem]").filter({ hasText: "Group" })).toHaveCount(1);
+  });
+
+  test("group wraps a live tab in a new browser window", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await clickAction(page, "Beta", ".btn-group");
+
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          ((globalThis as any).__fake.listWindows() as Array<{ tabs: Array<{ url: string }> }>)
+            .map((w) => w.tabs.map((t) => t.url).sort())
+            .sort()
+        )
+      )
+      .toEqual([["http://a"], ["http://b"]]);
+    const nodes = await readNodes(page);
+    const beta = nodes.find((n) => n.title === "Beta")!;
+    const group = nodes.find((n) => n.title === "Group")!;
+    expect(beta.parent).toBe(group.id);
+    expect(group.windowId).not.toBeNull();
   });
 
   test("clicking a closed tab restores it (re-binds the node, no duplicate)", async ({ page }) => {
@@ -160,7 +185,7 @@ test.describe("commands", () => {
     expect(restored.tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b"]);
   });
 
-  test("restoring a closed window with nested tabs uses one browser window in preorder", async ({ page }) => {
+  test("restoring a closed window restores its direct child tabs in order", async ({ page }) => {
     await bootBackgroundAndSidebar(page, {
       windows: [
         {

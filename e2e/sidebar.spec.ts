@@ -29,15 +29,15 @@ test.describe("sidebar view", () => {
     await expect(page.getByText("Gamma")).toBeVisible();
   });
 
-  test("nests a tab opened from another tab under its opener", async ({ page }) => {
+  test("places a tab opened from another tab directly under its window", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
     await fake(page, "openTab", { id: 13, windowId: 1, openerTabId: 11, index: 1, url: "http://c", title: "Gamma" });
     await expect.poll(() => page.locator("[role=treeitem] .title").allInnerTexts()).toEqual(["Window", "Alpha", "Gamma", "Beta"]);
     const nodes = await readNodes(page);
-    const alpha = nodes.find((n) => n.title === "Alpha");
+    const win = nodes.find((n) => n.title === "Window");
     const gamma = nodes.find((n) => n.title === "Gamma");
-    expect(gamma.parent).toBe(alpha.id);
+    expect(gamma.parent).toBe(win.id);
   });
 
   test("a browser-closed fresh tab is removed from the view", async ({ page }) => {
