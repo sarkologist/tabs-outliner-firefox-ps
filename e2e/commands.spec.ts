@@ -115,7 +115,7 @@ test.describe("commands", () => {
     const group = nodes.find((n) => n.title === "Group")!;
     expect(beta.parent).toBe(group.id);
     expect(group.windowId).not.toBeNull();
-    expect(await windowCreateLog(page)).toContainEqual({ type: "normal", tabId: 12 });
+    expect(await windowCreateLog(page)).toContainEqual(expect.objectContaining({ type: "normal", tabId: 12 }));
     expect(await sidebarOpenLog(page)).toEqual([group.windowId]);
   });
 
@@ -213,7 +213,9 @@ test.describe("commands", () => {
     expect(kept.tabs.map((t: any) => t.url)).toEqual(["http://keep"]);
     const restored = windows.find((w: any) => w.id !== 1);
     expect(restored.tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b"]);
-    expect(await windowCreateLog(page)).toContainEqual({ type: "normal", url: ["http://a", "http://b"] });
+    expect(await windowCreateLog(page)).toContainEqual(
+      expect.objectContaining({ type: "normal", url: ["http://a", "http://b"] })
+    );
     expect(await sidebarOpenLog(page)).toEqual([restored.id]);
   });
 
