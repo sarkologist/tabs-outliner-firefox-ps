@@ -177,7 +177,11 @@ export const subscribeImpl = (api) => (sink) => () => {
     }, () => {});
   });
   w.onCreated.addListener((win) => {
-    if (outlinerPopupCreationDepth > 0 && win.type !== "normal") {
+    // Firefox can briefly report the full-size popup as a normal window whose
+    // first tab is "New Tab" before the extension URL is visible. The in-flight
+    // create call is the only reliable early signal, so mark the window pending
+    // regardless of the reported type.
+    if (outlinerPopupCreationDepth > 0) {
       pendingOutlinerPopupWindowIds.add(win.id);
       return;
     }
