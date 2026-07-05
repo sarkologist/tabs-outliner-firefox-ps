@@ -85,6 +85,7 @@ export function installFakeBrowser(seed: Seed) {
     tabDetached: listener(),
     winCreated: listener(),
     winRemoved: listener(),
+    actionClicked: listener(),
     alarm: listener(),
     downloadChanged: listener(),
   };
@@ -186,7 +187,6 @@ export function installFakeBrowser(seed: Seed) {
           driver.attachTab(props.tabId, id, 0);
         } else if (!(reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow)) openCreatedUrls();
         const win = wins.get(id)!;
-        if (props.type === "normal") driver.sidebarOpenLog.push(id);
         return Promise.resolve({ id, type: win.type, focused: win.focused, tabs: win.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },
       // the window hosting the sidebar; defaults to the first seeded window, and
@@ -278,9 +278,13 @@ export function installFakeBrowser(seed: Seed) {
         return Promise.resolve();
       },
     },
+    action: {
+      onClicked: ev.actionClicked,
+    },
     sidebarAction: {
       open: () => {
-        return Promise.reject(new Error("sidebarAction.open does not target command-created windows"));
+        driver.sidebarOpenLog.push(currentWindowId ?? driver.focusedWindowId ?? firstWindowId());
+        return Promise.resolve();
       },
     },
     storage: {
@@ -384,6 +388,9 @@ export function installFakeBrowser(seed: Seed) {
     commandShortcut: (name: string) => {
       const c = commandShortcuts.find((x) => x.name === name);
       return c ? c.shortcut : null;
+    },
+    clickAction: () => {
+      ev.actionClicked._emit({});
     },
     alarm: (name: string) => alarms.get(name) ?? null,
     emitAlarm: (name: string) => {

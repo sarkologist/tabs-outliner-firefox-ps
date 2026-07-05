@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootBackgroundAndSidebar } from "./support/harness";
+import { bootBackgroundAndSidebar, fake } from "./support/harness";
 import { installFakeBrowser } from "./support/fake-browser";
 
 const seed = {
@@ -163,6 +163,21 @@ test.describe("manifest", () => {
     expect(key?.windows).toBe("Ctrl+Shift+Y");
     expect(key?.mac).toBe("Command+Shift+Y");
     expect(key?.default).toBeUndefined();
+  });
+
+  test("declares a toolbar action and opens the sidebar on install", async ({ page }) => {
+    const res = await page.request.get("/manifest.json");
+    const manifest = await res.json();
+    expect(manifest.action?.default_title).toBe("Open Tabs Outliner");
+    expect(manifest.sidebar_action?.open_at_install).toBe(true);
+  });
+});
+
+test.describe("browser action", () => {
+  test("opens the sidebar from the toolbar action", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await fake(page, "clickAction");
+    expect(await page.evaluate(() => (globalThis as any).__fake.sidebarOpenLog)).toEqual([1]);
   });
 });
 

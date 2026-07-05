@@ -8,13 +8,21 @@
     "48": "icons/icon.svg",
     "96": "icons/icon.svg"
   },
+  "action": {
+    "default_title": "Open Tabs Outliner",
+    "default_icon": {
+      "48": "icons/icon.svg",
+      "96": "icons/icon.svg"
+    }
+  },
   "background": {
     "scripts": ["background/background.js"]
   },
   "sidebar_action": {
     "default_title": "Tabs Outliner (PS rewrite)",
     "default_panel": "sidebar/sidebar.html",
-    "default_icon": "icons/icon.svg"
+    "default_icon": "icons/icon.svg",
+    "open_at_install": true
   },
   "options_ui": {
     "page": "options/options.html",

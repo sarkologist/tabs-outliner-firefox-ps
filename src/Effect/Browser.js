@@ -5,6 +5,15 @@
 
 export const getBrowser = () => globalThis.browser;
 
+export const initSidebarActionImpl = (api) => () => {
+  const action = api && api.action;
+  const sidebar = api && api.sidebarAction;
+  if (!action?.onClicked || typeof sidebar?.open !== "function") return;
+  action.onClicked.addListener(() => {
+    Promise.resolve(sidebar.open()).catch(() => {});
+  });
+};
+
 const BACKUP_ALARM = "tabs-outliner-automatic-backup";
 const BACKUP_ENABLED_KEY = "tabsOutlinerAutomaticBackupsEnabled";
 const BACKUP_LAST_SUCCESS_KEY = "tabsOutlinerAutomaticBackupLastSuccessfulAt";
