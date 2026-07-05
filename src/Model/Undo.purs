@@ -160,6 +160,7 @@ applyEntry now entry model =
 undoable :: Command -> Boolean
 undoable = case _ of
   Collapse _ _ -> false
+  ExpandAncestors _ -> false
   Activate _ -> false
   CloseNode _ -> false
   Rename _ _ -> true

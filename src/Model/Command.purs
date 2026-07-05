@@ -26,6 +26,7 @@ import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, default
 
 data Command
   = Collapse NodeId Boolean
+  | ExpandAncestors NodeId
   | Rename NodeId String
   | Activate NodeId -- focus a live tab, or restore a closed one
   | CloseNode NodeId -- close the live tabs in the subtree (keep history)
@@ -116,6 +117,13 @@ wrapRootTabsModel now model =
 applyCommandRaw :: Number -> Command -> Model -> CmdResult
 applyCommandRaw now cmd model = case cmd of
   Collapse nid value -> withNode nid \n -> upsertOnly (n { collapsed = value })
+
+  ExpandAncestors nid -> withNode nid \n ->
+    let
+      upserts = ancestorUpserts n.parent
+      patch = { upserts, removes: [], roots: Nothing }
+    in
+      { model: applyPatch patch model, patch, actions: [] }
 
   Rename nid title -> withNode nid \n -> upsertOnly (n { customTitle = Just title })
 
@@ -244,6 +252,21 @@ applyCommandRaw now cmd model = case cmd of
 
   actionsOnly :: Array BrowserAction -> CmdResult
   actionsOnly actions = { model, patch: emptyPatch, actions }
+
+  ancestorUpserts :: Maybe NodeId -> Array Node
+  ancestorUpserts = go Set.empty []
+    where
+    go seen acc = case _ of
+      Nothing -> acc
+      Just pid
+        | Set.member pid seen -> acc
+        | otherwise -> case Map.lookup pid model.nodes of
+            Nothing -> acc
+            Just p ->
+              let
+                acc' = if p.collapsed then Array.snoc acc (p { collapsed = false }) else acc
+              in
+                go (Set.insert pid seen) acc' p.parent
 
   -- After an edit detached a child from `mParent`, prune that parent if it is now a
   -- childless, un-renamed group (cascading up), folding the removal into the edit's
@@ -510,17 +533,34 @@ restoreTargetOf model nid = case nearestGroupAncestor model nid of
 -- `query`, with the active tab's index in `myWindow` when `wantFocus`. With
 -- `tail`, `start` is ignored and the *last* window is returned (the open default,
 -- since new windows land at the bottom — that's where the live nodes are).
-type ViewReq = { start :: Int, count :: Int, query :: String, myWindow :: Maybe Int, wantFocus :: Boolean, tail :: Boolean }
+type ViewReq =
+  { start :: Int
+  , count :: Int
+  , query :: String
+  , myWindow :: Maybe Int
+  , wantFocus :: Boolean
+  , tail :: Boolean
+  , targetNodeId :: Maybe NodeId
+  }
 
-data Request = GetView ViewReq | RunCommand Command | Undo | Redo | Export | GetAutomaticBackups | SetAutomaticBackups Boolean
+data Request
+  = GetView ViewReq
+  | RunCommand Command
+  | Undo
+  | Redo
+  | Export
+  | OpenFullSizeOutliner (Maybe Int)
+  | GetAutomaticBackups
+  | SetAutomaticBackups Boolean
 
 encodeRequest :: Request -> Json
 encodeRequest (GetView r) = encodeJson
-  { tag: "getView", start: r.start, count: r.count, query: r.query, myWindow: r.myWindow, wantFocus: r.wantFocus, tail: r.tail }
+  { tag: "getView", start: r.start, count: r.count, query: r.query, myWindow: r.myWindow, wantFocus: r.wantFocus, tail: r.tail, targetNodeId: r.targetNodeId }
 encodeRequest (RunCommand c) = encodeJson { tag: "command", body: encodeCommand c }
 encodeRequest Undo = encodeJson { tag: "undo" }
 encodeRequest Redo = encodeJson { tag: "redo" }
 encodeRequest Export = encodeJson { tag: "export" }
+encodeRequest (OpenFullSizeOutliner sourceWindowId) = encodeJson { tag: "openFullSizeOutliner", sourceWindowId }
 encodeRequest GetAutomaticBackups = encodeJson { tag: "getAutomaticBackups" }
 encodeRequest (SetAutomaticBackups enabled) = encodeJson { tag: "setAutomaticBackups", enabled }
 
@@ -528,13 +568,35 @@ decodeRequest :: Json -> Either String Request
 decodeRequest json = do
   { tag } <- dec json :: Either String { tag :: String }
   case tag of
-    "getView" -> GetView <$> (dec json :: Either String ViewReq)
+    "getView" -> case (dec json :: Either String ViewReq) of
+      Right r -> Right (GetView r)
+      Left _ -> do
+        r <- dec json :: Either String
+          { start :: Int
+          , count :: Int
+          , query :: String
+          , myWindow :: Maybe Int
+          , wantFocus :: Boolean
+          , tail :: Boolean
+          }
+        Right (GetView
+          { start: r.start
+          , count: r.count
+          , query: r.query
+          , myWindow: r.myWindow
+          , wantFocus: r.wantFocus
+          , tail: r.tail
+          , targetNodeId: Nothing
+          })
     "command" -> do
       { body } <- dec json :: Either String { body :: Json }
       RunCommand <$> decodeCommand body
     "undo" -> Right Undo
     "redo" -> Right Redo
     "export" -> Right Export
+    "openFullSizeOutliner" -> case (dec json :: Either String { sourceWindowId :: Maybe Int }) of
+      Right r -> Right (OpenFullSizeOutliner r.sourceWindowId)
+      Left _ -> Right (OpenFullSizeOutliner Nothing)
     "getAutomaticBackups" -> Right GetAutomaticBackups
     "setAutomaticBackups" -> (\r -> SetAutomaticBackups r.enabled) <$> (dec json :: Either String { enabled :: Boolean })
     other -> Left ("unknown request: " <> other)
@@ -542,6 +604,7 @@ decodeRequest json = do
 encodeCommand :: Command -> Json
 encodeCommand = case _ of
   Collapse nid value -> encodeJson { tag: "collapse", id: nid, value }
+  ExpandAncestors nid -> encodeJson { tag: "expandAncestors", id: nid }
   Rename nid title -> encodeJson { tag: "rename", id: nid, title }
   Activate nid -> encodeJson { tag: "activate", id: nid }
   CloseNode nid -> encodeJson { tag: "close", id: nid }
@@ -559,6 +622,7 @@ decodeCommand json = do
   { tag } <- dec json :: Either String { tag :: String }
   case tag of
     "collapse" -> (\r -> Collapse r.id r.value) <$> (dec json :: Either String { id :: NodeId, value :: Boolean })
+    "expandAncestors" -> (\r -> ExpandAncestors r.id) <$> (dec json :: Either String { id :: NodeId })
     "rename" -> (\r -> Rename r.id r.title) <$> (dec json :: Either String { id :: NodeId, title :: String })
     "activate" -> (\r -> Activate r.id) <$> (dec json :: Either String { id :: NodeId })
     "close" -> (\r -> CloseNode r.id) <$> (dec json :: Either String { id :: NodeId })

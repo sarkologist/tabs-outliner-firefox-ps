@@ -27,6 +27,9 @@
   --active-tab-border-color: color-mix(in srgb, Highlight 64%, CanvasText 12%);
   --active-tab-background: color-mix(in srgb, Highlight 8%, transparent);
   --active-tab-title-color: color-mix(in srgb, Highlight 72%, CanvasText 28%);
+  --show-in-tree-flash-background: color-mix(in srgb, Highlight 24%, transparent);
+  --show-in-tree-flash-background-mid: color-mix(in srgb, Highlight 14%, transparent);
+  --show-in-tree-flash-ring: color-mix(in srgb, Highlight 70%, CanvasText 12%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -37,6 +40,9 @@
     --active-tab-border-color: color-mix(in srgb, Highlight 96%, CanvasText 18%);
     --active-tab-background: color-mix(in srgb, Highlight 28%, transparent);
     --active-tab-title-color: color-mix(in srgb, Highlight 88%, CanvasText 12%);
+    --show-in-tree-flash-background: color-mix(in srgb, Highlight 34%, transparent);
+    --show-in-tree-flash-background-mid: color-mix(in srgb, Highlight 20%, transparent);
+    --show-in-tree-flash-ring: color-mix(in srgb, Highlight 92%, CanvasText 12%);
   }
 }
 
@@ -70,10 +76,11 @@ body {
 #toolbar {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 10;
   flex: none;
+  container-type: inline-size;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
   padding: 8px 10px;
@@ -81,12 +88,28 @@ body {
   background: Canvas;
 }
 
+.toolbar-title {
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.search-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 76px;
+  min-width: 52px;
+}
+
 #search {
   box-sizing: border-box;
-  flex: 1 1 100px;
-  min-width: 60px;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   height: 24px;
-  padding: 0 7px;
+  padding: 0 26px 0 7px;
   border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
   border-radius: 4px;
   color: inherit;
@@ -103,11 +126,12 @@ body {
 #toolbar button {
   display: inline-flex;
   flex: 0 0 auto;
+  width: 24px;
   min-width: 24px;
   height: 24px;
   align-items: center;
   justify-content: center;
-  padding: 0 5px;
+  padding: 0;
   border: 0;
   border-radius: 4px;
   color: inherit;
@@ -117,8 +141,156 @@ body {
   cursor: pointer;
 }
 
+#toolbar #clear-search {
+  position: absolute;
+  top: 0;
+  right: 1px;
+  width: 23px;
+  min-width: 23px;
+  padding: 0;
+}
+
 #toolbar button:hover {
   background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+.toolbar-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 152px;
+  overflow: hidden;
+  color: color-mix(in srgb, CanvasText 62%, transparent);
+  font-size: 11px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar-slot {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.toolbar-more {
+  position: relative;
+  display: none;
+  flex: 0 0 auto;
+}
+
+.toolbar-more-summary {
+  box-sizing: border-box;
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.toolbar-more-summary::-webkit-details-marker {
+  display: none;
+}
+
+.toolbar-more-summary:hover {
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+.overflow-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 3;
+  display: none;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 6px;
+  background: Canvas;
+  box-shadow: 0 8px 22px color-mix(in srgb, CanvasText 18%, transparent);
+}
+
+.toolbar-more[open] .overflow-menu {
+  display: grid;
+}
+
+#toolbar .overflow-menu-item {
+  display: none;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  height: auto;
+  align-items: center;
+  justify-content: stretch;
+  padding: 0 9px;
+  border-radius: 4px;
+  font-weight: 400;
+  line-height: 1.2;
+  text-align: left;
+}
+
+#toolbar .overflow-menu-item:hover,
+#toolbar .overflow-menu-item:focus {
+  background: color-mix(in srgb, CanvasText 12%, transparent);
+  outline: none;
+}
+
+.overflow-text-icon {
+  display: inline-flex;
+  width: 15px;
+  justify-content: center;
+  font-weight: 600;
+}
+
+@container (max-width: 560px) {
+  .priority-medium {
+    display: none;
+  }
+
+  .toolbar-more {
+    display: inline-flex;
+  }
+
+  #toolbar .overflow-medium {
+    display: grid;
+  }
+}
+
+@container (max-width: 430px) {
+  .priority-narrow {
+    display: none;
+  }
+
+  #toolbar .overflow-narrow {
+    display: grid;
+  }
+}
+
+@container (max-width: 340px) {
+  .priority-very-narrow {
+    display: none;
+  }
+
+  .toolbar-title {
+    display: none;
+  }
+
+  .toolbar-status {
+    max-width: 96px;
+  }
+
+  #toolbar .overflow-very-narrow {
+    display: grid;
+  }
+}
+
+@container (max-width: 240px) {
+  .toolbar-status {
+    max-width: 70px;
+  }
 }
 
 /* Notice banner (import errors) ------------------------------------------- */
@@ -289,6 +461,43 @@ body {
   border-left-color: color-mix(in srgb, CanvasText 22%, transparent);
 }
 
+/* "Show in tree" reveal marker ------------------------------------------- */
+
+.row.show-in-tree-flash {
+  animation: show-in-tree-flash 1400ms ease-out;
+}
+
+@keyframes show-in-tree-flash {
+  0% {
+    background: var(--show-in-tree-flash-background);
+    box-shadow: inset 0 0 0 1px var(--show-in-tree-flash-ring);
+  }
+  45% {
+    background: var(--show-in-tree-flash-background-mid);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--show-in-tree-flash-ring) 72%, transparent);
+  }
+  100% {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row.show-in-tree-flash {
+    animation: none;
+    background: var(--show-in-tree-flash-background);
+    box-shadow: inset 0 0 0 1px var(--show-in-tree-flash-ring);
+  }
+}
+
+@media (forced-colors: active) {
+  .row.show-in-tree-flash {
+    animation: none;
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+}
+
 /* Toggle (twisty) + leaf spacer ------------------------------------------- */
 
 .toggle,
@@ -393,6 +602,10 @@ body {
 .row .node-actions button:hover {
   color: CanvasText;
   background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+.title-search-match {
+  color: color-mix(in srgb, Highlight 82%, CanvasText 18%);
 }
 
 /* Icons ------------------------------------------------------------------- */

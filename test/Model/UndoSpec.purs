@@ -36,6 +36,7 @@ spec :: Spec Unit
 spec = describe "Model.Undo" do
   it "marks structural edits undoable; view toggles and browser actions are not" do
     undoable (Collapse "n1" true) `shouldEqual` false
+    undoable (ExpandAncestors "n1") `shouldEqual` false
     undoable (Activate "n1") `shouldEqual` false
     undoable (CloseNode "n1") `shouldEqual` false
     undoable (Rename "n1" "x") `shouldEqual` true

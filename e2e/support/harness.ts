@@ -11,10 +11,20 @@ export async function bootBackground(page: Page, seed: Seed): Promise<void> {
 // Boot both the real background and the real sidebar in one page (mirroring the
 // original's harness: separate contexts collapsed into one, bridged by the fake
 // runtime message bus). The sidebar mounts Halogen onto <body>.
-export async function bootBackgroundAndSidebar(page: Page, seed: Seed): Promise<void> {
+export async function bootBackgroundAndSidebar(
+  page: Page,
+  seed: Seed,
+  options: { sidebarUrl?: string; currentWindowId?: number } = {}
+): Promise<void> {
   await page.addInitScript(installFakeBrowser, seed);
   await page.goto("/blank.html");
   await page.addScriptTag({ path: "dist/background/background.js" });
+  if (typeof options.currentWindowId === "number") {
+    await page.evaluate((id) => (globalThis as any).__fake.focusWindow(id), options.currentWindowId);
+  }
+  if (options.sidebarUrl) {
+    await page.evaluate((url) => history.replaceState(null, "", url), options.sidebarUrl);
+  }
   // the real stylesheet, so the flex/scroll layout virtualization relies on applies
   await page.addStyleTag({ path: "dist/sidebar/sidebar.css" });
   await page.addScriptTag({ path: "dist/sidebar/sidebar.js" });

@@ -31,6 +31,32 @@ const seed = {
   ],
 };
 
+const searchSeed = {
+  windows: [
+    {
+      id: 1,
+      tabs: [
+        { id: 11, url: "http://a", title: "AlphaAlpha", active: true },
+        { id: 12, url: "https://needle-url.example/path", title: "Plain" },
+      ],
+    },
+  ],
+};
+
+const tallSeed = {
+  windows: [
+    {
+      id: 1,
+      tabs: Array.from({ length: 90 }, (_, i) => ({
+        id: 200 + i,
+        url: `http://t${i}`,
+        title: `Tab ${i}`,
+        active: i === 0,
+      })),
+    },
+  ],
+};
+
 const node = (over: Record<string, unknown>) => ({
   id: "",
   kind: "tab",
@@ -49,6 +75,11 @@ const node = (over: Record<string, unknown>) => ({
   sessionId: null,
   ...over,
 });
+
+const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
+const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "New group" });
+const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+const treeScrollTop = (page: Page) => page.locator("#tree").evaluate((el) => (el as HTMLElement).scrollTop);
 
 test.describe("toolbar", () => {
   test("search filters to matches and their ancestors", async ({ page }) => {
@@ -69,6 +100,84 @@ test.describe("toolbar", () => {
     await expect(page.getByText("Beta")).toBeVisible(); // search ignores collapse
   });
 
+  test("clear search button clears, restores the outline, and focuses search", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await page.locator("#search").fill("Alph");
+    await expect(page.locator("#clear-search")).toBeVisible();
+    await expect(page.getByText("Beta")).toHaveCount(0);
+    await page.locator("#clear-search").click();
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(page.locator("#search")).toBeFocused();
+    await expect(page.locator("#clear-search")).toBeHidden();
+    await expect(page.getByText("Beta")).toBeVisible();
+  });
+
+  test("Escape clears search from the input and from body focus", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await page.locator("#search").fill("Alph");
+    await page.locator("#search").press("Escape");
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(page.locator("#search")).toBeFocused();
+    await expect(page.getByText("Beta")).toBeVisible();
+
+    await page.locator("#search").fill("Bet");
+    await expect(page.getByText("Alpha")).toHaveCount(0);
+    await blur(page);
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(page.getByText("Alpha")).toBeVisible();
+  });
+
+  test("search highlights title matches but not URL-only matches", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, searchSeed);
+    await page.locator("#search").fill("alpha");
+    await expect(rowOf(page, "AlphaAlpha").locator(".title-search-match")).toHaveText(["Alpha", "Alpha"]);
+
+    await page.locator("#search").fill("needle-url");
+    await expect(rowOf(page, "Plain")).toBeVisible();
+    await expect(rowOf(page, "Plain").locator(".title-search-match")).toHaveCount(0);
+  });
+
+  test("show in tree clears search, expands ancestors, and jumps to the result", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, tallSeed);
+    await page.locator(".toggle").first().click(); // collapse the window
+    await expect(page.getByText("Tab 70", { exact: true })).toHaveCount(0);
+    await page.locator("#search").fill("Tab 70");
+    await expect(page.getByText("Tab 70", { exact: true })).toBeVisible();
+    await expect(rowOf(page, "Window").locator(".btn-show-in-tree")).toHaveCount(1);
+
+    const result = rowOf(page, "Tab 70");
+    await result.hover();
+    await result.locator(".btn-show-in-tree").click();
+
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(page.locator("#clear-search")).toBeHidden();
+    await expect(result).toBeVisible();
+    await expect(result).toHaveClass(/show-in-tree-flash/);
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(1);
+    await expect.poll(() => treeScrollTop(page)).toBeGreaterThan(0);
+    await expect(page.getByText("Tab 69", { exact: true })).toBeVisible();
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(0, { timeout: 2500 });
+  });
+
+  test("show in tree works from search ancestor rows", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, tallSeed);
+    await expect(page.locator(".btn-show-in-tree")).toHaveCount(0);
+    await page.locator(".toggle").first().click(); // collapse the window
+    await page.locator("#search").fill("Tab 70");
+
+    const windowRow = rowOf(page, "Window");
+    await expect(windowRow.locator(".btn-show-in-tree")).toHaveCount(1);
+    await windowRow.hover();
+    await windowRow.locator(".btn-show-in-tree").click();
+
+    await expect(page.locator("#search")).toHaveValue("");
+    await expect(windowRow).toBeVisible();
+    await expect(windowRow).toHaveClass(/show-in-tree-flash/);
+    await expect(page.locator(".btn-show-in-tree")).toHaveCount(0);
+    await expect(page.locator(".row.show-in-tree-flash")).toHaveCount(0, { timeout: 2500 });
+  });
+
   test("zoom changes the font scale", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     const scale = () =>
@@ -78,6 +187,90 @@ test.describe("toolbar", () => {
     await page.locator("#zoom-out").click();
     await page.locator("#zoom-out").click();
     await expect.poll(() => scale().then(Number)).toBeLessThan(1);
+  });
+
+  test("shows compact counts, with full tooltip text", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.locator("#toolbar-status")).toHaveText("3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "3 nodes / 2 open");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("aria-label", "3 nodes / 2 open");
+
+    await page.locator("#search").fill("Alpha");
+    await expect(page.locator("#toolbar-status")).toHaveText("1 / 3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "1 direct search match / 3 nodes / 2 open");
+    await expect(page.locator("[role=treeitem]")).toHaveCount(2); // window ancestor + direct match
+
+    await page.locator("#search").fill("a");
+    await expect(page.locator("#toolbar-status")).toHaveText("2 / 3 / 2");
+    await expect(page.locator("#toolbar-status")).toHaveAttribute("title", "2 direct search matches / 3 nodes / 2 open");
+  });
+
+  test("shows all toolbar actions inline at wide widths", async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    for (const id of [
+      "undo",
+      "redo",
+      "zoom-out",
+      "zoom-in",
+      "new-group",
+      "export",
+      "import",
+      "open-full-size",
+      "options",
+    ]) {
+      await expect(page.locator(`#${id}`)).toBeVisible();
+    }
+    await expect(page.locator(".toolbar-more")).toBeHidden();
+  });
+
+  test("keeps full-size inline after undo and redo at narrow widths", async ({ page }) => {
+    await page.setViewportSize({ width: 380, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    await expect(page.locator(".toolbar-more")).toBeVisible();
+    await expect(page.locator("#export")).toBeHidden();
+    await expect(page.locator("#options")).toBeHidden();
+    await expect(page.locator("#open-full-size")).toBeVisible();
+
+    const xs = await page.locator("#undo, #redo, #open-full-size").evaluateAll((els) =>
+      els.map((el) => ({ id: el.id, left: el.getBoundingClientRect().left })),
+    );
+    expect(xs.map((x) => x.id)).toEqual(["undo", "redo", "open-full-size"]);
+    expect(xs[0].left).toBeLessThan(xs[1].left);
+    expect(xs[1].left).toBeLessThan(xs[2].left);
+  });
+
+  test("folds toolbar actions into More instead of wrapping when narrow", async ({ page }) => {
+    await page.setViewportSize({ width: 300, height: 600 });
+    await bootBackgroundAndSidebar(page, seed);
+
+    await expect(page.locator(".toolbar-more")).toBeVisible();
+    await expect(page.locator("#export")).toBeHidden();
+    await expect(page.locator("#open-full-size")).toBeHidden();
+    await expect(page.locator("#new-group")).toBeHidden();
+    await expect.poll(() => page.locator("#toolbar").evaluate((el) => el.getBoundingClientRect().height)).toBeLessThanOrEqual(45);
+
+    await page.locator(".toolbar-more-summary").click();
+    await expect(page.locator("#open-full-size-menu")).toBeVisible();
+    await expect(page.locator("#new-group-menu")).toBeVisible();
+    await expect
+      .poll(async () =>
+        page.locator("#new-group-menu").evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return top === el || !!top?.closest("#new-group-menu");
+        }),
+      )
+      .toBe(true);
+    await page.locator("#tree").click({ position: { x: 5, y: 5 } });
+    await expect(page.locator("#new-group-menu")).toBeHidden();
+
+    await page.locator(".toolbar-more-summary").click();
+    await page.locator("#new-group-menu").click();
+    await expect(groupRows(page)).toHaveCount(1);
+    await expect(page.locator("#new-group-menu")).toBeHidden();
   });
 
   test("export downloads the outline as JSON", async ({ page }) => {

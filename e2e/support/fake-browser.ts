@@ -11,8 +11,11 @@
 export type Seed = {
   windows: Array<{
     id: number;
+    type?: "normal" | "popup";
+    focused?: boolean;
     tabs: Array<{ id: number; openerTabId?: number; url?: string; title?: string; active?: boolean; favIconUrl?: string }>;
   }>;
+  currentWindowId?: number;
   // when true, a tab created via tabs.create reports a slightly different url in
   // its onCreated than was requested (as Firefox does — normalization/redirect),
   // so restore must rebind by window, not by exact url
@@ -20,7 +23,7 @@ export type Seed = {
 };
 
 export function installFakeBrowser(seed: Seed) {
-  const wins = new Map<number, { id: number; tabIds: number[] }>();
+  const wins = new Map<number, { id: number; tabIds: number[]; type: string; focused: boolean }>();
   const tabs = new Map<number, any>();
   // browser.sessions per-tab values, keyed "tabId\0key" (in-memory, per page)
   const tabValues = new Map<string, unknown>();
@@ -30,6 +33,7 @@ export function installFakeBrowser(seed: Seed) {
   const msgListeners: Array<(msg: any, sender: any) => any> = [];
   let tabSeq = 100000;
   let winSeq = 900000;
+  let currentWindowId = seed?.currentWindowId;
 
   // WebExtensions commands API state (only the sidebar-toggle command we ship).
   const commandShortcuts = [
@@ -96,7 +100,8 @@ export function installFakeBrowser(seed: Seed) {
   };
 
   for (const w of seed?.windows ?? []) {
-    wins.set(w.id, { id: w.id, tabIds: [] });
+    wins.set(w.id, { id: w.id, tabIds: [], type: w.type ?? "normal", focused: !!w.focused });
+    if (currentWindowId == null && w.focused) currentWindowId = w.id;
     (w.tabs ?? []).forEach((t) => {
       tabs.set(t.id, {
         id: t.id,
@@ -121,22 +126,37 @@ export function installFakeBrowser(seed: Seed) {
         // a real getAll reflects the windows at the instant it ran. A test can hold
         // boot open on `driver._getAllGate` to drive the "an event arrives after the
         // boot snapshot but before boot finishes" path deterministically.
-        const snapshot = [...wins.values()].map((w) => ({
-          id: w.id,
-          tabs: opts.populate ? w.tabIds.map((id) => tabInfo(tabs.get(id))) : undefined,
-        }));
+        const windowTypes = Array.isArray(opts.windowTypes) ? opts.windowTypes : null;
+        const snapshot = [...wins.values()]
+          .filter((w) => !windowTypes || windowTypes.includes(w.type))
+          .map((w) => ({
+            id: w.id,
+            type: w.type,
+            focused: w.focused,
+            tabs: opts.populate ? w.tabIds.map((id) => tabInfo(tabs.get(id))) : undefined,
+          }));
         return driver._getAllGate
           ? driver._getAllGate.then(() => snapshot)
           : Promise.resolve(snapshot);
       },
       update: (id: number, props: any) => {
-        if (props && props.focused) driver.winFocusLog.push(id);
-        return Promise.resolve({});
+        const win = wins.get(id);
+        if (!win) return Promise.reject(new Error("Unknown window: " + id));
+        if (props && props.focused) {
+          driver.winFocusLog.push(id);
+          driver.focusWindow(id);
+        }
+        return Promise.resolve({ id: win.id, type: win.type, focused: win.focused });
       },
       create: (props: any = {}) => {
         const id = ++winSeq;
-        wins.set(id, { id, tabIds: [] });
-        ev.winCreated._emit({ id });
+        if (props.focused !== false) {
+          for (const win of wins.values()) win.focused = false;
+          currentWindowId = id;
+        }
+        const type = props.type ?? "normal";
+        wins.set(id, { id, tabIds: [], type, focused: props.focused !== false });
+        ev.winCreated._emit({ id, type, focused: props.focused !== false });
         if (props.tabId != null) {
           // create a window holding an existing tab: onCreated (above) then the
           // tab's onAttached into it — the order the background relies on
@@ -147,11 +167,12 @@ export function installFakeBrowser(seed: Seed) {
             driver.openTab({ id: ++tabSeq, windowId: id, url: u, title: u, active: i === 0 })
           );
         }
-        return Promise.resolve({ id, tabs: wins.get(id)!.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
+        const win = wins.get(id)!;
+        return Promise.resolve({ id, type: win.type, focused: win.focused, tabs: win.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },
       // the window hosting the sidebar; defaults to the first seeded window, and
       // the driver can repoint it to simulate focusing another window
-      getCurrent: () => Promise.resolve({ id: driver.focusedWindowId ?? firstWindowId() }),
+      getCurrent: () => Promise.resolve({ id: currentWindowId ?? driver.focusedWindowId ?? firstWindowId() }),
       onCreated: ev.winCreated,
       onRemoved: ev.winRemoved,
     },
@@ -208,6 +229,8 @@ export function installFakeBrowser(seed: Seed) {
       getTabValue: (tabId: number, key: string) => Promise.resolve(tabValues.get(`${tabId}\0${key}`)),
     },
     runtime: {
+      getURL: (path: string) => `moz-extension://extension-id/${String(path).replace(/^\//, "")}`,
+      openOptionsPage: () => Promise.resolve(),
       // real Firefox structured-clones messages across contexts; mirror that so
       // the harness reflects real serialization cost and no accidental aliasing
       sendMessage: (msg: any) => {
@@ -325,9 +348,11 @@ export function installFakeBrowser(seed: Seed) {
       if (r) r();
     },
     // which window getCurrent() reports as hosting the sidebar (undefined = first)
-    focusedWindowId: undefined as number | undefined,
+    focusedWindowId: currentWindowId as number | undefined,
     focusWindow: (id: number) => {
       driver.focusedWindowId = id;
+      currentWindowId = id;
+      for (const win of wins.values()) win.focused = win.id === id;
     },
     // current shortcut bound to a command, for assertions
     commandShortcut: (name: string) => {
@@ -352,20 +377,29 @@ export function installFakeBrowser(seed: Seed) {
     listWindows: () =>
       [...wins.values()].map((w) => ({
         id: w.id,
+        type: w.type,
+        focused: w.focused,
         tabs: w.tabIds.map((id) => ({ url: tabs.get(id).url, title: tabs.get(id).title })),
       })),
     // read a browser.sessions tab value (the node id the outliner stamped on a tab)
     tabValue: (tabId: number, key: string) => tabValues.get(`${tabId}\0${key}`) ?? null,
-    openWindow: (id: number) => {
-      if (!wins.has(id)) wins.set(id, { id, tabIds: [] });
-      ev.winCreated._emit({ id });
+    openWindow: (id: number, type = "normal") => {
+      if (!wins.has(id)) wins.set(id, { id, tabIds: [], type, focused: false });
+      ev.winCreated._emit({ id, type, focused: false });
     },
     closeWindow: (id: number) => {
       const w = wins.get(id);
       if (!w) return;
       w.tabIds.slice().forEach((tid) => tabs.delete(tid));
       wins.delete(id);
+      if (currentWindowId === id) currentWindowId = firstWindowId();
       ev.winRemoved._emit(id);
+    },
+    closeWindowWithTabEvents: (id: number) => {
+      const w = wins.get(id);
+      if (!w) return;
+      w.tabIds.slice().forEach((tid) => ev.tabRemoved._emit(tid, { windowId: id, isWindowClosing: true }));
+      driver.closeWindow(id);
     },
     openTab: (t: { id: number; windowId: number; openerTabId?: number; index?: number; url?: string; title?: string; active?: boolean }) => {
       if (!wins.has(t.windowId)) driver.openWindow(t.windowId);
@@ -460,7 +494,7 @@ export function installFakeBrowser(seed: Seed) {
       if (!old || old.tabIds.length < 2) return; // can't tear off the sole tab
       old.tabIds = old.tabIds.filter((x) => x !== id);
       const newWindowId = ++winSeq;
-      wins.set(newWindowId, { id: newWindowId, tabIds: [id] });
+      wins.set(newWindowId, { id: newWindowId, tabIds: [id], type: "normal", focused: false });
       t.windowId = newWindowId;
       reindex(oldWindowId);
       reindex(newWindowId);

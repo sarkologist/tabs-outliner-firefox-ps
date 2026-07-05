@@ -13,6 +13,7 @@ module Effect.Browser
   , moveTabToWindow
   , newWindowWithTabs
   , removeTab
+  , openFullSizeOutliner
   , tagTab
   , getAutomaticBackupsEnabled
   , setAutomaticBackupsEnabled
@@ -142,6 +143,7 @@ foreign import createWindowImpl :: BrowserApi -> Array String -> Effect (Promise
 foreign import moveTabToWindowImpl :: BrowserApi -> Int -> Int -> Int -> Effect (Promise Unit)
 foreign import newWindowWithTabsImpl :: BrowserApi -> Array Int -> Effect (Promise Unit)
 foreign import removeTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
+foreign import openFullSizeOutlinerImpl :: BrowserApi -> Nullable Int -> Effect (Promise Unit)
 foreign import tagTabImpl :: BrowserApi -> Int -> String -> Effect (Promise Unit)
 foreign import getAutomaticBackupsEnabledImpl :: BrowserApi -> Effect (Promise Boolean)
 foreign import setAutomaticBackupsEnabledImpl :: BrowserApi -> Boolean -> Effect (Promise Unit)
@@ -178,6 +180,12 @@ newWindowWithTabs api tabIds = toAffE (newWindowWithTabsImpl api tabIds)
 
 removeTab :: BrowserApi -> Int -> Aff Unit
 removeTab api tabId = toAffE (removeTabImpl api tabId)
+
+-- | Open/focus the original-style full-size outliner popup. `sourceWindowId`
+-- | distinguishes a click from a docked sidebar (focus an existing popup) from a
+-- | click inside a full-size popup (spawn another instance).
+openFullSizeOutliner :: BrowserApi -> Maybe Int -> Aff Unit
+openFullSizeOutliner api sourceWindowId = toAffE (openFullSizeOutlinerImpl api (toNullable sourceWindowId))
 
 -- | Stamp a live tab with its outliner node id (via `browser.sessions`), so a
 -- | restart's re-match can re-bind it by that stable id instead of guessing by url.
