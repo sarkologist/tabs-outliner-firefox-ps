@@ -257,6 +257,7 @@ main = launchAff_ do
       m <- liftEffect (Ref.read ref)
       t <- liftEffect nowMs
       let r = applyCommand t cmd m
+      let changed = not (isEmptyPatch r.patch) || not (Array.null r.actions)
       liftEffect do
         Ref.write r.model ref
         -- record the inverse so this command can be undone; a fresh edit
@@ -268,7 +269,7 @@ main = launchAff_ do
           Ref.write [] redoRef
       persistAndBroadcast api db versionRef r.patch
       traverse_ (runAction api) r.actions
-      pure ackJson
+      pure (ackChangedJson changed)
     Right Undo -> stepStack undoRef redoRef
     Right Redo -> stepStack redoRef undoRef
     -- export needs the whole tree; it's a rare, explicit user action, so paying
@@ -331,6 +332,9 @@ pushBounded x xs = Array.take maxUndoDepth (Array.cons x xs)
 
 ackJson :: Json
 ackJson = encodeJson { ok: true }
+
+ackChangedJson :: Boolean -> Json
+ackChangedJson changed = encodeJson { ok: true, changed }
 
 runAction :: BrowserApi -> BrowserAction -> Aff Unit
 runAction api = case _ of

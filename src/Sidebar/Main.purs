@@ -9,14 +9,15 @@ module Sidebar.Main where
 
 import Prelude
 
-import Data.Argonaut.Core (stringify)
+import Data.Argonaut.Core (Json, stringify)
+import Data.Argonaut.Decode (decodeJson)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Int.Bits (and)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String.Common (joinWith)
 import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple(..))
@@ -82,6 +83,12 @@ main = HA.runHalogenAff do
 
 type Editing = { id :: NodeId, text :: String }
 
+type Cut =
+  { id :: NodeId
+  , index :: Int
+  , subtreeEnd :: Int
+  }
+
 type State =
   { api :: Maybe BrowserApi
   , total :: Int
@@ -93,6 +100,7 @@ type State =
   , editing :: Maybe Editing
   , dragId :: Maybe NodeId
   , dragSpan :: Maybe { index :: Int, subtreeEnd :: Int } -- dragged node's visible span, for the cycle-safe preview
+  , cut :: Maybe Cut
   , dropTarget :: Maybe NodeId
   , hover :: Maybe NodeId
   , showInTreeFlash :: Maybe NodeId
@@ -119,6 +127,8 @@ data Action
   | ClickRow NodeId
   | CloseClick NodeId
   | DeleteClick NodeId
+  | CutClick ViewRow
+  | PasteClick ViewRow
   | FlattenClick NodeId
   | GroupClick NodeId
   | MoveTopLevelClick NodeId
@@ -152,7 +162,7 @@ component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { api: Nothing, total: 0, nodeTotal: 0, openTabTotal: 0, matchTotal: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
-      , dropTarget: Nothing, hover: Nothing, showInTreeFlash: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
+      , cut: Nothing, dropTarget: Nothing, hover: Nothing, showInTreeFlash: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
       , viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing
       , fullSizeView: false, profiling: false, bootProfiled: false, opened: false
       }
@@ -237,6 +247,14 @@ handleAction = case _ of
   ClickRow nid -> sendCommand (Activate nid)
   CloseClick nid -> sendCommand (CloseNode nid)
   DeleteClick nid -> sendCommand (Delete nid)
+  CutClick r -> H.modify_ _ { cut = Just { id: r.id, index: r.index, subtreeEnd: r.subtreeEnd } }
+  PasteClick r -> do
+    st <- H.get
+    case st.cut of
+      Just c | not (pasteDisabled c r) -> do
+        changed <- sendCommandChanged (PasteAfter c.id r.id)
+        when changed (H.modify_ _ { cut = Nothing })
+      _ -> pure unit
   FlattenClick nid -> sendCommand (Flatten nid)
   GroupClick nid -> sendCommand (Group nid)
   MoveTopLevelClick nid -> sendCommand (MoveTopLevel nid)
@@ -329,6 +347,16 @@ handleAction = case _ of
       case st.hover of
         Just nid -> handleAction (GroupClick nid)
         Nothing -> pure unit
+    Sh.Cut -> do
+      st <- H.get
+      case st.hover >>= \nid -> Array.find (\r -> r.id == nid) st.rows of
+        Just r -> handleAction (CutClick r)
+        Nothing -> pure unit
+    Sh.Paste -> do
+      st <- H.get
+      case st.hover >>= \nid -> Array.find (\r -> r.id == nid) st.rows of
+        Just r -> handleAction (PasteClick r)
+        Nothing -> pure unit
     Sh.FocusSearch -> H.liftEffect focusSearch
     Sh.ZoomIn -> handleAction (Zoom 1.1)
     Sh.ZoomOut -> handleAction (Zoom (1.0 / 1.1))
@@ -386,6 +414,7 @@ attemptView reveal target n = do
               , openTabTotal = v.openTabTotal
               , matchTotal = v.matchTotal
               , rows = v.rows
+              , cut = refreshCutSpan v.rows st.cut
               , reqStart = actualStart
               , opened = true
               }
@@ -418,6 +447,19 @@ attemptView reveal target n = do
 
 searchActive :: String -> Boolean
 searchActive q = normalizeSearchQuery q /= ""
+
+refreshCutSpan :: Array ViewRow -> Maybe Cut -> Maybe Cut
+refreshCutSpan rows = case _ of
+  Nothing -> Nothing
+  Just c -> case Array.find (\r -> r.id == c.id) rows of
+    Just r -> Just { id: c.id, index: r.index, subtreeEnd: r.subtreeEnd }
+    Nothing -> Just c
+
+cutContainsRow :: Cut -> ViewRow -> Boolean
+cutContainsRow c r = r.index >= c.index && r.index < c.subtreeEnd
+
+pasteDisabled :: Cut -> ViewRow -> Boolean
+pasteDisabled c r = c.id == r.id || cutContainsRow c r
 
 toolbarStatus :: State -> String
 toolbarStatus st =
@@ -477,6 +519,24 @@ revealRowIndex idx = do
 
 sendCommand :: forall o. Command -> H.HalogenM State Action () o Aff Unit
 sendCommand = sendRequest <<< RunCommand
+
+sendCommandChanged :: forall o. Command -> H.HalogenM State Action () o Aff Boolean
+sendCommandChanged cmd = do
+  st <- H.get
+  case st.api of
+    Just api -> do
+      resp <- H.liftAff (attempt (request api (encodeRequest (RunCommand cmd))))
+      pure case resp of
+        Right json -> decodeCommandChanged json
+        Left _ -> false
+    Nothing -> pure false
+
+type CommandAck = { changed :: Boolean }
+
+decodeCommandChanged :: Json -> Boolean
+decodeCommandChanged json = case (decodeJson json :: Either _ CommandAck) of
+  Right ack -> ack.changed
+  Left _ -> false
 
 -- | Fire a request and forget the reply: the window refreshes when the resulting
 -- | `invalidate` broadcasts back.
@@ -578,7 +638,7 @@ render st =
       Just hi -> buildGuide windowEntries hi
       Nothing -> emptyGuide
     _, _ -> emptyGuide
-  slot wi r = Tuple r.id (renderRow st.query (st.dragId == Just r.id) st.showInTreeFlash st.editing guide wi rowH r)
+  slot wi r = Tuple r.id (renderRow st.query (st.dragId == Just r.id) st.cut st.showInTreeFlash st.editing guide wi rowH r)
   dropSlots = case st.dragId, st.dropTarget, st.dragSpan of
     Just dragId, Just targetId, Just span | dragId /= targetId ->
       case Array.find (\r -> r.id == targetId) st.rows >>= dropPlacement span of
@@ -647,10 +707,10 @@ noticeBanner = case _ of
   Nothing -> []
   Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
 
-renderRow :: String -> Boolean -> Maybe NodeId -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
-renderRow query dragging showInTreeFlash editing guide wi rowH r =
+renderRow :: String -> Boolean -> Maybe Cut -> Maybe NodeId -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
+renderRow query dragging cut showInTreeFlash editing guide wi rowH r =
   HH.div
-    [ HP.classes (map ClassName (rowClasses dragging showInTreeFlash r))
+    [ HP.classes (map ClassName (rowClasses dragging cut showInTreeFlash r))
     , HP.attr (AttrName "data-node-id") r.id
     , HP.attr (AttrName "data-status") (statusClass r)
     , HP.attr (AttrName "role") "treeitem"
@@ -666,13 +726,14 @@ renderRow query dragging showInTreeFlash editing guide wi rowH r =
     , HE.onDrop \_ -> DropOn r.id
     , HE.onDragEnd \_ -> DragEnd
     ]
-    [ toggleEl r, body query editing r, actionsEl query r, guideLayer guide wi ]
+    [ toggleEl r, body query editing r, actionsEl query cut r, guideLayer guide wi ]
 
-rowClasses :: Boolean -> Maybe NodeId -> ViewRow -> Array String
-rowClasses dragging showInTreeFlash r =
+rowClasses :: Boolean -> Maybe Cut -> Maybe NodeId -> ViewRow -> Array String
+rowClasses dragging cut showInTreeFlash r =
   [ "row", statusClass r, kindClass r ]
     <> (if r.active && r.live then [ "active" ] else [])
     <> (if dragging then [ "dragging" ] else [])
+    <> (if maybe false (\c -> cutContainsRow c r) cut then [ "cut" ] else [])
     <> (if showInTreeFlash == Just r.id then [ "show-in-tree-flash" ] else [])
 
 body :: String -> Maybe Editing -> ViewRow -> H.ComponentHTML Action () Aff
@@ -696,14 +757,16 @@ titleContent query r =
     | s.isMatch = HH.span [ HP.class_ (ClassName "title-search-match") ] [ HH.text s.text ]
     | otherwise = HH.text s.text
 
-actionsEl :: String -> ViewRow -> H.ComponentHTML Action () Aff
-actionsEl query r = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons query r)
+actionsEl :: String -> Maybe Cut -> ViewRow -> H.ComponentHTML Action () Aff
+actionsEl query cut r = HH.span [ HP.class_ (ClassName "node-actions") ] (buttons query cut r)
 
-buttons :: String -> ViewRow -> Array (H.ComponentHTML Action () Aff)
-buttons query r =
+buttons :: String -> Maybe Cut -> ViewRow -> Array (H.ComponentHTML Action () Aff)
+buttons query cut r =
   -- In search mode the projection contains only direct matches and their path
   -- ancestors, so every rendered row can be revealed in the normal tree.
   (if searchActive query then [ btn "btn-show-in-tree" "Show in tree" "locate" (ShowInTreeClick r.id) ] else [])
+    <> [ btn "btn-cut" "Cut" "scissors" (CutClick r) ]
+    <> maybe [] (\c -> [ btnDisabled "btn-paste" "Paste" "clipboard" (pasteDisabled c r) (PasteClick r) ]) cut
     <> [ btn "btn-group" "Group" "group" (GroupClick r.id) ]
     <> [ btn "btn-rename" "Rename" "pencil" (StartRename r.id r.title) ]
     <> (if r.live then [ btn "btn-close" "Close" "close-circle" (CloseClick r.id) ] else [])
@@ -712,9 +775,10 @@ buttons query r =
     <> (if not r.isLastRoot then [ btn "btn-to-bottom" "Move to bottom" "root-down" (MoveBottomClick r.id) ] else [])
     <> [ btn "btn-delete" "Delete" "trash" (DeleteClick r.id) ]
   where
-  btn cls label name act =
+  btn cls label name act = btnDisabled cls label name false act
+  btnDisabled cls label name disabled act =
     HH.button
-      [ HP.class_ (ClassName cls), HP.title label, HP.attr (AttrName "aria-label") label, HE.onClick \_ -> act ]
+      [ HP.class_ (ClassName cls), HP.title label, HP.attr (AttrName "aria-label") label, HP.disabled disabled, HE.onClick \_ -> act ]
       [ icon name ]
 
 toggleEl :: ViewRow -> H.ComponentHTML Action () Aff

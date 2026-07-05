@@ -386,6 +386,10 @@ body {
   opacity: 0.4;
 }
 
+.row.cut {
+  opacity: 0.48;
+}
+
 .drop-indicator {
   position: absolute;
   right: 0;
@@ -602,6 +606,16 @@ body {
 .row .node-actions button:hover {
   color: CanvasText;
   background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+.row .node-actions button:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.row .node-actions button:disabled:hover {
+  color: color-mix(in srgb, CanvasText 70%, transparent);
+  background: transparent;
 }
 
 .title-search-match {
