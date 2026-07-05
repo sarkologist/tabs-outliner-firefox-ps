@@ -169,6 +169,7 @@ test.describe("manifest", () => {
     const res = await page.request.get("/manifest.json");
     const manifest = await res.json();
     expect(manifest.action?.default_title).toBe("Open Tabs Outliner");
+    expect(manifest.action?.default_area).toBe("navbar");
     expect(manifest.sidebar_action?.open_at_install).toBe(true);
   });
 });
