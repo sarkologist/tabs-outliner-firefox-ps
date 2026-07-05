@@ -15,6 +15,7 @@ const FULL_SIZE_SIDEBAR_PATH = `${SIDEBAR_PATH}?view=window`;
 const outlinerPopupWindowIds = new Set();
 const pendingOutlinerPopupWindowIds = new Set();
 const fullSizePopupFocusRecency = [];
+const nonOutlinerWindowIds = new Set();
 let outlinerPopupCreationDepth = 0;
 
 // Key under which we stash a tab's outliner node id via browser.sessions. The
@@ -60,9 +61,20 @@ const forgetFullSizePopup = (windowId) => {
 const isKnownOrPendingOutlinerWindow = (windowId) =>
   outlinerPopupWindowIds.has(windowId) || pendingOutlinerPopupWindowIds.has(windowId);
 
+const isOutlinerPopupPlaceholderTab = (tab) => {
+  if (!tab || outlinerPopupCreationDepth <= 0) return false;
+  if (typeof tab.windowId !== "number" || nonOutlinerWindowIds.has(tab.windowId)) return false;
+  const url = tab.url ?? "";
+  return url === "" || url === "about:blank" || url === "about:newtab" || tab.title === "New Tab";
+};
+
 const shouldIgnoreTab = (api, tab) => {
   if (!tab) return false;
   if (isKnownOrPendingOutlinerWindow(tab.windowId)) return true;
+  if (isOutlinerPopupPlaceholderTab(tab)) {
+    pendingOutlinerPopupWindowIds.add(tab.windowId);
+    return true;
+  }
   if (isOutlinerSidebarUrl(api, tab.url)) {
     noteFullSizePopup(tab.windowId);
     return true;
@@ -75,10 +87,13 @@ export const getAllWindowsImpl = (api) => () =>
     Promise.all(
       wins.filter((w) => {
         if (isOutlinerWindow(api, w)) {
+          nonOutlinerWindowIds.delete(w.id);
           noteFullSizePopup(w.id);
           return false;
         }
-        return !isKnownOrPendingOutlinerWindow(w.id);
+        if (isKnownOrPendingOutlinerWindow(w.id)) return false;
+        nonOutlinerWindowIds.add(w.id);
+        return true;
       }).map((w) =>
         Promise.all(
           (w.tabs ?? []).map((t) =>
@@ -189,13 +204,18 @@ export const subscribeImpl = (api) => (sink) => () => {
     if (win.type === "popup") {
       openFullSizeSidebarWindows(api).then((open) => {
         if (open.some((w) => w.windowId === win.id)) return;
-        if (!isKnownOrPendingOutlinerWindow(win.id)) sink.windowOpened(win.id)();
+        if (!isKnownOrPendingOutlinerWindow(win.id)) {
+          nonOutlinerWindowIds.add(win.id);
+          sink.windowOpened(win.id)();
+        }
       });
       return;
     }
+    nonOutlinerWindowIds.add(win.id);
     sink.windowOpened(win.id)();
   });
   w.onRemoved.addListener((winId) => {
+    nonOutlinerWindowIds.delete(winId);
     if (isKnownOrPendingOutlinerWindow(winId)) {
       forgetFullSizePopup(winId);
       return;

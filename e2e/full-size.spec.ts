@@ -63,6 +63,21 @@ test.describe("full-size outliner view", () => {
     await expect(page.getByText("New Tab", { exact: true })).toHaveCount(0);
   });
 
+  test("ignores the popup when its New Tab event arrives before its window event", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, {
+      ...seed,
+      fullSizePopupReportsNormalNewTab: true,
+      fullSizePopupReportsTabBeforeWindow: true,
+    });
+    await expect(page.getByText("Alpha")).toBeVisible();
+
+    await page.locator("#open-full-size").click();
+
+    await expect.poll(async () => (await popupWindows(page)).length).toBe(1);
+    await expectTreeNodeCount(page, 3);
+    await expect(page.getByText("New Tab", { exact: true })).toHaveCount(0);
+  });
+
   test("reopening from a docked sidebar focuses the existing full-size view", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();

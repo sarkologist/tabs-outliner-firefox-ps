@@ -23,6 +23,8 @@ export type Seed = {
   // Simulate Firefox briefly announcing the full-size outliner popup as a
   // normal window with a "New Tab" before the extension URL arrives.
   fullSizePopupReportsNormalNewTab?: boolean;
+  // Simulate the popup's first tabs.onCreated arriving before windows.onCreated.
+  fullSizePopupReportsTabBeforeWindow?: boolean;
 };
 
 export function installFakeBrowser(seed: Seed) {
@@ -164,12 +166,7 @@ export function installFakeBrowser(seed: Seed) {
           type === "popup" &&
           urls.some((u: string) => String(u).includes("/sidebar/sidebar.html?view=window"));
         wins.set(id, { id, tabIds: [], type, focused: props.focused !== false });
-        ev.winCreated._emit({ id, type: reportsNormalNewTab ? "normal" : type, focused: props.focused !== false });
-        if (props.tabId != null) {
-          // create a window holding an existing tab: onCreated (above) then the
-          // tab's onAttached into it — the order the background relies on
-          driver.attachTab(props.tabId, id, 0);
-        } else {
+        const openCreatedUrls = () => {
           urls.forEach((u: string, i: number) => {
             const tabId = ++tabSeq;
             if (reportsNormalNewTab) {
@@ -179,7 +176,14 @@ export function installFakeBrowser(seed: Seed) {
               driver.openTab({ id: tabId, windowId: id, url: u, title: u, active: i === 0 });
             }
           });
-        }
+        };
+        if (reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow) openCreatedUrls();
+        ev.winCreated._emit({ id, type: reportsNormalNewTab ? "normal" : type, focused: props.focused !== false });
+        if (props.tabId != null) {
+          // create a window holding an existing tab: onCreated (above) then the
+          // tab's onAttached into it — the order the background relies on
+          driver.attachTab(props.tabId, id, 0);
+        } else if (!(reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow)) openCreatedUrls();
         const win = wins.get(id)!;
         return Promise.resolve({ id, type: win.type, focused: win.focused, tabs: win.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },
