@@ -276,6 +276,12 @@ export function installFakeBrowser(seed: Seed) {
         return Promise.resolve();
       },
     },
+    sidebarAction: {
+      open: () => {
+        driver.sidebarOpenLog.push(currentWindowId ?? driver.focusedWindowId ?? firstWindowId());
+        return Promise.resolve();
+      },
+    },
     storage: {
       local: {
         get: (keys?: string | string[] | Record<string, unknown> | null) => {
@@ -348,6 +354,7 @@ export function installFakeBrowser(seed: Seed) {
   const driver: any = {
     focusLog: [] as number[],
     winFocusLog: [] as number[],
+    sidebarOpenLog: [] as number[],
     // how many times windows.getAll has been called, and an optional gate a test
     // can use to suspend boot mid-snapshot (see windows.getAll above).
     getAllCalls: 0,

@@ -239,8 +239,16 @@ export const createTabImpl = (api) => (windowId) => (index) => (url) => () => {
   return Promise.resolve(api.tabs.create(props));
 };
 
+const openSidebarInActiveWindow = (api) => {
+  const sidebar = api && api.sidebarAction;
+  if (!sidebar || typeof sidebar.open !== "function") return Promise.resolve();
+  return Promise.resolve(sidebar.open()).catch(() => {});
+};
+
 export const createWindowImpl = (api) => (urls) => () =>
-  Promise.resolve(api.windows.create({ url: urls }));
+  Promise.resolve(api.windows.create({ url: urls })).then(() =>
+    openSidebarInActiveWindow(api)
+  );
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
 // tabs.onAttached.
@@ -253,7 +261,9 @@ export const newWindowWithTabsImpl = (api) => (tabIds) => () => {
   if (tabIds.length === 0) return Promise.resolve();
   const [first, ...rest] = tabIds;
   return Promise.resolve(api.windows.create({ tabId: first })).then((w) =>
-    Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 })))
+    openSidebarInActiveWindow(api).then(() =>
+      Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 })))
+    )
   );
 };
 
