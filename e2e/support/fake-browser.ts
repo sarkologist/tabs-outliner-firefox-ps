@@ -155,6 +155,7 @@ export function installFakeBrowser(seed: Seed) {
       },
       create: (props: any = {}) => {
         const id = ++winSeq;
+        driver.windowCreateLog.push({ ...props });
         if (props.focused !== false) {
           for (const win of wins.values()) win.focused = false;
           currentWindowId = id;
@@ -185,10 +186,7 @@ export function installFakeBrowser(seed: Seed) {
           driver.attachTab(props.tabId, id, 0);
         } else if (!(reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow)) openCreatedUrls();
         const win = wins.get(id)!;
-        driver._sidebarOpenAllowed = true;
-        queueMicrotask(() => {
-          driver._sidebarOpenAllowed = false;
-        });
+        if (props.type === "normal") driver.sidebarOpenLog.push(id);
         return Promise.resolve({ id, type: win.type, focused: win.focused, tabs: win.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },
       // the window hosting the sidebar; defaults to the first seeded window, and
@@ -282,11 +280,7 @@ export function installFakeBrowser(seed: Seed) {
     },
     sidebarAction: {
       open: () => {
-        if (!driver._sidebarOpenAllowed) {
-          return Promise.reject(new Error("sidebarAction.open may only be called before an async boundary"));
-        }
-        driver.sidebarOpenLog.push(currentWindowId ?? driver.focusedWindowId ?? firstWindowId());
-        return Promise.resolve();
+        return Promise.reject(new Error("sidebarAction.open does not target command-created windows"));
       },
     },
     storage: {
@@ -362,7 +356,7 @@ export function installFakeBrowser(seed: Seed) {
     focusLog: [] as number[],
     winFocusLog: [] as number[],
     sidebarOpenLog: [] as number[],
-    _sidebarOpenAllowed: false,
+    windowCreateLog: [] as Array<Record<string, unknown>>,
     // how many times windows.getAll has been called, and an optional gate a test
     // can use to suspend boot mid-snapshot (see windows.getAll above).
     getAllCalls: 0,

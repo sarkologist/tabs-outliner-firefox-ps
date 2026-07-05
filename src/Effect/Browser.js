@@ -239,17 +239,8 @@ export const createTabImpl = (api) => (windowId) => (index) => (url) => () => {
   return Promise.resolve(api.tabs.create(props));
 };
 
-const openSidebarInActiveWindow = (api) => {
-  const sidebar = api && api.sidebarAction;
-  if (!sidebar || typeof sidebar.open !== "function") return Promise.resolve();
-  return Promise.resolve(sidebar.open()).catch(() => {});
-};
-
 export const createWindowImpl = (api) => (urls) => () => {
-  const created = api.windows.create({ url: urls });
-  // Firefox requires sidebarAction.open() in the user-action call stack.
-  openSidebarInActiveWindow(api);
-  return Promise.resolve(created).then(() => undefined);
+  return Promise.resolve(api.windows.create({ type: "normal", url: urls })).then(() => undefined);
 };
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
@@ -262,9 +253,7 @@ export const moveTabToWindowImpl = (api) => (tabId) => (windowId) => (index) => 
 export const newWindowWithTabsImpl = (api) => (tabIds) => () => {
   if (tabIds.length === 0) return Promise.resolve();
   const [first, ...rest] = tabIds;
-  const created = api.windows.create({ tabId: first });
-  // Firefox requires sidebarAction.open() in the user-action call stack.
-  openSidebarInActiveWindow(api);
+  const created = api.windows.create({ type: "normal", tabId: first });
   return Promise.resolve(created).then((w) =>
     Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 })))
   ).then(() => undefined);
