@@ -70,6 +70,43 @@ test.describe("commands", () => {
     await expect(page.locator("[role=treeitem]")).toHaveCount(2);
   });
 
+  test("cut then paste moves a subtree after the target row", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await clickAction(page, "Alpha", ".btn-cut");
+    await expect(rowOf(page, "Alpha")).toHaveClass(/cut/);
+
+    await clickAction(page, "Beta", ".btn-paste");
+
+    await expect.poll(() => titles(page)).toEqual(["Window", "Beta", "Alpha"]);
+    await expect(rowOf(page, "Alpha")).not.toHaveClass(/cut/);
+    await expect
+      .poll(async () => {
+        const nodes = await readNodes(page);
+        const win = nodes.find((n) => n.title === "Window")!;
+        return win.children.map((id: string) => nodes.find((n) => n.id === id)?.title);
+      })
+      .toEqual(["Beta", "Alpha"]);
+  });
+
+  test("paste is disabled for visible targets inside the cut subtree", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await clickAction(page, "Window", ".btn-cut");
+    await rowOf(page, "Alpha").hover();
+    await expect(rowOf(page, "Alpha").locator(".btn-paste")).toBeDisabled();
+  });
+
+  test("deleting the cut source clears the stale cut on the next paste attempt", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await clickAction(page, "Alpha", ".btn-cut");
+    await clickAction(page, "Alpha", ".btn-delete");
+    await expect(page.getByText("Alpha")).toHaveCount(0);
+
+    await rowOf(page, "Beta").hover();
+    await expect(rowOf(page, "Beta").locator(".btn-paste")).toBeEnabled();
+    await rowOf(page, "Beta").locator(".btn-paste").click();
+    await expect(rowOf(page, "Beta").locator(".btn-paste")).toHaveCount(0);
+  });
+
   test("rename updates the title", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await clickAction(page, "Alpha", ".btn-rename");

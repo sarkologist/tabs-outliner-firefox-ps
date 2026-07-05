@@ -5,7 +5,7 @@ import Prelude
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Foreign.Object as Object
-import Model.Shortcuts (Cmd(..), bindingFor, cmdForCombo, formatCombo, toCommandShortcut)
+import Model.Shortcuts (Cmd(..), bindingFor, bindingsFor, cmdForCombo, formatCombo, toCommandShortcut)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 
@@ -14,8 +14,23 @@ spec = describe "Model.Shortcuts" do
   it "falls back to the default when there is no override" do
     bindingFor Object.empty Group `shouldEqual` "n"
 
+  it "cut and paste default to both Ctrl and Meta accelerator combos" do
+    bindingsFor Object.empty Cut `shouldEqual` [ "Ctrl+x", "Meta+x" ]
+    bindingsFor Object.empty Paste `shouldEqual` [ "Ctrl+v", "Meta+v" ]
+    cmdForCombo Object.empty "Ctrl+x" `shouldEqual` Just Cut
+    cmdForCombo Object.empty "Meta+x" `shouldEqual` Just Cut
+    cmdForCombo Object.empty "Ctrl+v" `shouldEqual` Just Paste
+    cmdForCombo Object.empty "Meta+v" `shouldEqual` Just Paste
+
   it "an override wins over the default" do
     bindingFor (Object.singleton "group" "Ctrl+Shift+g") Group `shouldEqual` "Ctrl+Shift+g"
+
+  it "cut and paste overrides replace both accelerator defaults" do
+    let o = Object.singleton "cut" "k"
+    bindingsFor o Cut `shouldEqual` [ "k" ]
+    cmdForCombo o "k" `shouldEqual` Just Cut
+    cmdForCombo o "Ctrl+x" `shouldEqual` Nothing
+    cmdForCombo o "Meta+x" `shouldEqual` Nothing
 
   it "a legacy newGroup override still works" do
     bindingFor (Object.singleton "newGroup" "g") Group `shouldEqual` "g"

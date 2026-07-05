@@ -14,6 +14,7 @@ module Model.Shortcuts
   , keyOf
   , labelOf
   , defaultBinding
+  , bindingsFor
   , bindingFor
   , cmdForCombo
   , formatCombo
@@ -35,6 +36,8 @@ import Foreign.Object as Object
 -- | Every action a keyboard shortcut can trigger in the sidebar.
 data Cmd
   = Group
+  | Cut
+  | Paste
   | FocusSearch
   | ZoomIn
   | ZoomOut
@@ -50,13 +53,15 @@ instance showCmd :: Show Cmd where
 
 -- | Stable order; also the order shown on the options page.
 allCmds :: Array Cmd
-allCmds = [ Group, FocusSearch, ZoomIn, ZoomOut, ResetZoom, Export, Import ]
+allCmds = [ Group, Cut, Paste, FocusSearch, ZoomIn, ZoomOut, ResetZoom, Export, Import ]
 
 -- | Stable key under which an override for this command is persisted. Never
 -- | localized — changing these orphans existing user overrides.
 keyOf :: Cmd -> String
 keyOf = case _ of
   Group -> "group"
+  Cut -> "cut"
+  Paste -> "paste"
   FocusSearch -> "focusSearch"
   ZoomIn -> "zoomIn"
   ZoomOut -> "zoomOut"
@@ -68,6 +73,8 @@ keyOf = case _ of
 labelOf :: Cmd -> String
 labelOf = case _ of
   Group -> "Group"
+  Cut -> "Cut"
+  Paste -> "Paste"
   FocusSearch -> "Focus search"
   ZoomIn -> "Zoom in"
   ZoomOut -> "Zoom out"
@@ -79,23 +86,37 @@ labelOf = case _ of
 -- | that don't collide with Firefox's own sidebar shortcuts; all fully
 -- | re-bindable from the options page.
 defaultBinding :: Cmd -> String
-defaultBinding = case _ of
-  Group -> "n"
-  FocusSearch -> "/"
-  ZoomIn -> "="
-  ZoomOut -> "-"
-  ResetZoom -> "0"
-  Export -> "e"
-  Import -> "i"
+defaultBinding cmd = case Array.head (defaultBindings cmd) of
+  Just combo -> combo
+  Nothing -> ""
+
+-- Cut/paste mirror the old extension's Accel+X/V defaults by accepting both
+-- Ctrl and Meta when the user has not configured an override.
+defaultBindings :: Cmd -> Array String
+defaultBindings = case _ of
+  Group -> [ "n" ]
+  Cut -> [ "Ctrl+x", "Meta+x" ]
+  Paste -> [ "Ctrl+v", "Meta+v" ]
+  FocusSearch -> [ "/" ]
+  ZoomIn -> [ "=" ]
+  ZoomOut -> [ "-" ]
+  ResetZoom -> [ "0" ]
+  Export -> [ "e" ]
+  Import -> [ "i" ]
 
 -- | Effective combo for a command given the stored overrides; a missing or empty
 -- | override falls back to the default.
 bindingFor :: Object String -> Cmd -> String
-bindingFor overrides c = case Object.lookup (keyOf c) overrides of
-  Just s | s /= "" -> s
+bindingFor overrides c = case Array.head (bindingsFor overrides c) of
+  Just combo -> combo
+  Nothing -> defaultBinding c
+
+bindingsFor :: Object String -> Cmd -> Array String
+bindingsFor overrides c = case Object.lookup (keyOf c) overrides of
+  Just s | s /= "" -> [ s ]
   _ -> case legacyKeyOf c >>= \k -> Object.lookup k overrides of
-    Just s | s /= "" -> s
-    _ -> defaultBinding c
+    Just s | s /= "" -> [ s ]
+    _ -> defaultBindings c
 
 legacyKeyOf :: Cmd -> Maybe String
 legacyKeyOf = case _ of
@@ -104,7 +125,7 @@ legacyKeyOf = case _ of
 
 -- | Which command (if any) a pressed combo triggers, honoring overrides.
 cmdForCombo :: Object String -> String -> Maybe Cmd
-cmdForCombo overrides combo = Array.find (\c -> bindingFor overrides c == combo) allCmds
+cmdForCombo overrides combo = Array.find (\c -> combo `elem` bindingsFor overrides c) allCmds
 
 -- | Pretty-print a canonical combo for display: upper-case a trailing single
 -- | character ("shift+n" -> "Shift+N", "n" -> "N"), leave everything else as-is.
