@@ -12,24 +12,27 @@ import Test.Spec.Assertions (shouldEqual)
 spec :: Spec Unit
 spec = describe "Model.Shortcuts" do
   it "falls back to the default when there is no override" do
-    bindingFor Object.empty NewGroup `shouldEqual` "n"
+    bindingFor Object.empty Group `shouldEqual` "n"
 
   it "an override wins over the default" do
-    bindingFor (Object.singleton "newGroup" "Ctrl+Shift+g") NewGroup `shouldEqual` "Ctrl+Shift+g"
+    bindingFor (Object.singleton "group" "Ctrl+Shift+g") Group `shouldEqual` "Ctrl+Shift+g"
+
+  it "a legacy newGroup override still works" do
+    bindingFor (Object.singleton "newGroup" "g") Group `shouldEqual` "g"
 
   it "an empty override falls back to the default" do
-    bindingFor (Object.singleton "newGroup" "") NewGroup `shouldEqual` "n"
+    bindingFor (Object.singleton "group" "") Group `shouldEqual` "n"
 
   it "matches a pressed combo to its command (defaults)" do
     cmdForCombo Object.empty "/" `shouldEqual` Just FocusSearch
-    cmdForCombo Object.empty "n" `shouldEqual` Just NewGroup
+    cmdForCombo Object.empty "n" `shouldEqual` Just Group
 
   it "an unbound combo matches nothing" do
     cmdForCombo Object.empty "q" `shouldEqual` Nothing
 
   it "matching honors overrides — the new combo fires, the old default doesn't" do
-    let o = Object.singleton "newGroup" "g"
-    cmdForCombo o "g" `shouldEqual` Just NewGroup
+    let o = Object.singleton "group" "g"
+    cmdForCombo o "g" `shouldEqual` Just Group
     cmdForCombo o "n" `shouldEqual` Nothing
 
   it "formatCombo upper-cases a trailing single letter only" do

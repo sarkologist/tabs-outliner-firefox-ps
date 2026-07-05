@@ -14,12 +14,16 @@ const seed = {
 };
 
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
-const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "New group" });
+const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "Group" });
 // Row actions are hover-revealed (pointer-events:none until :hover), so hover the
 // row before clicking one — as a real user does, and as the original's tests do.
 const clickAction = async (row: Locator, btn: string) => {
   await row.hover();
   await row.locator(btn).click();
+};
+const createSavedGroup = async (page: Page) => {
+  await clickAction(rowOf(page, "Beta"), ".btn-close");
+  await clickAction(rowOf(page, "Beta"), ".btn-group");
 };
 // land subsequent keystrokes on <body>, not a lingering focused button/input
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -29,8 +33,8 @@ test.describe("undo / redo", () => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
 
-    // a group has no live-tab side effects, so this isolates the tree edit
-    await page.locator("#new-group").click();
+    // grouping a closed tab has no live-tab side effects, so this isolates the tree edit
+    await createSavedGroup(page);
     await expect(groupRows(page)).toHaveCount(1);
 
     await clickAction(groupRows(page), ".btn-delete");
@@ -79,7 +83,7 @@ test.describe("undo / redo", () => {
     await expect(page.getByText("Alpha")).toBeVisible();
 
     // put an undoable edit on the stack
-    await page.locator("#new-group").click();
+    await createSavedGroup(page);
     await expect(groupRows(page)).toHaveCount(1);
 
     // type into the rename box; the shortcut handler must ignore keystrokes here.

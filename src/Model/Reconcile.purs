@@ -13,7 +13,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveInsertSlot, liveTabNode, liveTabPreorder, liveWindowNode, mergePatch, nearestGroupAncestor, pruneFrom, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveInsertSlot, liveTabNode, liveWindowNode, mergePatch, ownedLiveTabPreorder, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Step, defaultNode, emptyPatch, isLive)
 
 mkId :: Int -> NodeId
@@ -61,7 +61,7 @@ applyBrowser now ev model = case ev of
     Nothing -> noop model
     Just w ->
       let
-        closeIds = [ w.id ] <> liveTabPreorder model w.id
+        closeIds = [ w.id ] <> ownedLiveTabPreorder model w.id
         upserts = Array.mapMaybe (\i -> closeNode now <$> Map.lookup i model.nodes) closeIds
         patch = { upserts, removes: [], roots: Nothing }
       in
@@ -242,9 +242,8 @@ openFresh now t model =
       , parent = Just rw.winId
       }
     -- t.index is a browser tab index (counted among LIVE tabs only); map it onto
-    -- the window's live-tab preorder. If the browser reports a same-window opener,
-    -- prefer nesting under that tab when it can represent the tab-strip order.
-    slot = liveInsertSlot model rw.winId (openerParent t rw.winId model) t.index
+    -- the window's direct live-tab order.
+    slot = liveInsertSlot model rw.winId Nothing t.index
     parent0 = if slot.parent == rw.winId then rw.winNode else fromMaybe rw.winNode (Map.lookup slot.parent model.nodes)
     parent' = parent0 { children = insertAtClamped slot.index tabNodeId parent0.children }
     roots' = if rw.isNew then Just (model.roots <> [ rw.winId ]) else Nothing
@@ -280,7 +279,7 @@ activateTab tabId windowId model = case liveTabNode tabId model of
   Just n ->
     let
       winTabs = case liveWindowNode windowId model of
-        Just w -> liveTabPreorder model w.id
+        Just w -> ownedLiveTabPreorder model w.id
         Nothing -> []
       deact = Array.mapMaybe deactivate winTabs
       deactivate cid = case Map.lookup cid model.nodes of
@@ -324,10 +323,3 @@ attachTabBound now tabId windowId index model = withTab tabId model \nid n ->
       Just pid | pid /= rw.winId ->
         let p = pruneFrom pid base.model in base { model = p.model, patch = mergePatch base.patch p.patch }
       _ -> base
-
-openerParent :: OpenedTab -> NodeId -> Model -> Maybe NodeId
-openerParent t windowRoot model = do
-  openerTabId <- t.openerTabId
-  opener <- liveTabNode openerTabId model
-  owner <- nearestGroupAncestor model opener.id
-  if owner.id == windowRoot then Just opener.id else Nothing

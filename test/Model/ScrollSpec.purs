@@ -15,6 +15,9 @@ win id wid children = (defaultNode id KGroup 0.0) { windowId = Just wid, childre
 tab :: String -> Int -> Boolean -> Node
 tab id tid active = (defaultNode id KTab 0.0) { tabId = Just tid, active = active }
 
+tabKids :: String -> Int -> Boolean -> Array String -> Node
+tabKids id tid active children = (tab id tid active) { children = children }
+
 grp :: String -> Array String -> Node
 grp id children = (defaultNode id KGroup 0.0) { children = children }
 
@@ -50,8 +53,11 @@ spec = describe "Model.Scroll" do
       activeTabInWindow 1 fixture `shouldEqual` Just "t2"
     it "scopes to the asked window (each window has its own active tab)" do
       activeTabInWindow 2 fixture `shouldEqual` Just "t4"
-    it "finds an active tab nested under a group inside the window" do
-      activeTabInWindow 3 fixture `shouldEqual` Just "t5"
+    it "finds an active tab nested under another tab in the window" do
+      let m = mk [ win "w" 1 [ "parent" ], tabKids "parent" 11 false [ "child" ], tab "child" 12 true ] [ "w" ]
+      activeTabInWindow 1 m `shouldEqual` Just "child"
+    it "does not treat a tab nested under a plain group as owned by the window" do
+      activeTabInWindow 3 fixture `shouldEqual` Nothing
     it "does not cross into a nested live window boundary" do
       let m = mk [ win "outer" 1 [ "inner" ], win "inner" 2 [ "t" ], tab "t" 22 true ] [ "outer" ]
       activeTabInWindow 1 m `shouldEqual` Nothing

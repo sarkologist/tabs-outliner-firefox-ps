@@ -16,6 +16,30 @@ const seed = {
 const focusLog = (page: Page) => page.evaluate(() => (globalThis as any).__fake.focusLog as number[]);
 const titles = (page: Page) => page.locator("[role=treeitem] .title").allInnerTexts();
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
+const windowUrls = (page: Page) =>
+  page.evaluate(() =>
+    ((globalThis as any).__fake.listWindows() as Array<{ id: number; tabs: Array<{ url: string }> }>)
+      .map((w) => ({ id: w.id, urls: w.tabs.map((t) => t.url) }))
+      .sort((a, b) => a.id - b.id)
+  );
+const node = (over: Record<string, unknown>) => ({
+  id: "",
+  kind: "tab",
+  parent: null,
+  children: [],
+  title: "",
+  customTitle: null,
+  url: null,
+  favIconUrl: null,
+  active: false,
+  collapsed: false,
+  createdAt: 0,
+  closedAt: null,
+  tabId: null,
+  windowId: null,
+  sessionId: null,
+  ...over,
+});
 
 // Row actions are revealed on hover (the original's affordance), so hover the row
 // before clicking one — mirrors a real interaction and lets Playwright's pointer
@@ -56,12 +80,37 @@ test.describe("commands", () => {
     await expect(page.getByText("Alpha")).toHaveCount(0);
   });
 
-  test("new group adds a folder at the top", async ({ page }) => {
+  test("group wraps a closed tab in a saved group", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
-    await page.locator("#new-group").click();
-    // scope to the tree: the toolbar's own "New group" button shares this text,
-    // so an unscoped getByText is a strict-mode race (button vs. created node)
-    await expect(page.locator("[role=treeitem]").filter({ hasText: "New group" })).toHaveCount(1);
+    await clickAction(page, "Beta", ".btn-close");
+    await clickAction(page, "Beta", ".btn-group");
+
+    const nodes = await readNodes(page);
+    const beta = nodes.find((n) => n.title === "Beta")!;
+    const group = nodes.find((n) => n.title === "Group")!;
+    expect(beta.parent).toBe(group.id);
+    expect(group.windowId ?? null).toBeNull();
+    await expect(page.locator("[role=treeitem]").filter({ hasText: "Group" })).toHaveCount(1);
+  });
+
+  test("group wraps a live tab in a new browser window", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await clickAction(page, "Beta", ".btn-group");
+
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          ((globalThis as any).__fake.listWindows() as Array<{ tabs: Array<{ url: string }> }>)
+            .map((w) => w.tabs.map((t) => t.url).sort())
+            .sort()
+        )
+      )
+      .toEqual([["http://a"], ["http://b"]]);
+    const nodes = await readNodes(page);
+    const beta = nodes.find((n) => n.title === "Beta")!;
+    const group = nodes.find((n) => n.title === "Group")!;
+    expect(beta.parent).toBe(group.id);
+    expect(group.windowId).not.toBeNull();
   });
 
   test("clicking a closed tab restores it (re-binds the node, no duplicate)", async ({ page }) => {
@@ -160,7 +209,7 @@ test.describe("commands", () => {
     expect(restored.tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b"]);
   });
 
-  test("restoring a closed window with nested tabs uses one browser window in preorder", async ({ page }) => {
+  test("restoring a closed window restores its tabs in order", async ({ page }) => {
     await bootBackgroundAndSidebar(page, {
       windows: [
         {
@@ -185,6 +234,39 @@ test.describe("commands", () => {
     const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
     expect(windows.length).toBe(1);
     expect(windows[0].tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b", "http://c"]);
+  });
+
+  test("restoring imported history descends through tabs but stops at groups", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    const snapshot = JSON.stringify({
+      nodes: [
+        node({ id: "g1", kind: "group", title: "ImportedGroup", children: ["t1", "g2", "t3"] }),
+        node({ id: "t1", kind: "tab", parent: "g1", title: "ParentTab", url: "http://parent", children: ["t2"] }),
+        node({ id: "t2", kind: "tab", parent: "t1", title: "ChildTab", url: "http://child" }),
+        node({ id: "g2", kind: "group", parent: "g1", title: "NestedGroup", children: ["tHidden"] }),
+        node({ id: "tHidden", kind: "tab", parent: "g2", title: "HiddenTab", url: "http://hidden" }),
+        node({ id: "t3", kind: "tab", parent: "g1", title: "SiblingTab", url: "http://sibling" }),
+      ],
+      roots: ["g1"],
+    });
+    page.on("filechooser", (fc) =>
+      fc.setFiles({ name: "nested-history.json", mimeType: "application/json", buffer: Buffer.from(snapshot) })
+    );
+    await page.locator("#import").click();
+    await expect(page.getByText("ImportedGroup")).toBeVisible();
+
+    await rowOf(page, "ImportedGroup").locator(".title").click();
+
+    await expect.poll(() => windowUrls(page).then((ws) => ws.map((w) => w.urls))).toEqual([
+      ["http://a", "http://b"],
+      ["http://parent", "http://child", "http://sibling"],
+    ]);
+    const nodes = await readNodes(page);
+    expect(nodes.find((n) => n.title === "ParentTab")?.tabId).not.toBeNull();
+    expect(nodes.find((n) => n.title === "ChildTab")?.tabId).not.toBeNull();
+    expect(nodes.find((n) => n.title === "SiblingTab")?.tabId).not.toBeNull();
+    expect(nodes.find((n) => n.title === "HiddenTab")?.tabId ?? null).toBeNull();
   });
 
   test("drag reorders siblings", async ({ page }) => {

@@ -15,16 +15,16 @@ import Data.Array as Array
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Model.Tree (liveTabPreorder, liveWindowNode)
+import Model.Tree (liveWindowNode, ownedLiveTabPreorder)
 import Model.Types (Model, NodeId)
 
 -- | The live, active tab inside the live browser window `windowId` — the node the
 -- | sidebar reveals for its host window. Preorder, short-circuiting at the first
--- | match. It walks the window's live-tab preorder, so tab nesting counts but a
--- | descendant live group/window remains a separate runtime boundary.
+-- | match. It walks the window's owned live tabs, so restored tab nesting counts
+-- | but a descendant group/window remains a separate runtime boundary.
 activeTabInWindow :: Int -> Model -> Maybe NodeId
 activeTabInWindow windowId model = liveWindowNode windowId model >>= \w ->
-  Array.findMap active (liveTabPreorder model w.id)
+  Array.findMap active (ownedLiveTabPreorder model w.id)
   where
   active id = case Map.lookup id model.nodes of
     Just n | n.active -> Just id
