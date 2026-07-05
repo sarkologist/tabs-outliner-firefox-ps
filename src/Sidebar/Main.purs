@@ -85,8 +85,7 @@ type Editing = { id :: NodeId, text :: String }
 
 type Cut =
   { id :: NodeId
-  , index :: Int
-  , subtreeEnd :: Int
+  , span :: Maybe { index :: Int, subtreeEnd :: Int }
   }
 
 type State =
@@ -247,13 +246,13 @@ handleAction = case _ of
   ClickRow nid -> sendCommand (Activate nid)
   CloseClick nid -> sendCommand (CloseNode nid)
   DeleteClick nid -> sendCommand (Delete nid)
-  CutClick r -> H.modify_ _ { cut = Just { id: r.id, index: r.index, subtreeEnd: r.subtreeEnd } }
+  CutClick r -> H.modify_ _ { cut = Just { id: r.id, span: Just { index: r.index, subtreeEnd: r.subtreeEnd } } }
   PasteClick r -> do
     st <- H.get
     case st.cut of
       Just c | not (pasteDisabled c r) -> do
-        changed <- sendCommandChanged (PasteAfter c.id r.id)
-        when changed (H.modify_ _ { cut = Nothing })
+        ack <- sendCommandAck (PasteAfter c.id r.id)
+        when (ack.changed || ack.missingSource) (H.modify_ _ { cut = Nothing })
       _ -> pure unit
   FlattenClick nid -> sendCommand (Flatten nid)
   GroupClick nid -> sendCommand (Group nid)
@@ -452,11 +451,13 @@ refreshCutSpan :: Array ViewRow -> Maybe Cut -> Maybe Cut
 refreshCutSpan rows = case _ of
   Nothing -> Nothing
   Just c -> case Array.find (\r -> r.id == c.id) rows of
-    Just r -> Just { id: c.id, index: r.index, subtreeEnd: r.subtreeEnd }
-    Nothing -> Just c
+    Just r -> Just { id: c.id, span: Just { index: r.index, subtreeEnd: r.subtreeEnd } }
+    Nothing -> Just c { span = Nothing }
 
 cutContainsRow :: Cut -> ViewRow -> Boolean
-cutContainsRow c r = r.index >= c.index && r.index < c.subtreeEnd
+cutContainsRow c r = case c.span of
+  Just span -> r.index >= span.index && r.index < span.subtreeEnd
+  Nothing -> false
 
 pasteDisabled :: Cut -> ViewRow -> Boolean
 pasteDisabled c r = c.id == r.id || cutContainsRow c r
@@ -520,23 +521,26 @@ revealRowIndex idx = do
 sendCommand :: forall o. Command -> H.HalogenM State Action () o Aff Unit
 sendCommand = sendRequest <<< RunCommand
 
-sendCommandChanged :: forall o. Command -> H.HalogenM State Action () o Aff Boolean
-sendCommandChanged cmd = do
+sendCommandAck :: forall o. Command -> H.HalogenM State Action () o Aff CommandAck
+sendCommandAck cmd = do
   st <- H.get
   case st.api of
     Just api -> do
       resp <- H.liftAff (attempt (request api (encodeRequest (RunCommand cmd))))
       pure case resp of
-        Right json -> decodeCommandChanged json
-        Left _ -> false
-    Nothing -> pure false
+        Right json -> decodeCommandAck json
+        Left _ -> emptyCommandAck
+    Nothing -> pure emptyCommandAck
 
-type CommandAck = { changed :: Boolean }
+type CommandAck = { changed :: Boolean, missingSource :: Boolean }
 
-decodeCommandChanged :: Json -> Boolean
-decodeCommandChanged json = case (decodeJson json :: Either _ CommandAck) of
-  Right ack -> ack.changed
-  Left _ -> false
+emptyCommandAck :: CommandAck
+emptyCommandAck = { changed: false, missingSource: false }
+
+decodeCommandAck :: Json -> CommandAck
+decodeCommandAck json = case (decodeJson json :: Either _ CommandAck) of
+  Right ack -> ack
+  Left _ -> emptyCommandAck
 
 -- | Fire a request and forget the reply: the window refreshes when the resulting
 -- | `invalidate` broadcasts back.

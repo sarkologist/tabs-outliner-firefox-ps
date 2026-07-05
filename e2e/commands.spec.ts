@@ -95,6 +95,18 @@ test.describe("commands", () => {
     await expect(rowOf(page, "Alpha").locator(".btn-paste")).toBeDisabled();
   });
 
+  test("deleting the cut source clears the stale cut on the next paste attempt", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await clickAction(page, "Alpha", ".btn-cut");
+    await clickAction(page, "Alpha", ".btn-delete");
+    await expect(page.getByText("Alpha")).toHaveCount(0);
+
+    await rowOf(page, "Beta").hover();
+    await expect(rowOf(page, "Beta").locator(".btn-paste")).toBeEnabled();
+    await rowOf(page, "Beta").locator(".btn-paste").click();
+    await expect(rowOf(page, "Beta").locator(".btn-paste")).toHaveCount(0);
+  });
+
   test("rename updates the title", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await clickAction(page, "Alpha", ".btn-rename");

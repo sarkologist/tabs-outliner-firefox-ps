@@ -28,12 +28,12 @@ import Effect.Channel as Channel
 import Effect.Persist as Persist
 import Effect.Profile as Profile
 import Model.Codec (encodeSnapshot)
-import Model.Command (BrowserAction(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
+import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
 import Model.Tree (mergePatch)
-import Model.Types (Patch)
+import Model.Types (Model, Patch)
 import Model.Undo (applyEntry, inversePatch, undoable)
 import Model.View (OrderEntry, computeOrder, encodeView, focusIndexOf, sliceView, startForView, viewStats)
 
@@ -258,6 +258,7 @@ main = launchAff_ do
       t <- liftEffect nowMs
       let r = applyCommand t cmd m
       let changed = not (isEmptyPatch r.patch) || not (Array.null r.actions)
+      let missingSource = pasteSourceMissing cmd m
       liftEffect do
         Ref.write r.model ref
         -- record the inverse so this command can be undone; a fresh edit
@@ -269,7 +270,7 @@ main = launchAff_ do
           Ref.write [] redoRef
       persistAndBroadcast api db versionRef r.patch
       traverse_ (runAction api) r.actions
-      pure (ackChangedJson changed)
+      pure (ackChangedJson changed missingSource)
     Right Undo -> stepStack undoRef redoRef
     Right Redo -> stepStack redoRef undoRef
     -- export needs the whole tree; it's a rare, explicit user action, so paying
@@ -333,8 +334,12 @@ pushBounded x xs = Array.take maxUndoDepth (Array.cons x xs)
 ackJson :: Json
 ackJson = encodeJson { ok: true }
 
-ackChangedJson :: Boolean -> Json
-ackChangedJson changed = encodeJson { ok: true, changed }
+ackChangedJson :: Boolean -> Boolean -> Json
+ackChangedJson changed missingSource = encodeJson { ok: true, changed, missingSource }
+
+pasteSourceMissing :: Command -> Model -> Boolean
+pasteSourceMissing (PasteAfter source _) model = not (Map.member source model.nodes)
+pasteSourceMissing _ _ = false
 
 runAction :: BrowserApi -> BrowserAction -> Aff Unit
 runAction api = case _ of
