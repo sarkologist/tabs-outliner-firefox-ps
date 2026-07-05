@@ -21,7 +21,7 @@ import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
-import Model.Tree (applyPatch, directGroupParent, insertAtClamped, isAncestorOrSelf, liveTabCountInWindow, liveWindowNode, mergePatch, pruneFrom, rootAncestor, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabCountInWindow, liveWindowNode, mergePatch, ownedTabPreorder, owningGroupAncestor, pruneFrom, rootAncestor, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, defaultNode, emptyPatch, isLiveTab)
 
 data Command
@@ -265,13 +265,11 @@ applyCommandRaw now cmd model = case cmd of
     Nothing -> r
     Just pid -> let p = pruneFrom pid r.model in { model: p.model, patch: mergePatch r.patch p.patch, actions: r.actions }
 
-  -- live tab ids owned by nid under direct ownership.
+  -- live tab ids owned by nid, walking through restored tab nesting but not into
+  -- nested groups/windows.
   ownedLiveTabIds :: NodeId -> Array Int
-  ownedLiveTabIds nid = case Map.lookup nid model.nodes of
-    Just n | n.kind == KTab -> Array.fromFoldable n.tabId
-    Just n | n.kind == KGroup ->
-      Array.mapMaybe (\cid -> Map.lookup cid model.nodes >>= \c -> if c.kind == KTab then c.tabId else Nothing) n.children
-    _ -> []
+  ownedLiveTabIds nid =
+    Array.mapMaybe (\i -> Map.lookup i model.nodes >>= _.tabId) (ownedTabPreorder model nid)
 
   -- live tab ids in the whole subtree, for destructive delete.
   subtreeLiveTabIds :: NodeId -> Array Int
@@ -287,13 +285,11 @@ applyCommandRaw now cmd model = case cmd of
       Nothing -> []
     Nothing -> []
 
-  -- restore: re-open this closed tab, or the immediate closed tab children of
-  -- this group, re-binding to existing
-  -- nodes via pendingRestore (keyed by the window each tab is recreated in) when
-  -- each onCreated arrives. Only the direct group parent chooses the runtime
-  -- container. A live group
-  -- reopens tabs back into its window; a saved group opens one new window and
-  -- goes live in place; a tab with no group parent reopens in the current window.
+  -- restore: re-open this closed tab and its tab descendants, or the owned tab
+  -- descendants of this group, re-binding to existing nodes via pendingRestore
+  -- (keyed by the window each tab is recreated in) when each onCreated arrives.
+  -- Tab descendants inherit the nearest group/window ancestor as runtime owner,
+  -- but nested groups/windows are separate restore boundaries.
   restore :: NodeId -> CmdResult
   restore nid =
     let
@@ -353,11 +349,9 @@ applyCommandRaw now cmd model = case cmd of
           restoring = Set.fromFoldable
             (queued <> map _.id (Array.filter (\x -> x.target == IntoWindow wid) ready))
           counts n = isLiveTab n || Set.member n.id restoring
-          ordered = case Map.lookup w.id model.nodes of
-            Nothing -> []
-            Just wn -> Array.filter
-              (\cid -> maybe false counts (Map.lookup cid model.nodes))
-              wn.children
+          ordered = Array.filter
+            (\cid -> maybe false counts (Map.lookup cid model.nodes))
+            (ownedTabPreorder model w.id)
         Array.elemIndex id ordered
 
       -- Mark every closed tab we are reopening so a later *browser* close keeps it as
@@ -380,16 +374,13 @@ applyCommandRaw now cmd model = case cmd of
       }
 
   restoreTabs :: NodeId -> Array Node
-  restoreTabs nid = case Map.lookup nid model.nodes of
-    Just n | n.kind == KTab && not (isLiveTab n) -> [ n ]
-    Just n | n.kind == KGroup ->
-      Array.mapMaybe
-        ( \cid -> case Map.lookup cid model.nodes of
-            Just c | c.kind == KTab && not (isLiveTab c) -> Just c
-            _ -> Nothing
-        )
-        n.children
-    _ -> []
+  restoreTabs nid =
+    Array.mapMaybe
+      ( \cid -> case Map.lookup cid model.nodes of
+          Just c | not (isLiveTab c) -> Just c
+          _ -> Nothing
+      )
+      (ownedTabPreorder model nid)
 
   groupNode :: NodeId -> CmdResult
   groupNode nid = case Map.lookup nid model.nodes of
@@ -532,11 +523,12 @@ spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 pushPending :: NodeId -> Array PendingWindow -> Array PendingWindow
 pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.snoc xs { node: pid, tabs: Nil }
 
--- | Where a closed tab node should reopen. Only a direct group parent owns the
--- | runtime window. A live group -> back into that window; a saved group -> a new
+-- | Where a closed tab node should reopen. The nearest group/window ancestor owns
+-- | the runtime window, walking through tab parents but not across group
+-- | boundaries. A live group -> back into that window; a saved group -> a new
 -- | window that the group goes live as; no group parent -> the current window.
 restoreTargetOf :: Model -> NodeId -> RestoreTarget
-restoreTargetOf model nid = case directGroupParent model nid of
+restoreTargetOf model nid = case owningGroupAncestor model nid of
   Just p
     | Just wid <- p.windowId -> IntoWindow wid
     | otherwise -> IntoNewWindow p.id

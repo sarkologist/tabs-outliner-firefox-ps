@@ -24,7 +24,7 @@ import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
-import Model.Tree (directGroupParent, insertAtClamped, liveInsertSlot)
+import Model.Tree (insertAtClamped, liveInsertSlot, owningGroupAncestor)
 import Model.Types (Kind(..), Model, Node, NodeId, RuntimeTab, RuntimeWindow, defaultNode, isLiveTab)
 
 type Acc =
@@ -138,7 +138,8 @@ addToPool m n = case n.url of
   Just u -> Map.alter (Just <<< maybe (List.singleton n.id) (Cons n.id)) u m
   Nothing -> m
 
--- url -> the group/window that directly owns a prior-live tab with that url.
+-- url -> the group/window that owns a prior-live tab with that url, walking
+-- through tab nesting but stopping at group/window boundaries.
 addUrlWindow :: Model -> Map String NodeId -> Node -> Map String NodeId
 addUrlWindow model m n = case n.url, owningGroupId model n.id of
   Just u, Just p -> Map.insert u p m
@@ -160,7 +161,7 @@ accModel a =
   }
 
 owningGroupId :: Model -> NodeId -> Maybe NodeId
-owningGroupId model nid = _.id <$> directGroupParent model nid
+owningGroupId model nid = _.id <$> owningGroupAncestor model nid
 
 processWindow :: Number -> Map String NodeId -> Acc -> RuntimeWindow -> Acc
 processWindow now urlToWin acc cw =

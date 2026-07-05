@@ -236,6 +236,20 @@ spec = describe "Model.Reconcile" do
     (isLive <$> Map.lookup "n2" m.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "n3" m.nodes) `shouldEqual` Just false
 
+  it "closes restored nested tab descendants with their owning window" do
+    let
+      m0 = modelOf
+        [ win "w" 1 [ "a" ]
+        , (liveTab "a" "w" 11 "A") { children = [ "b" ] }
+        , liveTab "b" "a" 12 "B"
+        ]
+        [ "w" ]
+        1
+      closed = (applyBrowser 0.0 (WindowClosed { windowId: 1 }) m0).model
+    (isLive <$> Map.lookup "w" closed.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "a" closed.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "b" closed.nodes) `shouldEqual` Just false
+
   it "closing an outer window leaves a nested live-window boundary alone" do
     let
       m0 = modelOf
@@ -253,6 +267,21 @@ spec = describe "Model.Reconcile" do
     (_.windowId <$> Map.lookup "inner" closedOuter.nodes) `shouldEqual` Just (Just 1)
     (_.tabId <$> Map.lookup "a" closedOuter.nodes) `shouldEqual` Just (Just 11)
     (_.tabId <$> Map.lookup "b" closedOuter.nodes) `shouldEqual` Just (Just 12)
+
+  it "activation deactivates sibling nested tabs in the owning window" do
+    let
+      m0 = modelOf
+        [ win "w" 1 [ "a", "c" ]
+        , (liveTab "a" "w" 11 "A") { active = true, children = [ "b" ] }
+        , liveTab "b" "a" 12 "B"
+        , liveTab "c" "w" 13 "C"
+        ]
+        [ "w" ]
+        1
+      activated = (applyBrowser 0.0 (TabActivated { tabId: 12, windowId: 1 }) m0).model
+    (_.active <$> Map.lookup "a" activated.nodes) `shouldEqual` Just false
+    (_.active <$> Map.lookup "b" activated.nodes) `shouldEqual` Just true
+    (_.active <$> Map.lookup "c" activated.nodes) `shouldEqual` Just false
 
   it "restores a pending window even when the browser reuses a stale window id" do
     let

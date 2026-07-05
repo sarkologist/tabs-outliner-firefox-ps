@@ -5,7 +5,7 @@ import Prelude
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
-import Model.Tree (applyPatch, directGroupParent, insertAtClamped, insertAtLive, isLiveWindow, liveInsertIndex, liveInsertSlot, liveTabPreorder, moveWithin, rootAncestor, searchVisible, subtreeIds, visible)
+import Model.Tree (applyPatch, directGroupParent, insertAtClamped, insertAtLive, isLiveWindow, liveInsertIndex, liveInsertSlot, liveTabPreorder, moveWithin, ownedLiveTabPreorder, ownedTabPreorder, owningGroupAncestor, rootAncestor, searchVisible, subtreeIds, visible)
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (shouldEqual)
@@ -82,9 +82,14 @@ spec = describe "Model.Tree" do
         emptyModel
     it "lists only immediate live tab children" do
       liveTabPreorder nested "W" `shouldEqual` [ "A", "C" ]
+    it "lists owned tabs through tab nesting" do
+      ownedTabPreorder nested "W" `shouldEqual` [ "A", "B", "C" ]
+      ownedLiveTabPreorder nested "W" `shouldEqual` [ "A", "B", "C" ]
     it "finds only a direct group parent" do
       (_.id <$> directGroupParent nested "A") `shouldEqual` Just "W"
       directGroupParent nested "B" `shouldEqual` Nothing
+    it "finds the owning group through tab parents" do
+      (_.id <$> owningGroupAncestor nested "B") `shouldEqual` Just "W"
     it "ignores opener parents and inserts directly in the window" do
       liveInsertSlot nested "W" (Just "A") 1 `shouldEqual` { parent: "W", index: 1 }
     it "appends after the direct live children" do
@@ -104,6 +109,7 @@ spec = describe "Model.Tree" do
           }
           emptyModel
       liveTabPreorder withNestedWindow "W" `shouldEqual` [ "A", "C" ]
+      ownedTabPreorder withNestedWindow "W" `shouldEqual` [ "A", "C" ]
       liveInsertSlot withNestedWindow "W" (Just "X") 1 `shouldEqual` { parent: "W", index: 2 }
 
   describe "rootAncestor" do

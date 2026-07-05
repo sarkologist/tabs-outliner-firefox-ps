@@ -14,7 +14,7 @@ import Model.Codec (Snapshot)
 import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
-import Model.Tree (applyPatch, insertAtClamped, liveTabCountInWindow, liveTabPreorder, liveWindowNode)
+import Model.Tree (applyPatch, insertAtClamped, liveTabCountInWindow, liveWindowNode, ownedLiveTabPreorder)
 import Model.Types (Kind(..), Model, NodeId, defaultNode, emptyModel, isLive, isLiveTab)
 import Test.QuickCheck ((===))
 import Test.Spec (Spec, describe, it)
@@ -126,7 +126,7 @@ feedEvents :: Model -> Array BrowserEvent -> Model
 feedEvents = foldl (\m e -> (applyBrowser 0.0 e m).model)
 
 liveChildIds :: Model -> NodeId -> Array NodeId
-liveChildIds m parent = liveTabPreorder m parent
+liveChildIds m parent = ownedLiveTabPreorder m parent
 
 type RestoreSim =
   { model :: Model
@@ -479,7 +479,7 @@ browserTabOrder windowId s = case findWindowIn windowId s.windows of
 modelTabOrder :: Int -> Model -> Array Int
 modelTabOrder windowId m = case liveWindowNode windowId m of
   Nothing -> []
-  Just w -> Array.mapMaybe tabIdIfLive (liveTabPreorder m w.id)
+  Just w -> Array.mapMaybe tabIdIfLive (ownedLiveTabPreorder m w.id)
   where
   tabIdIfLive cid = Map.lookup cid m.nodes >>= \n -> if isLiveTab n then n.tabId else Nothing
 
@@ -768,10 +768,10 @@ spec = describe "Model.Command" do
     reopened.roots `shouldEqual` [ "n1" ]
     Map.size reopened.nodes `shouldEqual` 3
 
-  it "restoring a closed window with nested tabs restores only direct children" do
+  it "restoring a closed window restores nested tab descendants" do
     let
-      -- closed window n1 = [ A(n2 -> B(n3)), C(n4) ]; only A and C are direct
-      -- window children, so B waits until it is restored explicitly.
+      -- closed window n1 = [ A(n2 -> B(n3)), C(n4) ]; B is tab nesting, not a
+      -- separate group/window boundary, so it restores with the owning window.
       m0 = applyPatch
         { upserts:
             [ (defaultNode "n1" KGroup 0.0) { title = "W", children = [ "n2", "n4" ] }
@@ -787,18 +787,19 @@ spec = describe "Model.Command" do
       reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
         [ WindowOpened { windowId: 5 }
         , openTab 51 5 0 "a" true
-        , openTab 52 5 1 "c" false
+        , openTab 52 5 1 "b" false
+        , openTab 53 5 2 "c" false
         ]
-    activated.actions `shouldEqual` [ CreateWindow [ "http://a", "http://c" ] ]
+    activated.actions `shouldEqual` [ CreateWindow [ "http://a", "http://b", "http://c" ] ]
     (map _.node activated.model.pendingRestoreWindows) `shouldEqual` [ "n1" ]
-    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "n2" (Cons "n4" Nil) ]
+    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "n2" (Cons "n3" (Cons "n4" Nil)) ]
     (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 5)
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 51)
-    (_.tabId <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just Nothing
-    (_.tabId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 52)
-    liveChildIds reopened "n1" `shouldEqual` [ "n2", "n4" ]
+    (_.tabId <$> Map.lookup "n3" reopened.nodes) `shouldEqual` Just (Just 52)
+    (_.tabId <$> Map.lookup "n4" reopened.nodes) `shouldEqual` Just (Just 53)
+    liveChildIds reopened "n1" `shouldEqual` [ "n2", "n3", "n4" ]
 
-  it "restoring a tab nested under a tab opens in the current window" do
+  it "restoring a tab nested under a tab opens in the owning live window" do
     let
       m0 = applyPatch
         { upserts:
@@ -812,7 +813,7 @@ spec = describe "Model.Command" do
         }
         emptyModel
       activated = applyCommand 0.0 (Activate "n3") m0
-    activated.actions `shouldEqual` [ CreateTab Nothing Nothing (Just "http://b") ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://b") ]
 
   it "restoring into an outer live window ignores nested live-window tabs in the browser index" do
     let
@@ -833,7 +834,7 @@ spec = describe "Model.Command" do
     activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 2) (Just "http://b") ]
 
   -- The unification: a saved GROUP restores exactly like a saved window, but
-  -- only for its immediate tab children.
+  -- nested groups/windows remain separate restore boundaries.
   it "restoring a closed window with a nested group leaves the nested group closed" do
     let
       -- closed window n1 = [ A(n2), group n3 = [ B(n4) ], C(n5) ] — all closed, with urls

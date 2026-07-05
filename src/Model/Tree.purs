@@ -65,12 +65,48 @@ directGroupParent model nid = do
   p <- Map.lookup pid model.nodes
   if p.kind == KGroup then Just p else Nothing
 
+-- | Nearest ancestor that is a group/container, walking through tab parents.
+-- | Tab nesting is semantic history; only groups/windows own browser windows.
+owningGroupAncestor :: Model -> NodeId -> Maybe Node
+owningGroupAncestor model nid = go Set.empty (Map.lookup nid model.nodes >>= _.parent)
+  where
+  go seen = case _ of
+    Nothing -> Nothing
+    Just pid
+      | Set.member pid seen -> Nothing
+      | otherwise -> case Map.lookup pid model.nodes of
+          Just n | n.kind == KGroup -> Just n
+          Just n -> go (Set.insert pid seen) n.parent
+          Nothing -> Nothing
+
 -- | Live tab nodes directly owned by `root`, in child-list order. This is the
 -- | nodes-side ordering that corresponds to a browser window's tab strip.
 liveTabPreorder :: Model -> NodeId -> Array NodeId
 liveTabPreorder model root = case Map.lookup root model.nodes of
   Nothing -> []
   Just n -> Array.filter (liveTabChild model) n.children
+
+-- | Tab nodes owned by `root` for restored historical nesting: include tab
+-- | descendants in preorder, walking through tabs, but stop before descendant
+-- | groups/windows (they own their own restore boundary).
+ownedTabPreorder :: Model -> NodeId -> Array NodeId
+ownedTabPreorder model root = Array.fromFoldable (go Set.empty root Nil)
+  where
+  go :: Set NodeId -> NodeId -> List NodeId -> List NodeId
+  go seen id rest
+    | Set.member id seen = rest
+    | otherwise = case Map.lookup id model.nodes of
+        Nothing -> rest
+        Just n | id /= root && n.kind == KGroup -> rest
+        Just n ->
+          let
+            seen' = Set.insert id seen
+            tail = foldr (go seen') rest n.children
+          in
+            if n.kind == KTab then Cons id tail else tail
+
+ownedLiveTabPreorder :: Model -> NodeId -> Array NodeId
+ownedLiveTabPreorder model root = Array.filter (liveTabChild model) (ownedTabPreorder model root)
 
 liveTabCount :: Model -> NodeId -> Int
 liveTabCount model root = Array.length (liveTabPreorder model root)

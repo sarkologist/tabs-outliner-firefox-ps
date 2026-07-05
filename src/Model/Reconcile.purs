@@ -13,7 +13,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
-import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveInsertSlot, liveTabNode, liveTabPreorder, liveWindowNode, mergePatch, pruneFrom, subtreeIds)
+import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveInsertSlot, liveTabNode, liveWindowNode, mergePatch, ownedLiveTabPreorder, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, Step, defaultNode, emptyPatch, isLive)
 
 mkId :: Int -> NodeId
@@ -61,7 +61,7 @@ applyBrowser now ev model = case ev of
     Nothing -> noop model
     Just w ->
       let
-        closeIds = [ w.id ] <> liveTabPreorder model w.id
+        closeIds = [ w.id ] <> ownedLiveTabPreorder model w.id
         upserts = Array.mapMaybe (\i -> closeNode now <$> Map.lookup i model.nodes) closeIds
         patch = { upserts, removes: [], roots: Nothing }
       in
@@ -279,7 +279,7 @@ activateTab tabId windowId model = case liveTabNode tabId model of
   Just n ->
     let
       winTabs = case liveWindowNode windowId model of
-        Just w -> liveTabPreorder model w.id
+        Just w -> ownedLiveTabPreorder model w.id
         Nothing -> []
       deact = Array.mapMaybe deactivate winTabs
       deactivate cid = case Map.lookup cid model.nodes of
