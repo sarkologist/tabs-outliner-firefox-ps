@@ -649,6 +649,77 @@ spec = describe "Model.Command" do
     let m = run (Move "n1" (Just "n2") 0) base -- n2 is a child of n1
     (_.parent <$> Map.lookup "n1" m.nodes) `shouldEqual` Just Nothing
 
+  describe "paste after" do
+    let
+      tab id parent = (defaultNode id KTab 0.0) { title = id, parent = parent, url = Just ("http://" <> id), closedAt = Just 0.0 }
+      group id parent children = (defaultNode id KGroup 0.0) { title = id, parent = parent, children = children }
+      siblings =
+        applyPatch
+          { upserts:
+              [ group "W" Nothing [ "A", "B", "C" ]
+              , tab "A" (Just "W")
+              , tab "B" (Just "W")
+              , tab "C" (Just "W")
+              ]
+          , removes: []
+          , roots: Just [ "W" ]
+          }
+          emptyModel
+      nested =
+        applyPatch
+          { upserts:
+              [ group "W" Nothing [ "A", "G", "B" ]
+              , tab "A" (Just "W")
+              , group "G" (Just "W") [ "C" ]
+              , tab "C" (Just "G")
+              , tab "B" (Just "W")
+              ]
+          , removes: []
+          , roots: Just [ "W" ]
+          }
+          emptyModel
+      wrapper =
+        applyPatch
+          { upserts:
+              [ group "wrap" Nothing [ "W1" ]
+              , group "W1" (Just "wrap") [ "A" ]
+              , tab "A" (Just "W1")
+              , group "W2" Nothing [ "B" ]
+              , tab "B" (Just "W2")
+              ]
+          , removes: []
+          , roots: Just [ "wrap", "W2" ]
+          }
+          emptyModel
+
+    it "moves a sibling after a lower target" do
+      (_.children <$> Map.lookup "W" (run (PasteAfter "A" "C") siblings).nodes)
+        `shouldEqual` Just [ "B", "C", "A" ]
+
+    it "moves a sibling after an upper target" do
+      (_.children <$> Map.lookup "W" (run (PasteAfter "C" "A") siblings).nodes)
+        `shouldEqual` Just [ "A", "C", "B" ]
+
+    it "pastes after a group as a sibling, not inside it" do
+      let m = run (PasteAfter "A" "G") nested
+      (_.children <$> Map.lookup "W" m.nodes) `shouldEqual` Just [ "G", "A", "B" ]
+      (_.children <$> Map.lookup "G" m.nodes) `shouldEqual` Just [ "C" ]
+
+    it "rejects paste onto the source or into its descendants" do
+      run (PasteAfter "G" "G") nested `shouldEqual` nested
+      run (PasteAfter "G" "C") nested `shouldEqual` nested
+
+    it "prunes an emptied wrapper group when pasting after a root target" do
+      let m = run (PasteAfter "W1" "W2") wrapper
+      Map.lookup "wrap" m.nodes `shouldEqual` Nothing
+      m.roots `shouldEqual` [ "W2", "W1" ]
+      (_.parent <$> Map.lookup "W1" m.nodes) `shouldEqual` Just Nothing
+
+    it "uses the existing live-tab move behavior" do
+      let r = applyCommand 0.0 (PasteAfter "n2" "n5") base2
+      r.actions `shouldEqual` [ MoveTabToWindow 11 2 1 ]
+      (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
+
   it "flatten does nothing on a non-group" do
     let m = run (Flatten "n2") base -- n2 is a tab
     (_.kind <$> Map.lookup "n2" m.nodes) `shouldEqual` Just KTab

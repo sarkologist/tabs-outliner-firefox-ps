@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { bootBackgroundAndSidebar } from "./support/harness";
+import { bootBackgroundAndSidebar, fake } from "./support/harness";
 import { installFakeBrowser } from "./support/fake-browser";
 
 const seed = {
@@ -19,6 +19,7 @@ const fontScale = (page: Page) =>
 
 const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasText: text });
 const groupRows = (page: Page) => page.locator("[role=treeitem]").filter({ hasText: "Group" });
+const titles = (page: Page) => page.locator("[role=treeitem] .title").allInnerTexts();
 
 // Make sure the keydown lands on <body>, not a lingering focused input.
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -73,14 +74,32 @@ test.describe("sidebar keyboard shortcuts", () => {
     await expect(page.locator("#search")).toBeFocused();
   });
 
+  test("the cut/paste shortcuts move the hovered row after the target", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    await rowOf(page, "Alpha").hover();
+    await blur(page);
+    await page.keyboard.press("Control+X");
+    await expect(rowOf(page, "Alpha")).toHaveClass(/cut/);
+
+    await rowOf(page, "Beta").hover();
+    await blur(page);
+    await page.keyboard.press("Control+V");
+    await expect.poll(() => titles(page)).toEqual(["Window", "Beta", "Alpha"]);
+    await expect(rowOf(page, "Alpha")).not.toHaveClass(/cut/);
+  });
+
   test("shortcuts don't fire while typing in the search box", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
+    await rowOf(page, "Alpha").hover();
     await page.locator("#search").click();
     await page.keyboard.type("n"); // would group the hovered row if the shortcut fired
+    await page.keyboard.press("Control+X"); // would cut the hovered row if it fired
     await expect(page.locator("#search")).toHaveValue("n");
     await page.waitForTimeout(300); // let any erroneous command round-trip land
     await expect(groupRows(page)).toHaveCount(0);
+    await expect(page.locator(".row.cut")).toHaveCount(0);
   });
 
   test("auto-repeat (held key) does not re-fire a shortcut", async ({ page }) => {
@@ -163,6 +182,22 @@ test.describe("manifest", () => {
     expect(key?.windows).toBe("Ctrl+Shift+Y");
     expect(key?.mac).toBe("Command+Shift+Y");
     expect(key?.default).toBeUndefined();
+  });
+
+  test("declares a menu action and opens the sidebar on install", async ({ page }) => {
+    const res = await page.request.get("/manifest.json");
+    const manifest = await res.json();
+    expect(manifest.action?.default_title).toBe("Open Tabs Outliner");
+    expect(manifest.action?.default_area).toBe("menupanel");
+    expect(manifest.sidebar_action?.open_at_install).toBe(true);
+  });
+});
+
+test.describe("browser action", () => {
+  test("opens the sidebar from the extension action", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await fake(page, "clickAction");
+    expect(await page.evaluate(() => (globalThis as any).__fake.sidebarOpenLog)).toEqual([1]);
   });
 });
 

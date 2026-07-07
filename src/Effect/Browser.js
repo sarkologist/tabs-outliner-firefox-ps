@@ -5,6 +5,15 @@
 
 export const getBrowser = () => globalThis.browser;
 
+export const initSidebarActionImpl = (api) => () => {
+  const action = api && api.action;
+  const sidebar = api && api.sidebarAction;
+  if (!action?.onClicked || typeof sidebar?.open !== "function") return;
+  action.onClicked.addListener(() => {
+    Promise.resolve(sidebar.open()).catch(() => {});
+  });
+};
+
 const BACKUP_ALARM = "tabs-outliner-automatic-backup";
 const BACKUP_ENABLED_KEY = "tabsOutlinerAutomaticBackupsEnabled";
 const BACKUP_LAST_SUCCESS_KEY = "tabsOutlinerAutomaticBackupLastSuccessfulAt";
@@ -314,9 +323,11 @@ const registerRestoreBind = (nodeKey) => {
   };
 };
 
+// `type: "normal"` so the created window inherits the sidebar (see master's
+// sidebar-for-command-windows change); nodeKey pairs it back to its container.
 export const createWindowImpl = (api) => (nodeKey) => (urls) => () => {
   const dropOnFailure = registerRestoreBind(nodeKey);
-  return Promise.resolve(api.windows.create({ url: urls })).catch((err) => { dropOnFailure(); throw err; });
+  return Promise.resolve(api.windows.create({ type: "normal", url: urls })).catch((err) => { dropOnFailure(); throw err; });
 };
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
@@ -334,8 +345,8 @@ export const newWindowWithTabsImpl = (api) => (nodeKey) => (tabIds) => () => {
   const [first, ...rest] = tabIds;
   // Only a failed windows.create (no window, so no onCreated) drops the entry; if
   // the window is created its onCreated consumes it, even if a later tabs.move
-  // rejects.
-  return Promise.resolve(api.windows.create({ tabId: first })).then(
+  // rejects. `type: "normal"` so it inherits the sidebar.
+  return Promise.resolve(api.windows.create({ type: "normal", tabId: first })).then(
     (w) => Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 }))),
     (err) => { dropOnFailure(); throw err; }
   );

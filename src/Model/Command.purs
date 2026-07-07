@@ -40,6 +40,7 @@ data Command
   | Group NodeId -- wrap a node in a group/window
   | Import Snapshot -- add an exported outline as inert, restorable top-level nodes
   | Drop NodeId NodeId -- drag dragId onto targetId; resolved here to a Move
+  | PasteAfter NodeId NodeId -- cut/paste source after target; resolved here to a Move
 
 -- | Browser-side effects a command implies (interpreted by the background).
 -- | `CreateWindow` opens one new browser window populated with the given urls
@@ -234,6 +235,23 @@ applyCommandRaw now cmd model = case cmd of
               idx = fromMaybe (Array.length shrunk) (Array.elemIndex targetId shrunk)
             in
               move dragId target.parent idx
+
+  -- Cut/paste uses the old extension's semantics: paste the cut subtree AFTER
+  -- the target row, never inside it. The move path below keeps pruning, root-tab
+  -- wrapping, live-tab browser routing, and undo behavior identical to drag/reorder.
+  PasteAfter sourceId targetId
+    | sourceId == targetId -> noChange
+    | otherwise -> case Map.lookup targetId model.nodes of
+      Nothing -> noChange
+      Just target ->
+        let
+          siblings = case target.parent of
+            Just pid -> fromMaybe [] (_.children <$> Map.lookup pid model.nodes)
+            Nothing -> model.roots
+          shrunk = Array.delete sourceId siblings
+          idx = maybe (Array.length shrunk) (_ + 1) (Array.elemIndex targetId shrunk)
+        in
+          move sourceId target.parent idx
   where
   noChange :: CmdResult
   noChange = { model, patch: emptyPatch, actions: [] }
@@ -650,6 +668,7 @@ encodeCommand = case _ of
   Group nid -> encodeJson { tag: "group", id: nid }
   Import snap -> encodeJson { tag: "import", body: encodeSnapshotData snap }
   Drop drag target -> encodeJson { tag: "drop", drag, target }
+  PasteAfter source target -> encodeJson { tag: "pasteAfter", source, target }
 
 decodeCommand :: Json -> Either String Command
 decodeCommand json = do
@@ -670,6 +689,7 @@ decodeCommand json = do
       { body } <- dec json :: Either String { body :: Json }
       Import <$> decodeSnapshot body
     "drop" -> (\r -> Drop r.drag r.target) <$> (dec json :: Either String { drag :: NodeId, target :: NodeId })
+    "pasteAfter" -> (\r -> PasteAfter r.source r.target) <$> (dec json :: Either String { source :: NodeId, target :: NodeId })
     other -> Left ("unknown command: " <> other)
 
 dec :: forall a. DecodeJson a => Json -> Either String a

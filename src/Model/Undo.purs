@@ -172,3 +172,4 @@ undoable = case _ of
   Group _ -> true
   Import _ -> true
   Drop _ _ -> true -- resolves to a Move; a live-tab drop is excluded by `relocates`
+  PasteAfter _ _ -> true -- resolves to a Move; a live-tab paste is excluded by `relocates`

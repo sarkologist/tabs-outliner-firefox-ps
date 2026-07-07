@@ -4,6 +4,7 @@
 module Effect.Browser
   ( BrowserApi
   , getBrowser
+  , initSidebarAction
   , getAllWindows
   , getCurrentWindowId
   , subscribe
@@ -39,6 +40,11 @@ import Model.Types (RuntimeWindow)
 foreign import data BrowserApi :: Type
 
 foreign import getBrowser :: Effect BrowserApi
+
+foreign import initSidebarActionImpl :: BrowserApi -> Effect Unit
+
+initSidebarAction :: BrowserApi -> Effect Unit
+initSidebarAction = initSidebarActionImpl
 
 type RawTab =
   { tabId :: Int

@@ -89,6 +89,7 @@ export function installFakeBrowser(seed: Seed) {
     tabDetached: listener(),
     winCreated: listener(),
     winRemoved: listener(),
+    actionClicked: listener(),
     alarm: listener(),
     downloadChanged: listener(),
   };
@@ -159,6 +160,7 @@ export function installFakeBrowser(seed: Seed) {
       },
       create: (props: any = {}) => {
         const id = ++winSeq;
+        driver.windowCreateLog.push({ ...props });
         if (props.focused !== false) {
           for (const win of wins.values()) win.focused = false;
           currentWindowId = id;
@@ -287,6 +289,15 @@ export function installFakeBrowser(seed: Seed) {
         return Promise.resolve();
       },
     },
+    action: {
+      onClicked: ev.actionClicked,
+    },
+    sidebarAction: {
+      open: () => {
+        driver.sidebarOpenLog.push(currentWindowId ?? driver.focusedWindowId ?? firstWindowId());
+        return Promise.resolve();
+      },
+    },
     storage: {
       local: {
         get: (keys?: string | string[] | Record<string, unknown> | null) => {
@@ -359,6 +370,8 @@ export function installFakeBrowser(seed: Seed) {
   const driver: any = {
     focusLog: [] as number[],
     winFocusLog: [] as number[],
+    sidebarOpenLog: [] as number[],
+    windowCreateLog: [] as Array<Record<string, unknown>>,
     // how many times windows.getAll has been called, and an optional gate a test
     // can use to suspend boot mid-snapshot (see windows.getAll above).
     getAllCalls: 0,
@@ -386,6 +399,9 @@ export function installFakeBrowser(seed: Seed) {
     commandShortcut: (name: string) => {
       const c = commandShortcuts.find((x) => x.name === name);
       return c ? c.shortcut : null;
+    },
+    clickAction: () => {
+      ev.actionClicked._emit({});
     },
     alarm: (name: string) => alarms.get(name) ?? null,
     emitAlarm: (name: string) => {

@@ -358,5 +358,5 @@ conflictWarning overrides = case dups of
   cs -> HH.div [ HP.class_ (ClassName "warn") ]
     [ HH.text ("The same key is bound to more than one action: " <> joinWith ", " (map Sh.formatCombo cs)) ]
   where
-  combos = map (Sh.bindingFor overrides) Sh.allCmds
+  combos = Array.concatMap (Sh.bindingsFor overrides) Sh.allCmds
   dups = Array.nub (Array.filter (\c -> Array.length (Array.filter (eq c) combos) > 1) combos)
