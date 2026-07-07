@@ -25,6 +25,10 @@ export type Seed = {
   fullSizePopupReportsNormalNewTab?: boolean;
   // Simulate the popup's first tabs.onCreated arriving before windows.onCreated.
   fullSizePopupReportsTabBeforeWindow?: boolean;
+  // Simulate a normal url-populated window's tabs.onCreated arriving before its
+  // windows.onCreated (Firefox does not order the two) — exercises the tab-event
+  // buffering that keeps concurrent restores from cross-wiring.
+  windowCreateReportsTabBeforeWindow?: boolean;
 };
 
 export function installFakeBrowser(seed: Seed) {
@@ -179,13 +183,20 @@ export function installFakeBrowser(seed: Seed) {
             }
           });
         };
-        if (reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow) openCreatedUrls();
+        // Firefox does not guarantee windows.onCreated precedes the new window's
+        // first tabs.onCreated. `windowCreateReportsTabBeforeWindow` models the
+        // tab-first ordering for a normal url-populated restore window (the popup
+        // path has its own flag), exercising the background's tab-event buffering.
+        const tabBeforeWindow =
+          (reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow) ||
+          (!reportsNormalNewTab && type === "normal" && urls.length > 0 && !!seed?.windowCreateReportsTabBeforeWindow);
+        if (tabBeforeWindow) openCreatedUrls();
         ev.winCreated._emit({ id, type: reportsNormalNewTab ? "normal" : type, focused: props.focused !== false });
         if (props.tabId != null) {
           // create a window holding an existing tab: onCreated (above) then the
           // tab's onAttached into it — the order the background relies on
           driver.attachTab(props.tabId, id, 0);
-        } else if (!(reportsNormalNewTab && seed?.fullSizePopupReportsTabBeforeWindow)) openCreatedUrls();
+        } else if (!tabBeforeWindow) openCreatedUrls();
         const win = wins.get(id)!;
         return Promise.resolve({ id, type: win.type, focused: win.focused, tabs: win.tabIds.map((tid) => tabInfo(tabs.get(tid))) });
       },

@@ -27,6 +27,43 @@ const fullSizePopupFocusRecency = [];
 const nonOutlinerWindowIds = new Set();
 let outlinerPopupCreationDepth = 0;
 
+// FIFO of container node ids awaiting the windows.onCreated of a restore/rehome
+// window we just asked the browser to create. One entry (a `{ node }` wrapper) is
+// pushed per window-creating call (in creation order) and popped by the next
+// matching onCreated, so each new window binds to the exact node that requested
+// it (a precise `windowBound` instead of the reducer guessing from its shared
+// pending queue — the fix for two windows restored at once cross-wiring). A `null`
+// node marks a create with no container to bind (a fresh window at the root); it
+// pops in lockstep so the queue stays aligned with creation order, and yields a
+// plain `windowOpened`. A failed create removes its own entry (see
+// registerRestoreBind), so the queue only ever holds creates still awaiting their
+// onCreated — the same head-pop exposure to an interleaved user-opened window that
+// the reducer's pending-window fallback already had.
+const restoreBindQueue = [];
+
+// Firefox does not order a new window's windows.onCreated before its first
+// tabs.onCreated/onAttached. If a created restore window's tab arrived first, the
+// reducer would bind that window from its FIFO fallback and concurrent restores
+// could cross-wire. So while a restore create is still awaiting its onCreated,
+// hold tab/attach events for any not-yet-announced window and replay them the
+// moment that window binds (see the windows.onCreated flush). Keyed by windowId.
+const bufferedWindowTabs = new Map();
+const bufferTabEventIfPending = (windowId, emit) => {
+  if (restoreBindQueue.length > 0 && !nonOutlinerWindowIds.has(windowId) && !isKnownOrPendingOutlinerWindow(windowId)) {
+    const arr = bufferedWindowTabs.get(windowId);
+    if (arr) arr.push(emit);
+    else bufferedWindowTabs.set(windowId, [emit]);
+    return true;
+  }
+  return false;
+};
+const flushBufferedTabs = (windowId) => {
+  const arr = bufferedWindowTabs.get(windowId);
+  if (!arr) return;
+  bufferedWindowTabs.delete(windowId);
+  for (const emit of arr) emit();
+};
+
 // Key under which we stash a tab's outliner node id via browser.sessions. The
 // value survives a browser restart for any tab Firefox session-restores, giving
 // startup re-match a STABLE identity to bind by (instead of guessing by url).
@@ -146,7 +183,7 @@ export const subscribeImpl = (api) => (sink) => () => {
   const w = api.windows;
   t.onCreated.addListener((tab) => {
     if (shouldIgnoreTab(api, tab)) return;
-    sink.tabOpened({
+    const emit = () => sink.tabOpened({
       tabId: tab.id,
       windowId: tab.windowId,
       openerTabId: tab.openerTabId ?? null,
@@ -156,6 +193,8 @@ export const subscribeImpl = (api) => (sink) => () => {
       active: !!tab.active,
       favIconUrl: tab.favIconUrl ?? null,
     })();
+    if (bufferTabEventIfPending(tab.windowId, emit)) return;
+    emit();
   });
   t.onRemoved.addListener((tabId, info) => {
     if (info && isKnownOrPendingOutlinerWindow(info.windowId)) return;
@@ -180,7 +219,9 @@ export const subscribeImpl = (api) => (sink) => () => {
   });
   t.onAttached.addListener((tabId, info) => {
     if (isKnownOrPendingOutlinerWindow(info.newWindowId)) return;
-    sink.tabAttached({ tabId, windowId: info.newWindowId, index: info.newPosition })()
+    const emit = () => sink.tabAttached({ tabId, windowId: info.newWindowId, index: info.newPosition })();
+    if (bufferTabEventIfPending(info.newWindowId, emit)) return;
+    emit();
   });
   // Dragging a tab OUT to a brand-new window (tab tear-off) is not reliably
   // reported by onAttached in Firefox — the new window can be born already
@@ -197,6 +238,10 @@ export const subscribeImpl = (api) => (sink) => () => {
     // after detaching — onRemoved handles it), not a throw from the handler, which
     // should surface like every other listener's does.
     Promise.resolve(api.tabs.get(tabId)).then((tab) => {
+      // Not buffered: a user tear-off births a window that fires NO
+      // windows.onCreated (only this onDetached), so there is no later flush — and
+      // such a window is never one of our restore creates anyway (those always
+      // fire onCreated). Buffering here would strand the event forever.
       if (tab && !shouldIgnoreTab(api, tab)) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
     }, () => {});
   });
@@ -216,12 +261,26 @@ export const subscribeImpl = (api) => (sink) => () => {
         if (!isKnownOrPendingOutlinerWindow(win.id)) {
           nonOutlinerWindowIds.add(win.id);
           sink.windowOpened(win.id)();
+          // an external popup opening mid-restore may have buffered a tab event;
+          // now that it's announced, replay so it isn't stranded.
+          flushBufferedTabs(win.id);
         }
       });
       return;
     }
     nonOutlinerWindowIds.add(win.id);
-    sink.windowOpened(win.id)();
+    // Pair this window to the container that asked us to create it, if any: pop
+    // the next queued entry (FIFO, in creation order). Popping on every new-window
+    // event (not gated by an in-flight flag) means the entry is consumed even if
+    // the create promise already settled — otherwise a restore window would leak
+    // its entry and fall through to a plain `windowOpened`.
+    const entry = restoreBindQueue.length ? restoreBindQueue.shift() : null;
+    const boundNode = entry ? entry.node : null;
+    if (boundNode != null) sink.windowBound({ node: boundNode, windowId: win.id })();
+    else sink.windowOpened(win.id)();
+    // now that the window is announced/bound, replay any tab events that raced
+    // ahead of this onCreated (see bufferTabEventIfPending)
+    flushBufferedTabs(win.id);
   });
   w.onRemoved.addListener((winId) => {
     nonOutlinerWindowIds.delete(winId);
@@ -248,8 +307,27 @@ export const createTabImpl = (api) => (windowId) => (index) => (url) => () => {
   return Promise.resolve(api.tabs.create(props));
 };
 
-export const createWindowImpl = (api) => (urls) => () => {
-  return Promise.resolve(api.windows.create({ type: "normal", url: urls })).then(() => undefined);
+// Register a create so its window's onCreated binds to `nodeKey` (or null → a
+// plain new window). Returns a `dropOnFailure` callback for the create's reject
+// path: a failed create fires no windows.onCreated to consume the entry, so it
+// must be removed or it would offset every later restore's pairing. A SUCCESSFUL
+// create is left entirely to windows.onCreated (which pops the entry and flushes
+// any buffered tabs), so binding never races the create promise's settlement —
+// the two are unordered — and buffered tabs can't replay early.
+const registerRestoreBind = (nodeKey) => {
+  const entry = { node: nodeKey };
+  restoreBindQueue.push(entry);
+  return () => {
+    const i = restoreBindQueue.indexOf(entry);
+    if (i >= 0) restoreBindQueue.splice(i, 1);
+  };
+};
+
+// `type: "normal"` so the created window inherits the sidebar (see master's
+// sidebar-for-command-windows change); nodeKey pairs it back to its container.
+export const createWindowImpl = (api) => (nodeKey) => (urls) => () => {
+  const dropOnFailure = registerRestoreBind(nodeKey);
+  return Promise.resolve(api.windows.create({ type: "normal", url: urls })).catch((err) => { dropOnFailure(); throw err; });
 };
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
@@ -259,13 +337,19 @@ export const moveTabToWindowImpl = (api) => (tabId) => (windowId) => (index) => 
 
 // Create a new window holding existing tabs: the first tab opens the window
 // (windows.onCreated, then its tabs.onAttached), and the rest move in after.
-export const newWindowWithTabsImpl = (api) => (tabIds) => () => {
+export const newWindowWithTabsImpl = (api) => (nodeKey) => (tabIds) => () => {
   if (tabIds.length === 0) return Promise.resolve();
+  // nodeKey is null for a fresh window at the root (nothing to bind); it still
+  // registers so the queue stays aligned with creation order.
+  const dropOnFailure = registerRestoreBind(nodeKey);
   const [first, ...rest] = tabIds;
-  const created = api.windows.create({ type: "normal", tabId: first });
-  return Promise.resolve(created).then((w) =>
-    Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 })))
-  ).then(() => undefined);
+  // Only a failed windows.create (no window, so no onCreated) drops the entry; if
+  // the window is created its onCreated consumes it, even if a later tabs.move
+  // rejects. `type: "normal"` so it inherits the sidebar.
+  return Promise.resolve(api.windows.create({ type: "normal", tabId: first })).then(
+    (w) => Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 }))),
+    (err) => { dropOnFailure(); throw err; }
+  );
 };
 
 export const removeTabImpl = (api) => (tabId) => () =>

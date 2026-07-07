@@ -346,9 +346,9 @@ runAction :: BrowserApi -> BrowserAction -> Aff Unit
 runAction api = case _ of
   FocusTab t -> Browser.focusTab api t
   CreateTab w i u -> Browser.createTab api w i u
-  CreateWindow us -> Browser.createWindow api us
+  CreateWindow n us -> Browser.createWindow api n us
   MoveTabToWindow t w i -> Browser.moveTabToWindow api t w i
-  NewWindowWithTabs ts -> Browser.newWindowWithTabs api ts
+  NewWindowWithTabs n ts -> Browser.newWindowWithTabs api n ts
   RemoveTab t -> Browser.removeTab api t
 
 -- | Did this command relocate real browser tabs (move them between windows or into
@@ -356,5 +356,5 @@ runAction api = case _ of
 -- | the browser — so the background skips recording an undo entry for it.
 relocates :: BrowserAction -> Boolean
 relocates (MoveTabToWindow _ _ _) = true
-relocates (NewWindowWithTabs _) = true
+relocates (NewWindowWithTabs _ _) = true
 relocates _ = false

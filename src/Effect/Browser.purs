@@ -113,6 +113,7 @@ type Sink =
   , tabMoved :: { tabId :: Int, windowId :: Int, toIndex :: Int } -> Effect Unit
   , tabAttached :: { tabId :: Int, windowId :: Int, index :: Int } -> Effect Unit
   , windowOpened :: Int -> Effect Unit
+  , windowBound :: { node :: String, windowId :: Int } -> Effect Unit
   , windowClosed :: Int -> Effect Unit
   }
 
@@ -140,14 +141,15 @@ subscribe api handle = subscribeImpl api
   , tabMoved: \r -> handle (TabMoved r)
   , tabAttached: \r -> handle (TabAttached r)
   , windowOpened: \w -> handle (WindowOpened { windowId: w })
+  , windowBound: \r -> handle (WindowBound { node: r.node, windowId: r.windowId })
   , windowClosed: \w -> handle (WindowClosed { windowId: w })
   }
 
 foreign import focusTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 foreign import createTabImpl :: BrowserApi -> Nullable Int -> Nullable Int -> Nullable String -> Effect (Promise Unit)
-foreign import createWindowImpl :: BrowserApi -> Array String -> Effect (Promise Unit)
+foreign import createWindowImpl :: BrowserApi -> String -> Array String -> Effect (Promise Unit)
 foreign import moveTabToWindowImpl :: BrowserApi -> Int -> Int -> Int -> Effect (Promise Unit)
-foreign import newWindowWithTabsImpl :: BrowserApi -> Array Int -> Effect (Promise Unit)
+foreign import newWindowWithTabsImpl :: BrowserApi -> Nullable String -> Array Int -> Effect (Promise Unit)
 foreign import removeTabImpl :: BrowserApi -> Int -> Effect (Promise Unit)
 foreign import openFullSizeOutlinerImpl :: BrowserApi -> Nullable Int -> Effect (Promise Unit)
 foreign import tagTabImpl :: BrowserApi -> Int -> String -> Effect (Promise Unit)
@@ -168,9 +170,11 @@ focusTab api tabId = toAffE (focusTabImpl api tabId)
 createTab :: BrowserApi -> Maybe Int -> Maybe Int -> Maybe String -> Aff Unit
 createTab api windowId index url = toAffE (createTabImpl api (toNullable windowId) (toNullable index) (toNullable url))
 
--- | Open one new browser window populated with the given urls.
-createWindow :: BrowserApi -> Array String -> Aff Unit
-createWindow api urls = toAffE (createWindowImpl api urls)
+-- | Open one new browser window populated with the given urls, tagged so the
+-- | `windows.onCreated` listener can pair it back to container node `nodeId` (via
+-- | a `windowBound` event) instead of the reducer guessing from the pending FIFO.
+createWindow :: BrowserApi -> String -> Array String -> Aff Unit
+createWindow api nodeId urls = toAffE (createWindowImpl api nodeId urls)
 
 -- | Move a live tab into an existing browser window at `index` (-1 = append).
 -- | Used when a live tab is reorganized under a container that is already a live
@@ -181,8 +185,8 @@ moveTabToWindow api tabId windowId index = toAffE (moveTabToWindowImpl api tabId
 -- | Detach tabs into one brand-new browser window (the first creates it, the rest
 -- | move in). Used when live tabs are reorganized under a saved/plain container
 -- | (it "goes live") or out to the root.
-newWindowWithTabs :: BrowserApi -> Array Int -> Aff Unit
-newWindowWithTabs api tabIds = toAffE (newWindowWithTabsImpl api tabIds)
+newWindowWithTabs :: BrowserApi -> Maybe String -> Array Int -> Aff Unit
+newWindowWithTabs api nodeId tabIds = toAffE (newWindowWithTabsImpl api (toNullable nodeId) tabIds)
 
 removeTab :: BrowserApi -> Int -> Aff Unit
 removeTab api tabId = toAffE (removeTabImpl api tabId)

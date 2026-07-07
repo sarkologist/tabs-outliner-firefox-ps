@@ -299,6 +299,47 @@ spec = describe "Model.Reconcile" do
     reopened.roots `shouldEqual` [ "n1" ]
     Map.size reopened.nodes `shouldEqual` 2
 
+  -- Regression: two saved windows restored close together, each holding a tab with
+  -- the SAME url. The impure layer pairs each new browser window to the exact node
+  -- that requested it (WindowBound names the node), so binding no longer pops the
+  -- shared FIFO head. Even when the browser reports the SECOND restore's window
+  -- first, its tab must rebind to its OWN node — not cross-wire into the first
+  -- window and hijack the same-url node there (the reported bug).
+  it "two concurrent restores bind by node, not FIFO head (no cross-wire)" do
+    let
+      -- wa = [ a1@http://x ] and wb = [ b1@http://x ], both closed, both queued.
+      queued =
+        (modelOf
+          [ (defaultNode "wa" KGroup 0.0) { title = "Window", children = [ "a1" ] }
+          , (defaultNode "a1" KTab 0.0) { parent = Just "wa", title = "A", url = Just "http://x", closedAt = Just 0.0 }
+          , (defaultNode "wb" KGroup 0.0) { title = "Window", children = [ "b1" ] }
+          , (defaultNode "b1" KTab 0.0) { parent = Just "wb", title = "B", url = Just "http://x", closedAt = Just 0.0 }
+          ]
+          [ "wa", "wb" ]
+          1)
+          { pendingRestoreWindows =
+              [ { node: "wa", tabs: List.singleton "a1" }
+              , { node: "wb", tabs: List.singleton "b1" }
+              ]
+          }
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) queued
+        -- the SECOND-queued window (wb) opens first, out of FIFO order
+        [ WindowBound { node: "wb", windowId: 20 }
+        , openTab 201 20 0 "x" true
+        , WindowBound { node: "wa", windowId: 21 }
+        , openTab 211 21 0 "x" true
+        ]
+    -- each window bound to its own browser window, each tab to its own node
+    (_.windowId <$> Map.lookup "wb" reopened.nodes) `shouldEqual` Just (Just 20)
+    (_.tabId <$> Map.lookup "b1" reopened.nodes) `shouldEqual` Just (Just 201)
+    (_.windowId <$> Map.lookup "wa" reopened.nodes) `shouldEqual` Just (Just 21)
+    (_.tabId <$> Map.lookup "a1" reopened.nodes) `shouldEqual` Just (Just 211)
+    -- no cross-wire: a1 stays under wa, b1 under wb; nothing left pending or duplicated
+    (_.parent <$> Map.lookup "a1" reopened.nodes) `shouldEqual` Just (Just "wa")
+    (_.parent <$> Map.lookup "b1" reopened.nodes) `shouldEqual` Just (Just "wb")
+    reopened.pendingRestoreWindows `shouldEqual` []
+    Map.size reopened.nodes `shouldEqual` 4
+
   it "drops a stale pending window when an early tab-open creates that window fresh" do
     let
       queued = emptyModel { pendingRestoreWindows = [ { node: "gone", tabs: List.singleton "missing" } ] }

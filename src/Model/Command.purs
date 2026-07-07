@@ -17,8 +17,10 @@ import Data.Foldable (foldl)
 import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set as Set
+import Data.String (Pattern(..), stripPrefix)
+import Data.String.Common (toLower)
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabCountInWindow, liveWindowNode, mergePatch, ownedTabPreorder, owningGroupAncestor, pruneFrom, rootAncestor, subtreeIds)
@@ -52,18 +54,24 @@ data Command
 data BrowserAction
   = FocusTab Int
   | CreateTab (Maybe Int) (Maybe Int) (Maybe String)
-  | CreateWindow (Array String)
+  -- | Open one new browser window for the given urls, binding it to container
+  -- | `NodeId` when it opens (the impure layer pairs the two, so the restore
+  -- | can't cross-wire to another in-flight restore's window).
+  | CreateWindow NodeId (Array String)
   | MoveTabToWindow Int Int Int -- tabId, destination (live) windowId, index (-1 = append)
-  | NewWindowWithTabs (Array Int) -- detach these tabs into one brand-new window
+  -- | Detach these tabs into one brand-new window. `Just node` when a saved/plain
+  -- | container "goes live" as that window (bind it on open); `Nothing` for a
+  -- | fresh window at the root (no container to bind).
+  | NewWindowWithTabs (Maybe NodeId) (Array Int)
   | RemoveTab Int
 
 derive instance eqBrowserAction :: Eq BrowserAction
 instance showBrowserAction :: Show BrowserAction where
   show (FocusTab t) = "FocusTab " <> show t
   show (CreateTab w i u) = "CreateTab " <> show w <> " " <> show i <> " " <> show u
-  show (CreateWindow us) = "CreateWindow " <> show us
+  show (CreateWindow n us) = "CreateWindow " <> show n <> " " <> show us
   show (MoveTabToWindow t w i) = "MoveTabToWindow " <> show t <> " " <> show w <> " " <> show i
-  show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
+  show (NewWindowWithTabs n ts) = "NewWindowWithTabs " <> show n <> " " <> show ts
   show (RemoveTab t) = "RemoveTab " <> show t
 
 -- | Where a restored tab should reopen, decided by its direct group parent.
@@ -317,11 +325,18 @@ applyCommandRaw now cmd model = case cmd of
         )
       queuedWindows = Set.fromFoldable (map _.node model.pendingRestoreWindows)
       closedTabs = restoreTabs nid
-      -- only tabs with a url can be reopened; keep subtree (preorder) order
+      -- only tabs with a url the browser will actually open can be reopened; keep
+      -- subtree (preorder) order. Skipping an un-openable url (file:, about:, …)
+      -- matters because a window batches all its tabs into one windows.create,
+      -- which the browser rejects WHOLE if any url is disallowed — so one file://
+      -- tab would otherwise silently doom the entire window restore. The skipped
+      -- tab stays as closed history in place.
       tagged = Array.mapMaybe
         ( \n ->
             if Set.member n.id queuedTabs then Nothing
-            else map (\u -> { id: n.id, url: u, target: restoreTargetOf model n.id }) n.url
+            else case n.url of
+              Just u | restorableUrl u -> Just { id: n.id, url: u, target: restoreTargetOf model n.id }
+              _ -> Nothing
         )
         closedTabs
       -- If a saved group/window is already waiting for its browser window, a second
@@ -336,7 +351,7 @@ applyCommandRaw now cmd model = case cmd of
         IntoNewWindow w -> Just w
         _ -> Nothing) ready)
       forWindow w = Array.filter (\x -> x.target == IntoNewWindow w) ready
-      windowActions = map (\w -> CreateWindow (map _.url (forWindow w))) newWinIds
+      windowActions = map (\w -> CreateWindow w (map _.url (forWindow w))) newWinIds
       -- carry the EXACT node ids (same order as the urls above) so each rebinds to
       -- the right node when the window's tabs arrive — not "all of the container's
       -- closed children", which a partial restore must not resurrect.
@@ -419,7 +434,7 @@ applyCommandRaw now cmd model = case cmd of
           Just t ->
             { model: model' { pendingRestoreWindows = pushPending gid model'.pendingRestoreWindows }
             , patch
-            , actions: [ NewWindowWithTabs [ t ] ]
+            , actions: [ NewWindowWithTabs (Just gid) [ t ] ]
             }
           Nothing -> { model: model', patch, actions: [] }
 
@@ -488,12 +503,12 @@ applyCommandRaw now cmd model = case cmd of
   rehome m mParent tabIds
     | Array.null tabIds = { model: m, actions: [] }
     | otherwise = case mParent of
-        Nothing -> { model: m, actions: [ NewWindowWithTabs tabIds ] }
+        Nothing -> { model: m, actions: [ NewWindowWithTabs Nothing tabIds ] }
         Just pid -> case Map.lookup pid m.nodes of
           Just p | Just w <- p.windowId -> { model: m, actions: map (\t -> MoveTabToWindow t w (-1)) tabIds }
           -- de-dupe the queue so two drags into the same not-yet-live container
           -- can't both pop a window and double-bind it
-          Just _ -> { model: m { pendingRestoreWindows = pushPending pid m.pendingRestoreWindows }, actions: [ NewWindowWithTabs tabIds ] }
+          Just _ -> { model: m { pendingRestoreWindows = pushPending pid m.pendingRestoreWindows }, actions: [ NewWindowWithTabs (Just pid) tabIds ] }
           Nothing -> { model: m, actions: [] }
 
   flatten :: NodeId -> CmdResult
@@ -540,6 +555,18 @@ spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 -- container just needs to bind the new window.
 pushPending :: NodeId -> Array PendingWindow -> Array PendingWindow
 pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.snoc xs { node: pid, tabs: Nil }
+
+-- | Schemes a WebExtension can't open in a tab: `windows.create`/`tabs.create`
+-- | reject them, and since a window restore batches every tab into one
+-- | `windows.create`, a single rejected url fails the WHOLE window (no window
+-- | appears). `file:` needs a user-granted file-URL access this add-on doesn't
+-- | request; the rest are privileged/internal. A tab with such a url is left as
+-- | closed history rather than restored.
+blockedSchemes :: Array String
+blockedSchemes = [ "file:", "about:", "chrome:", "resource:", "javascript:", "view-source:", "data:" ]
+
+restorableUrl :: String -> Boolean
+restorableUrl u = let lu = toLower u in not (Array.any (\p -> isJust (stripPrefix (Pattern p) lu)) blockedSchemes)
 
 -- | Where a closed tab node should reopen. The nearest group/window ancestor owns
 -- | the runtime window, walking through tab parents but not across group
