@@ -3,6 +3,7 @@
 module Model.Event where
 
 import Data.Maybe (Maybe)
+import Model.Types (NodeId)
 
 type OpenedTab =
   { tabId :: Int
@@ -17,6 +18,12 @@ type OpenedTab =
 
 data BrowserEvent
   = WindowOpened { windowId :: Int }
+  -- | A window we just created for a restore/rehome has opened, and the impure
+  -- | layer paired it (by creation order) to the exact container node it should
+  -- | bind to. Unlike `WindowOpened`, this names the node, so binding no longer
+  -- | depends on the shared FIFO's head: two windows restored at once (or a stale
+  -- | queue entry) can't cross-wire, and the wrong tab can't rebind into it.
+  | WindowBound { node :: NodeId, windowId :: Int }
   | WindowClosed { windowId :: Int }
   | TabOpened OpenedTab
   | TabClosed { tabId :: Int }

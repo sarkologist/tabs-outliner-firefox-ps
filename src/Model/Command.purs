@@ -51,18 +51,24 @@ data Command
 data BrowserAction
   = FocusTab Int
   | CreateTab (Maybe Int) (Maybe Int) (Maybe String)
-  | CreateWindow (Array String)
+  -- | Open one new browser window for the given urls, binding it to container
+  -- | `NodeId` when it opens (the impure layer pairs the two, so the restore
+  -- | can't cross-wire to another in-flight restore's window).
+  | CreateWindow NodeId (Array String)
   | MoveTabToWindow Int Int Int -- tabId, destination (live) windowId, index (-1 = append)
-  | NewWindowWithTabs (Array Int) -- detach these tabs into one brand-new window
+  -- | Detach these tabs into one brand-new window. `Just node` when a saved/plain
+  -- | container "goes live" as that window (bind it on open); `Nothing` for a
+  -- | fresh window at the root (no container to bind).
+  | NewWindowWithTabs (Maybe NodeId) (Array Int)
   | RemoveTab Int
 
 derive instance eqBrowserAction :: Eq BrowserAction
 instance showBrowserAction :: Show BrowserAction where
   show (FocusTab t) = "FocusTab " <> show t
   show (CreateTab w i u) = "CreateTab " <> show w <> " " <> show i <> " " <> show u
-  show (CreateWindow us) = "CreateWindow " <> show us
+  show (CreateWindow n us) = "CreateWindow " <> show n <> " " <> show us
   show (MoveTabToWindow t w i) = "MoveTabToWindow " <> show t <> " " <> show w <> " " <> show i
-  show (NewWindowWithTabs ts) = "NewWindowWithTabs " <> show ts
+  show (NewWindowWithTabs n ts) = "NewWindowWithTabs " <> show n <> " " <> show ts
   show (RemoveTab t) = "RemoveTab " <> show t
 
 -- | Where a restored tab should reopen, decided by its direct group parent.
@@ -318,7 +324,7 @@ applyCommandRaw now cmd model = case cmd of
         IntoNewWindow w -> Just w
         _ -> Nothing) ready)
       forWindow w = Array.filter (\x -> x.target == IntoNewWindow w) ready
-      windowActions = map (\w -> CreateWindow (map _.url (forWindow w))) newWinIds
+      windowActions = map (\w -> CreateWindow w (map _.url (forWindow w))) newWinIds
       -- carry the EXACT node ids (same order as the urls above) so each rebinds to
       -- the right node when the window's tabs arrive — not "all of the container's
       -- closed children", which a partial restore must not resurrect.
@@ -401,7 +407,7 @@ applyCommandRaw now cmd model = case cmd of
           Just t ->
             { model: model' { pendingRestoreWindows = pushPending gid model'.pendingRestoreWindows }
             , patch
-            , actions: [ NewWindowWithTabs [ t ] ]
+            , actions: [ NewWindowWithTabs (Just gid) [ t ] ]
             }
           Nothing -> { model: model', patch, actions: [] }
 
@@ -470,12 +476,12 @@ applyCommandRaw now cmd model = case cmd of
   rehome m mParent tabIds
     | Array.null tabIds = { model: m, actions: [] }
     | otherwise = case mParent of
-        Nothing -> { model: m, actions: [ NewWindowWithTabs tabIds ] }
+        Nothing -> { model: m, actions: [ NewWindowWithTabs Nothing tabIds ] }
         Just pid -> case Map.lookup pid m.nodes of
           Just p | Just w <- p.windowId -> { model: m, actions: map (\t -> MoveTabToWindow t w (-1)) tabIds }
           -- de-dupe the queue so two drags into the same not-yet-live container
           -- can't both pop a window and double-bind it
-          Just _ -> { model: m { pendingRestoreWindows = pushPending pid m.pendingRestoreWindows }, actions: [ NewWindowWithTabs tabIds ] }
+          Just _ -> { model: m { pendingRestoreWindows = pushPending pid m.pendingRestoreWindows }, actions: [ NewWindowWithTabs (Just pid) tabIds ] }
           Nothing -> { model: m, actions: [] }
 
   flatten :: NodeId -> CmdResult

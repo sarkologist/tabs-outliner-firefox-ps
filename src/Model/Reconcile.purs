@@ -14,7 +14,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveInsertSlot, liveTabNode, liveWindowNode, mergePatch, ownedLiveTabPreorder, pruneFrom, subtreeIds)
-import Model.Types (Kind(..), Model, Node, NodeId, Patch, Step, defaultNode, emptyPatch, isLive)
+import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, Step, defaultNode, emptyPatch, isLive)
 
 mkId :: Int -> NodeId
 mkId i = "n" <> show i
@@ -56,6 +56,15 @@ applyBrowser now ev model = case ev of
   WindowOpened { windowId } -> case liveWindowNode windowId model of
     Just _ -> noop model
     Nothing -> fromMaybe (freshWindow now windowId model) (bindPendingWindow now windowId model)
+
+  -- Precise counterpart to WindowOpened: the impure layer paired this new browser
+  -- window to the exact container node that requested it, so we bind THAT node
+  -- (removing its own queue entry) instead of popping the FIFO head. Idempotent —
+  -- if a tab-first arrival already bound the window (via `bindPendingWindow`), or
+  -- the node was deleted before its window opened, this is a no-op.
+  WindowBound { node, windowId } -> case liveWindowNode windowId model of
+    Just _ -> noop model
+    Nothing -> fromMaybe (noop model) (bindWindowEntry now windowId node model)
 
   WindowClosed { windowId } -> case liveWindowNode windowId model of
     Nothing -> noop model
@@ -129,25 +138,39 @@ bindPendingWindow :: Number -> Int -> Model -> Maybe Step
 bindPendingWindow now windowId model = case Array.uncons model.pendingRestoreWindows of
   Nothing -> Nothing
   Just { head: pw, tail } ->
-    let model' = model { pendingRestoreWindows = tail }
-    in Just case Map.lookup pw.node model'.nodes of
-      Just wn | wn.kind == KGroup ->
-        let
-          wn' = wn { windowId = Just windowId, closedAt = Nothing }
-          -- queue EXACTLY the tabs this restore opens into the window (carried on
-          -- the pending entry, in creation order), so each rebinds as its
-          -- onCreated arrives. A rehome carries none (its dragged tab arrives via
-          -- onAttached); a partial restore carries only the chosen tab(s) — so
-          -- neither hijacks the container's other saved closed tabs.
-          model'' =
-            if List.null pw.tabs then model'
-            else model' { pendingRestore = Map.insert windowId pw.tabs model'.pendingRestore }
-          patch = { upserts: [ wn' ], removes: [], roots: Nothing }
-        in
-          commit model''.nextId patch model''
-      -- the restored node was deleted before its window opened: drop the stale
-      -- queue entry and treat this as a brand-new window.
-      _ -> freshWindow now windowId model'
+    Just (bindEntry now windowId pw (model { pendingRestoreWindows = tail }))
+
+-- | Bind the queue entry that names `node` (not the FIFO head) to `windowId`.
+-- | Returns `Nothing` when no entry names it — already consumed by an earlier
+-- | tab-first `bindPendingWindow`, so the window is (or is about to be) live.
+bindWindowEntry :: Number -> Int -> NodeId -> Model -> Maybe Step
+bindWindowEntry now windowId node model =
+  case Array.findIndex (\e -> e.node == node) model.pendingRestoreWindows of
+    Nothing -> Nothing
+    Just i -> Array.index model.pendingRestoreWindows i <#> \pw ->
+      bindEntry now windowId pw
+        (model { pendingRestoreWindows = fromMaybe model.pendingRestoreWindows (Array.deleteAt i model.pendingRestoreWindows) })
+
+-- | Flip a queued container live as `windowId`: `model'` already has the entry
+-- | removed from `pendingRestoreWindows`. Queue EXACTLY the tabs this restore
+-- | opens into the window (carried on the entry, in creation order) so each
+-- | rebinds as its onCreated arrives. A rehome carries none (its dragged tab
+-- | arrives via onAttached); a partial restore carries only the chosen tab(s) —
+-- | so neither hijacks the container's other saved closed tabs.
+bindEntry :: Number -> Int -> PendingWindow -> Model -> Step
+bindEntry now windowId pw model' = case Map.lookup pw.node model'.nodes of
+  Just wn | wn.kind == KGroup ->
+    let
+      wn' = wn { windowId = Just windowId, closedAt = Nothing }
+      model'' =
+        if List.null pw.tabs then model'
+        else model' { pendingRestore = Map.insert windowId pw.tabs model'.pendingRestore }
+      patch = { upserts: [ wn' ], removes: [], roots: Nothing }
+    in
+      commit model''.nextId patch model''
+  -- the restored node was deleted before its window opened: drop the stale
+  -- queue entry and treat this as a brand-new window.
+  _ -> freshWindow now windowId model'
 
 -- | A brand-new browser window: add a fresh window node at the end of the roots.
 freshWindow :: Number -> Int -> Model -> Step

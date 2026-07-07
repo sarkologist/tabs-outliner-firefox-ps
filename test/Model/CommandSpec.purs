@@ -139,13 +139,13 @@ restoreOne :: RestoreSim -> NodeId -> RestoreSim
 restoreOne s nid =
   let r = applyCommand 0.0 (Activate nid) s.model
   in case Array.uncons r.actions of
-    Just { head: CreateWindow _, tail } | Array.null tail ->
+    Just { head: CreateWindow node _, tail } | Array.null tail ->
       let
         wid = fromMaybe 50 s.windowId
         tabId = s.nextTab
         title = tabTitle nid
         model' = feedEvents r.model
-          [ WindowOpened { windowId: wid }
+          [ WindowBound { node, windowId: wid }
           , TabOpened { tabId, windowId: wid, openerTabId: Nothing, index: 0, url: Just ("http://" <> title), title, active: true, favIconUrl: Nothing }
           ]
       in
@@ -386,7 +386,7 @@ applyBrowserAction salt s = case _ of
                 [ TabOpened { tabId, windowId, openerTabId: Nothing, index: inserted.index, url: Just url, title: url, active: true, favIconUrl: Nothing } ]
             )
             s'
-  CreateWindow urls ->
+  CreateWindow node urls ->
     let
       windowId = s.nextWindow
       tabs = Array.mapWithIndex
@@ -412,22 +412,30 @@ applyBrowserAction salt s = case _ of
         , nextTab = s.nextTab + Array.length urls
         , activeWindow = Just windowId
         }
+      -- the impure layer pairs the created window to its container node, so the
+      -- sim delivers a precise WindowBound. Still flip its order against the tab
+      -- events (either arrival order must reconcile the same way).
       events =
-        if pmod salt 2 == 0 then [ WindowOpened { windowId } ] <> tabEvents
-        else tabEvents <> [ WindowOpened { windowId } ]
+        if pmod salt 2 == 0 then [ WindowBound { node, windowId } ] <> tabEvents
+        else tabEvents <> [ WindowBound { node, windowId } ]
     in
       enqueueEvents events s'
   MoveTabToWindow tabId windowId index -> moveBrowserTab tabId windowId index s
-  NewWindowWithTabs tabIds -> case Array.uncons tabIds of
+  NewWindowWithTabs node tabIds -> case Array.uncons tabIds of
     Nothing -> s
     Just _ ->
       let
         windowId = s.nextWindow
+        -- `Just` when a saved/plain container goes live as this window (bind it);
+        -- `Nothing` for a fresh window at the root (a plain WindowOpened).
+        openEvent = case node of
+          Just n -> WindowBound { node: n, windowId }
+          Nothing -> WindowOpened { windowId }
         s' = s
           { windows = Array.snoc s.windows { windowId, tabs: [] }
           , nextWindow = windowId + 1
           , activeWindow = Just windowId
-          , events = s.events <> [ WindowOpened { windowId } ]
+          , events = s.events <> [ openEvent ]
           }
       in
         foldl (\acc tabId -> moveBrowserTab tabId windowId (-1) acc) s' tabIds
@@ -613,7 +621,7 @@ spec = describe "Model.Command" do
 
   it "group wraps a live tab and makes the wrapper await a new window" do
     let r = applyCommand 0.0 (Group "n2") base
-    r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+    r.actions `shouldEqual` [ NewWindowWithTabs (Just "n4") [ 11 ] ]
     (map _.node r.model.pendingRestoreWindows) `shouldEqual` [ "n4" ]
     (_.children <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just [ "n2" ]
     (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n4")
@@ -649,7 +657,7 @@ spec = describe "Model.Command" do
   it "flatten of a live window detaches its tabs into a new window and dissolves it" do
     let r = applyCommand 0.0 (Flatten "n1") base -- n1 is the live window (windowId 1) at root
     Map.lookup "n1" r.model.nodes `shouldEqual` Nothing -- the window node is gone...
-    r.actions `shouldEqual` [ NewWindowWithTabs [ 11, 12 ] ] -- ...its tabs re-homed into one fresh window
+    r.actions `shouldEqual` [ NewWindowWithTabs Nothing [ 11, 12 ] ] -- ...its tabs re-homed into one fresh window
     -- the promoted LIVE tabs sit at the root transiently (the browser action moves the
     -- real tabs; events re-home them) — they must NOT be wrapped in stray groups
     r.model.roots `shouldEqual` [ "n2", "n3" ]
@@ -742,7 +750,7 @@ spec = describe "Model.Command" do
       closedWin = (applyBrowser 0.0 (WindowClosed { windowId: 1 }) base).model
       activated = applyCommand 0.0 (Activate "n1") closedWin
     -- one new window carrying both tabs' urls, in order — no bare CreateTab
-    activated.actions `shouldEqual` [ CreateWindow [ "http://A", "http://B" ] ]
+    activated.actions `shouldEqual` [ CreateWindow "n1" [ "http://A", "http://B" ] ]
     -- the closed window node is queued to rebind to the window that opens
     (map _.node activated.model.pendingRestoreWindows) `shouldEqual` [ "n1" ]
 
@@ -790,7 +798,7 @@ spec = describe "Model.Command" do
         , openTab 52 5 1 "b" false
         , openTab 53 5 2 "c" false
         ]
-    activated.actions `shouldEqual` [ CreateWindow [ "http://a", "http://b", "http://c" ] ]
+    activated.actions `shouldEqual` [ CreateWindow "n1" [ "http://a", "http://b", "http://c" ] ]
     (map _.node activated.model.pendingRestoreWindows) `shouldEqual` [ "n1" ]
     (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "n2" (Cons "n3" (Cons "n4" Nil)) ]
     (_.windowId <$> Map.lookup "n1" reopened.nodes) `shouldEqual` Just (Just 5)
@@ -875,7 +883,7 @@ spec = describe "Model.Command" do
       activated = applyCommand 0.0 (Activate "n4") saved
     -- a saved group is not a live window, so its tabs open as ONE new window
     -- (no bare CreateTab into the focused window)
-    activated.actions `shouldEqual` [ CreateWindow [ "http://t" ] ]
+    activated.actions `shouldEqual` [ CreateWindow "n4" [ "http://t" ] ]
     -- ...and the group node itself queues to bind that window — it goes live in place
     (map _.node activated.model.pendingRestoreWindows) `shouldEqual` [ "n4" ]
     let
@@ -898,7 +906,7 @@ spec = describe "Model.Command" do
       saved = (applyCommand 0.0 (Import { nodes: [ grp, a, b ], roots: [ "g1" ] }) base).model
       -- restore only tab B (n6); its saved-group parent goes live as one new window
       activated = applyCommand 0.0 (Activate "n6") saved
-    activated.actions `shouldEqual` [ CreateWindow [ "http://b" ] ]
+    activated.actions `shouldEqual` [ CreateWindow "n4" [ "http://b" ] ]
     -- exactly B is queued to rebind in that window — NOT its sibling A (the bug:
     -- re-deriving "all the group's closed children" would queue [n5, n6])
     (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "n6" Nil ]
@@ -1070,7 +1078,7 @@ spec = describe "Model.Command" do
       let
         withGroup = insertGroup Nothing 0 base2 -- group n6 at root
         r = applyCommand 0.0 (Move "n2" (Just "n6") 0) withGroup
-      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+      r.actions `shouldEqual` [ NewWindowWithTabs (Just "n6") [ 11 ] ]
       -- n6 binds when its window opens; it carries no tabs to rebind (the dragged
       -- live tab arrives via onAttached, and n6's own saved tabs stay put)
       (map _.node r.model.pendingRestoreWindows) `shouldEqual` [ "n6" ]
@@ -1103,7 +1111,7 @@ spec = describe "Model.Command" do
 
     it "out to the root: detaches into a brand-new window" do
       let r = applyCommand 0.0 (Move "n2" Nothing 0) base2
-      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+      r.actions `shouldEqual` [ NewWindowWithTabs Nothing [ 11 ] ]
       r.model.pendingRestoreWindows `shouldEqual` [] -- a fresh window node appears via onCreated
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
 
@@ -1179,7 +1187,7 @@ spec = describe "Model.Command" do
       let
         wrapped = run (MoveTopLevel "B") closed
         activated = applyCommand 0.0 (Activate "B") wrapped
-      activated.actions `shouldEqual` [ CreateWindow [ "http://b" ] ]
+      activated.actions `shouldEqual` [ CreateWindow "n1" [ "http://b" ] ]
       (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "B" Nil ]
       (_.restoredFromClosed <$> Map.lookup "B" activated.model.nodes) `shouldEqual` Just true
 
@@ -1220,12 +1228,12 @@ spec = describe "Model.Command" do
     -- left untouched until the resulting browser events arrive.
     it "move to top level on a live tab promotes it into its own new window" do
       let r = applyCommand 0.0 (MoveTopLevel "n2") base -- n2 is a live tab (tab 11) in window n1
-      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+      r.actions `shouldEqual` [ NewWindowWithTabs Nothing [ 11 ] ]
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1") -- unchanged until events
 
     it "move to bottom on a live tab promotes it into its own new window" do
       let r = applyCommand 0.0 (MoveBottom "n2") base
-      r.actions `shouldEqual` [ NewWindowWithTabs [ 11 ] ]
+      r.actions `shouldEqual` [ NewWindowWithTabs Nothing [ 11 ] ]
       (_.parent <$> Map.lookup "n2" r.model.nodes) `shouldEqual` Just (Just "n1")
 
   -- An emptied container is clutter, so it's pruned — unless the user renamed it,

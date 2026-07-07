@@ -209,6 +209,39 @@ test.describe("commands", () => {
     expect(restored.tabs.map((t: any) => t.url)).toEqual(["http://a", "http://b"]);
   });
 
+  test("restoring two closed windows with same-url tabs binds each to its own window (no cross-wire)", async ({ page }) => {
+    // Two windows, each holding a tab with the SAME url (as when the reported bug
+    // moved same-url tabs into different groups). Each restore must reopen into
+    // its OWN new window and rebind its OWN node — not hijack the other's.
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        { id: 1, tabs: [{ id: 11, url: "http://x", title: "First", active: true }] },
+        { id: 2, tabs: [{ id: 21, url: "http://x", title: "Second" }] },
+      ],
+    });
+    await expect(page.getByText("First")).toBeVisible();
+
+    // close both windows -> two closed Window rows, each with its closed tab
+    await fake(page, "closeWindow", 1);
+    await fake(page, "closeWindow", 2);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(4);
+    expect(await page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
+
+    // restore both closed windows
+    const closedWindowRows = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
+    await closedWindowRows.nth(0).locator(".title").click();
+    await closedWindowRows.nth(1).locator(".title").click();
+
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+
+    // two distinct live browser windows, each holding exactly its own single tab
+    const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+    expect(windows.length).toBe(2);
+    for (const w of windows) expect(w.tabs.map((t: any) => t.url)).toEqual(["http://x"]);
+    // no tabs got dumped together into one window (the cross-wire failure mode)
+    expect(windows.every((w: any) => w.tabs.length === 1)).toBe(true);
+  });
+
   test("restoring a closed window restores its tabs in order", async ({ page }) => {
     await bootBackgroundAndSidebar(page, {
       windows: [

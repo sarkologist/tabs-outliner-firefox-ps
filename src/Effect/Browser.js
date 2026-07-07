@@ -18,6 +18,19 @@ const fullSizePopupFocusRecency = [];
 const nonOutlinerWindowIds = new Set();
 let outlinerPopupCreationDepth = 0;
 
+// FIFO of container node ids awaiting the windows.onCreated of a restore/rehome
+// window we just asked the browser to create. One entry is pushed per
+// window-creating call (in creation order) and popped by the next matching
+// onCreated, so each new window binds to the exact node that requested it (a
+// precise `windowBound` instead of the reducer guessing from its shared pending
+// queue — the fix for two windows restored at once cross-wiring). A `null` entry
+// marks a create with no container to bind (a fresh window at the root); it pops
+// in lockstep so the queue stays aligned with creation order, and yields a plain
+// `windowOpened`. `createInflight` gates the pop so a stale entry (a create that
+// somehow fired no usable onCreated) can't hijack a later unrelated window.
+const restoreBindQueue = [];
+let createInflight = 0;
+
 // Key under which we stash a tab's outliner node id via browser.sessions. The
 // value survives a browser restart for any tab Firefox session-restores, giving
 // startup re-match a STABLE identity to bind by (instead of guessing by url).
@@ -212,7 +225,12 @@ export const subscribeImpl = (api) => (sink) => () => {
       return;
     }
     nonOutlinerWindowIds.add(win.id);
-    sink.windowOpened(win.id)();
+    // Pair this window to the container that asked us to create it, if any: pop
+    // the next queued node id (FIFO, in creation order). `createInflight` guards
+    // against a stale entry hijacking an unrelated user-opened window.
+    const boundNode = createInflight > 0 && restoreBindQueue.length ? restoreBindQueue.shift() : null;
+    if (boundNode != null) sink.windowBound({ node: boundNode, windowId: win.id })();
+    else sink.windowOpened(win.id)();
   });
   w.onRemoved.addListener((winId) => {
     nonOutlinerWindowIds.delete(winId);
@@ -239,8 +257,29 @@ export const createTabImpl = (api) => (windowId) => (index) => (url) => () => {
   return Promise.resolve(api.tabs.create(props));
 };
 
-export const createWindowImpl = (api) => (urls) => () =>
-  Promise.resolve(api.windows.create({ url: urls }));
+// Register a create so its window's onCreated binds to `nodeKey` (or null → a
+// plain new window). Returns a settle callback: run it on BOTH resolve and
+// reject so it decrements the in-flight count and, if the create fired no
+// onCreated to consume the entry (e.g. it rejected), drops it — otherwise a lost
+// entry would offset every later restore's pairing.
+const registerRestoreBind = (nodeKey) => {
+  const entry = { node: nodeKey };
+  restoreBindQueue.push(entry);
+  createInflight += 1;
+  return () => {
+    createInflight -= 1;
+    const i = restoreBindQueue.indexOf(entry);
+    if (i >= 0) restoreBindQueue.splice(i, 1);
+  };
+};
+
+export const createWindowImpl = (api) => (nodeKey) => (urls) => () => {
+  const settle = registerRestoreBind(nodeKey);
+  return Promise.resolve(api.windows.create({ url: urls })).then(
+    (w) => { settle(); return w; },
+    (err) => { settle(); throw err; }
+  );
+};
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
 // tabs.onAttached.
@@ -249,11 +288,15 @@ export const moveTabToWindowImpl = (api) => (tabId) => (windowId) => (index) => 
 
 // Create a new window holding existing tabs: the first tab opens the window
 // (windows.onCreated, then its tabs.onAttached), and the rest move in after.
-export const newWindowWithTabsImpl = (api) => (tabIds) => () => {
+export const newWindowWithTabsImpl = (api) => (nodeKey) => (tabIds) => () => {
   if (tabIds.length === 0) return Promise.resolve();
+  // nodeKey is null for a fresh window at the root (nothing to bind); it still
+  // registers so the queue stays aligned with creation order.
+  const settle = registerRestoreBind(nodeKey);
   const [first, ...rest] = tabIds;
-  return Promise.resolve(api.windows.create({ tabId: first })).then((w) =>
-    Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 })))
+  return Promise.resolve(api.windows.create({ tabId: first })).then(
+    (w) => Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 }))).then(() => settle()),
+    (err) => { settle(); throw err; }
   );
 };
 
