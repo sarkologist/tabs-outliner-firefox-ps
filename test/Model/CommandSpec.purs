@@ -311,6 +311,20 @@ expectedCommandActions cmd m = case cmd of
 enqueueEvents :: Array BrowserEvent -> UserSim -> UserSim
 enqueueEvents evs s = s { events = s.events <> evs }
 
+-- A browser event that REMOVES or REORDERS an existing live tab — a move within a
+-- window, a cross-window attach, or a close (of a tab or a whole window) — as
+-- opposed to a create/restore, which only ADDS a tab and which the restore index
+-- already accounts for. `simUserStep` keeps a restore from racing one of these: the
+-- restore fixes its insertion index against the pre-event tree, so an in-flight
+-- removal/reorder is the deliberately-waived interleaving (see there).
+isReorderEvent :: BrowserEvent -> Boolean
+isReorderEvent = case _ of
+  TabMoved _ -> true
+  TabAttached _ -> true
+  TabClosed _ -> true
+  WindowClosed _ -> true
+  _ -> false
+
 moveBrowserTab :: Int -> Int -> Int -> UserSim -> UserSim
 moveBrowserTab tabId destWindow requested s = case findTabIn tabId s.windows of
   Nothing -> s
@@ -516,7 +530,21 @@ simUserStep s raw =
     -- Non-activate commands are generated from settled UI/model states. Activate
     -- may run while create/restore events are still queued, which is the race that
     -- originally let restored tabs compute stale insertion indexes.
-    effectiveOp = if not (Array.null s.events) && op /= 0 && op /= 1 && op /= 13 then 0 else op
+    --
+    -- One class of interleaving is deliberately excluded, matching Model.Reconcile's
+    -- waiver ("interleaved closed nodes / simultaneous moves are deliberately
+    -- approximated"): an Activate/restore racing an in-flight event that removes or
+    -- reorders an existing live tab (a move, attach, or close still queued). The
+    -- restore fixes its insertion index against the pre-event tree, then the queued
+    -- event shifts the live tabs around a still-closed restore target, so the
+    -- keep-in-place rebind can disagree with the browser strip — a genuine
+    -- browser-level race with no deterministic model answer (see the "waives restore
+    -- racing an in-flight ... live move" test). So flush any pending reorder/close
+    -- before an Activate; the intentional Activate-vs-pending-create/restore race
+    -- (which the restore index DOES reconcile) is untouched.
+    pendingReorder = Array.any isReorderEvent s.events
+    effectiveOp =
+      if not (Array.null s.events) && op /= 0 && op /= 13 && (op /= 1 || pendingReorder) then 0 else op
     stepped = case effectiveOp of
       0 -> flushOne s
       1 -> onNode Activate
@@ -1169,6 +1197,33 @@ spec = describe "Model.Command" do
       (isLive <$> Map.lookup "n3" afterClose.nodes) `shouldEqual` Just false
       (_.children <$> Map.lookup "n1" afterClose.nodes) `shouldEqual` Just [ "n2", "n3" ]
       Set.member 50 afterClose.closingTabs `shouldEqual` false
+
+  -- A deliberately WAIVED interleaving (matching Model.Reconcile's module docstring:
+  -- "interleaved closed nodes / simultaneous moves are deliberately approximated,
+  -- not bulletproofed"). Restoring a closed tab while a same-window live-tab move is
+  -- still in flight: the restore computes its insertion index from the pre-move tree
+  -- (CreateTab at live index 1), but the queued TabMoved then reinserts the moved
+  -- live tab AFTER the still-closed restore target, and the rebind reuses the
+  -- restored node's saved tree slot — that keep-in-place rebind is load-bearing for
+  -- the "restore in any order lands at its saved slot" guarantee (see the one-by-one
+  -- saved-group property), so it can't also honour a racing move. The result is a
+  -- genuine browser-level race (tabs.move vs tabs.create) with no deterministic model
+  -- answer, so the model diverges here by design. The order property avoids the race
+  -- by flushing pending live-tab moves before an Activate (see `effectiveOp`); this
+  -- test pins the known divergence so a future change to it is noticed.
+  it "waives restore racing an in-flight same-window live move" do
+    let
+      closed = outlinerClose "n3" 12 base
+      movedCmd = applyCommand 0.0 (Move "n2" (Just "n1") 0) closed
+      activated = applyCommand 0.0 (Activate "n3") movedCmd.model
+      final = feedEvents activated.model
+        [ TabMoved { tabId: 11, windowId: 1, toIndex: 0 }
+        , openTab 100 1 1 "B" false
+        ]
+    movedCmd.actions `shouldEqual` [ MoveTabToWindow 11 1 0 ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://B") ]
+    -- the waived divergence: model live order [100, 11] vs the browser strip [11, 100]
+    modelTabOrder 1 final `shouldEqual` [ 100, 11 ]
 
   -- Dragging a LIVE tab to a new owning container drives the real browser tab; the
   -- tree is left untouched and re-settles from the resulting onAttached/onCreated.
