@@ -26,10 +26,11 @@ let outlinerPopupCreationDepth = 0;
 // pending queue — the fix for two windows restored at once cross-wiring). A `null`
 // node marks a create with no container to bind (a fresh window at the root); it
 // pops in lockstep so the queue stays aligned with creation order, and yields a
-// plain `windowOpened`. `createInflight` gates the pop so a stale entry (a create
-// that somehow fired no usable onCreated) can't hijack a later unrelated window.
+// plain `windowOpened`. A failed create removes its own entry (see
+// registerRestoreBind), so the queue only ever holds creates still awaiting their
+// onCreated — the same head-pop exposure to an interleaved user-opened window that
+// the reducer's pending-window fallback already had.
 const restoreBindQueue = [];
-let createInflight = 0;
 
 // Firefox does not order a new window's windows.onCreated before its first
 // tabs.onCreated/onAttached. If a created restore window's tab arrived first, the
@@ -228,13 +229,11 @@ export const subscribeImpl = (api) => (sink) => () => {
     // after detaching — onRemoved handles it), not a throw from the handler, which
     // should surface like every other listener's does.
     Promise.resolve(api.tabs.get(tabId)).then((tab) => {
-      if (tab && !shouldIgnoreTab(api, tab)) {
-        // same buffering as onAttached: a tear-off into a brand-new restore
-        // window can land before that window's onCreated.
-        const emit = () => sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
-        if (bufferTabEventIfPending(tab.windowId, emit)) return;
-        emit();
-      }
+      // Not buffered: a user tear-off births a window that fires NO
+      // windows.onCreated (only this onDetached), so there is no later flush — and
+      // such a window is never one of our restore creates anyway (those always
+      // fire onCreated). Buffering here would strand the event forever.
+      if (tab && !shouldIgnoreTab(api, tab)) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
     }, () => {});
   });
   w.onCreated.addListener((win) => {
@@ -259,9 +258,11 @@ export const subscribeImpl = (api) => (sink) => () => {
     }
     nonOutlinerWindowIds.add(win.id);
     // Pair this window to the container that asked us to create it, if any: pop
-    // the next queued entry (FIFO, in creation order). `createInflight` guards
-    // against a stale entry hijacking an unrelated user-opened window.
-    const entry = createInflight > 0 && restoreBindQueue.length ? restoreBindQueue.shift() : null;
+    // the next queued entry (FIFO, in creation order). Popping on every new-window
+    // event (not gated by an in-flight flag) means the entry is consumed even if
+    // the create promise already settled — otherwise a restore window would leak
+    // its entry and fall through to a plain `windowOpened`.
+    const entry = restoreBindQueue.length ? restoreBindQueue.shift() : null;
     const boundNode = entry ? entry.node : null;
     if (boundNode != null) sink.windowBound({ node: boundNode, windowId: win.id })();
     else sink.windowOpened(win.id)();
@@ -295,32 +296,24 @@ export const createTabImpl = (api) => (windowId) => (index) => (url) => () => {
 };
 
 // Register a create so its window's onCreated binds to `nodeKey` (or null → a
-// plain new window). Returns a `settle(created)` callback to run on BOTH the
-// resolve and reject of the create promise: it decrements the in-flight count,
-// and on FAILURE (`created === false`) drops the entry, since no windows.onCreated
-// will ever fire to consume it and a lost entry would offset every later restore's
-// pairing. On SUCCESS the entry is left for windows.onCreated to consume — which
-// also flushes any buffered tabs — so binding never races the create promise's
-// settlement (the two are unordered) and buffered tabs can't replay early.
+// plain new window). Returns a `dropOnFailure` callback for the create's reject
+// path: a failed create fires no windows.onCreated to consume the entry, so it
+// must be removed or it would offset every later restore's pairing. A SUCCESSFUL
+// create is left entirely to windows.onCreated (which pops the entry and flushes
+// any buffered tabs), so binding never races the create promise's settlement —
+// the two are unordered — and buffered tabs can't replay early.
 const registerRestoreBind = (nodeKey) => {
   const entry = { node: nodeKey };
   restoreBindQueue.push(entry);
-  createInflight += 1;
-  return (created) => {
-    createInflight -= 1;
-    if (!created) {
-      const i = restoreBindQueue.indexOf(entry);
-      if (i >= 0) restoreBindQueue.splice(i, 1);
-    }
+  return () => {
+    const i = restoreBindQueue.indexOf(entry);
+    if (i >= 0) restoreBindQueue.splice(i, 1);
   };
 };
 
 export const createWindowImpl = (api) => (nodeKey) => (urls) => () => {
-  const settle = registerRestoreBind(nodeKey);
-  return Promise.resolve(api.windows.create({ url: urls })).then(
-    (w) => { settle(true); return w; },
-    (err) => { settle(false); throw err; }
-  );
+  const dropOnFailure = registerRestoreBind(nodeKey);
+  return Promise.resolve(api.windows.create({ url: urls })).catch((err) => { dropOnFailure(); throw err; });
 };
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
@@ -334,14 +327,14 @@ export const newWindowWithTabsImpl = (api) => (nodeKey) => (tabIds) => () => {
   if (tabIds.length === 0) return Promise.resolve();
   // nodeKey is null for a fresh window at the root (nothing to bind); it still
   // registers so the queue stays aligned with creation order.
-  const settle = registerRestoreBind(nodeKey);
+  const dropOnFailure = registerRestoreBind(nodeKey);
   const [first, ...rest] = tabIds;
-  // Once the window itself is created its onCreated will consume the entry, so
-  // settle(true) even if a later tabs.move rejects; only a failed windows.create
-  // (no window, no onCreated) drops the entry.
+  // Only a failed windows.create (no window, so no onCreated) drops the entry; if
+  // the window is created its onCreated consumes it, even if a later tabs.move
+  // rejects.
   return Promise.resolve(api.windows.create({ tabId: first })).then(
-    (w) => { settle(true); return Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 }))); },
-    (err) => { settle(false); throw err; }
+    (w) => Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 }))),
+    (err) => { dropOnFailure(); throw err; }
   );
 };
 
