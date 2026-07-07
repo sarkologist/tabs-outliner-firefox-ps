@@ -927,6 +927,40 @@ spec = describe "Model.Command" do
     (_.url <$> Map.lookup "n6" afterClose.nodes) `shouldEqual` Just (Just "http://b")
     (_.url <$> Map.lookup "n5" afterClose.nodes) `shouldEqual` Just (Just "http://a")
 
+  it "restoring a window skips un-openable-scheme tabs (file://) and restores the rest" do
+    -- a saved window [ A(http), F(file://), B(https) ]. The browser rejects a
+    -- windows.create batch outright if any url is disallowed, so restore must open
+    -- only the openable tabs; the file:// tab stays as closed history in place.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "w" KGroup 0.0) { title = "Window", children = [ "a", "f", "b" ] }
+            , (defaultNode "a" KTab 0.0) { parent = Just "w", url = Just "http://a", title = "A" }
+            , (defaultNode "f" KTab 0.0) { parent = Just "w", url = Just "file:///Users/me/pic.webp", title = "F" }
+            , (defaultNode "b" KTab 0.0) { parent = Just "w", url = Just "https://b", title = "B" }
+            ]
+        , removes: []
+        , roots: Just [ "w" ]
+        }
+        emptyModel
+      activated = applyCommand 0.0 (Activate "w") m0
+    -- only the two openable urls are batched into the new window, in order
+    activated.actions `shouldEqual` [ CreateWindow "w" [ "http://a", "https://b" ] ]
+    -- and only their nodes are queued to rebind — NOT the file:// tab
+    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "a" (Cons "b" Nil) ]
+    let
+      reopened = foldl (\m e -> (applyBrowser 0.0 e m).model) activated.model
+        [ WindowBound { node: "w", windowId: 5 }
+        , openTab 51 5 0 "a" true
+        , openTab 52 5 1 "b" false
+        ]
+    -- A and B live under the restored window; F stays closed with its url intact
+    (_.tabId <$> Map.lookup "a" reopened.nodes) `shouldEqual` Just (Just 51)
+    (_.tabId <$> Map.lookup "b" reopened.nodes) `shouldEqual` Just (Just 52)
+    (isLive <$> Map.lookup "f" reopened.nodes) `shouldEqual` Just false
+    (_.url <$> Map.lookup "f" reopened.nodes) `shouldEqual` Just (Just "file:///Users/me/pic.webp")
+    (_.parent <$> Map.lookup "f" reopened.nodes) `shouldEqual` Just (Just "w")
+
   it "property: one-tab restore from a saved group tolerates either window/tab event order" $
     quickCheck \(windowFirst :: Boolean) ->
       let

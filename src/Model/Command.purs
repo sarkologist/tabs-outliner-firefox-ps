@@ -17,8 +17,10 @@ import Data.Foldable (foldl)
 import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Set as Set
+import Data.String (Pattern(..), stripPrefix)
+import Data.String.Common (toLower)
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabCountInWindow, liveWindowNode, mergePatch, ownedTabPreorder, owningGroupAncestor, pruneFrom, rootAncestor, subtreeIds)
@@ -305,11 +307,18 @@ applyCommandRaw now cmd model = case cmd of
         )
       queuedWindows = Set.fromFoldable (map _.node model.pendingRestoreWindows)
       closedTabs = restoreTabs nid
-      -- only tabs with a url can be reopened; keep subtree (preorder) order
+      -- only tabs with a url the browser will actually open can be reopened; keep
+      -- subtree (preorder) order. Skipping an un-openable url (file:, about:, …)
+      -- matters because a window batches all its tabs into one windows.create,
+      -- which the browser rejects WHOLE if any url is disallowed — so one file://
+      -- tab would otherwise silently doom the entire window restore. The skipped
+      -- tab stays as closed history in place.
       tagged = Array.mapMaybe
         ( \n ->
             if Set.member n.id queuedTabs then Nothing
-            else map (\u -> { id: n.id, url: u, target: restoreTargetOf model n.id }) n.url
+            else case n.url of
+              Just u | restorableUrl u -> Just { id: n.id, url: u, target: restoreTargetOf model n.id }
+              _ -> Nothing
         )
         closedTabs
       -- If a saved group/window is already waiting for its browser window, a second
@@ -528,6 +537,18 @@ spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 -- container just needs to bind the new window.
 pushPending :: NodeId -> Array PendingWindow -> Array PendingWindow
 pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.snoc xs { node: pid, tabs: Nil }
+
+-- | Schemes a WebExtension can't open in a tab: `windows.create`/`tabs.create`
+-- | reject them, and since a window restore batches every tab into one
+-- | `windows.create`, a single rejected url fails the WHOLE window (no window
+-- | appears). `file:` needs a user-granted file-URL access this add-on doesn't
+-- | request; the rest are privileged/internal. A tab with such a url is left as
+-- | closed history rather than restored.
+blockedSchemes :: Array String
+blockedSchemes = [ "file:", "about:", "chrome:", "resource:", "javascript:", "view-source:", "data:" ]
+
+restorableUrl :: String -> Boolean
+restorableUrl u = let lu = toLower u in not (Array.any (\p -> isJust (stripPrefix (Pattern p) lu)) blockedSchemes)
 
 -- | Where a closed tab node should reopen. The nearest group/window ancestor owns
 -- | the runtime window, walking through tab parents but not across group

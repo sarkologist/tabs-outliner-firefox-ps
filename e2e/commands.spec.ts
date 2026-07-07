@@ -270,6 +270,37 @@ test.describe("commands", () => {
     expect(windows.every((w: any) => w.tabs.length === 1)).toBe(true);
   });
 
+  test("restoring a window with a file:// tab reopens the openable tabs, not nothing", async ({ page }) => {
+    // A window whose tabs include a file:// url the extension can't open. Batching
+    // every url into one windows.create would be rejected whole (nothing opens);
+    // restore must skip the un-openable tab and reopen the rest.
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "https://a", title: "Alpha", active: true },
+            { id: 12, url: "file:///Users/me/pic.webp", title: "Pic" },
+            { id: 13, url: "https://c", title: "Gamma" },
+          ],
+        },
+      ],
+    });
+    await expect(page.getByText("Alpha")).toBeVisible();
+
+    await fake(page, "closeWindow", 1);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(4); // window + 3 tabs
+
+    await page.locator('.row[data-status="closed"]').filter({ hasText: "Window" }).locator(".title").click();
+
+    // the window reopens with the two openable tabs (not nothing); the file:// tab
+    // stays as closed history (so one closed row — "Pic" — remains)
+    await expect(page.locator('.row[data-status="closed"]').filter({ hasText: "Pic" })).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(1);
+    const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+    expect(windows[0].tabs.map((t: any) => t.url)).toEqual(["https://a", "https://c"]);
+  });
+
   test("restoring a closed window restores its tabs in order", async ({ page }) => {
     await bootBackgroundAndSidebar(page, {
       windows: [
