@@ -252,6 +252,9 @@ export const subscribeImpl = (api) => (sink) => () => {
         if (!isKnownOrPendingOutlinerWindow(win.id)) {
           nonOutlinerWindowIds.add(win.id);
           sink.windowOpened(win.id)();
+          // an external popup opening mid-restore may have buffered a tab event;
+          // now that it's announced, replay so it isn't stranded.
+          flushBufferedTabs(win.id);
         }
       });
       return;
