@@ -228,7 +228,13 @@ export const subscribeImpl = (api) => (sink) => () => {
     // after detaching — onRemoved handles it), not a throw from the handler, which
     // should surface like every other listener's does.
     Promise.resolve(api.tabs.get(tabId)).then((tab) => {
-      if (tab && !shouldIgnoreTab(api, tab)) sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
+      if (tab && !shouldIgnoreTab(api, tab)) {
+        // same buffering as onAttached: a tear-off into a brand-new restore
+        // window can land before that window's onCreated.
+        const emit = () => sink.tabAttached({ tabId, windowId: tab.windowId, index: tab.index })();
+        if (bufferTabEventIfPending(tab.windowId, emit)) return;
+        emit();
+      }
     }, () => {});
   });
   w.onCreated.addListener((win) => {
@@ -289,31 +295,32 @@ export const createTabImpl = (api) => (windowId) => (index) => (url) => () => {
 };
 
 // Register a create so its window's onCreated binds to `nodeKey` (or null → a
-// plain new window). Returns a settle callback to run (via `finally`) once the
-// create promise resolves OR rejects: it decrements the in-flight count and, if
-// the create fired no onCreated to consume the entry (e.g. it rejected), drops it
-// — otherwise a lost entry would offset every later restore's pairing. When the
-// last in-flight create settles, any tab events still buffered for a window that
-// never announced itself are flushed so they can't be stranded.
+// plain new window). Returns a `settle(created)` callback to run on BOTH the
+// resolve and reject of the create promise: it decrements the in-flight count,
+// and on FAILURE (`created === false`) drops the entry, since no windows.onCreated
+// will ever fire to consume it and a lost entry would offset every later restore's
+// pairing. On SUCCESS the entry is left for windows.onCreated to consume — which
+// also flushes any buffered tabs — so binding never races the create promise's
+// settlement (the two are unordered) and buffered tabs can't replay early.
 const registerRestoreBind = (nodeKey) => {
   const entry = { node: nodeKey };
   restoreBindQueue.push(entry);
   createInflight += 1;
-  return () => {
+  return (created) => {
     createInflight -= 1;
-    const i = restoreBindQueue.indexOf(entry);
-    if (i >= 0) restoreBindQueue.splice(i, 1);
-    if (createInflight === 0 && bufferedWindowTabs.size > 0) {
-      const leftovers = [...bufferedWindowTabs.values()];
-      bufferedWindowTabs.clear();
-      for (const arr of leftovers) for (const emit of arr) emit();
+    if (!created) {
+      const i = restoreBindQueue.indexOf(entry);
+      if (i >= 0) restoreBindQueue.splice(i, 1);
     }
   };
 };
 
 export const createWindowImpl = (api) => (nodeKey) => (urls) => () => {
   const settle = registerRestoreBind(nodeKey);
-  return Promise.resolve(api.windows.create({ url: urls })).finally(settle);
+  return Promise.resolve(api.windows.create({ url: urls })).then(
+    (w) => { settle(true); return w; },
+    (err) => { settle(false); throw err; }
+  );
 };
 
 // Move an existing tab into another window at `index` (-1 = append). Fires
@@ -329,9 +336,13 @@ export const newWindowWithTabsImpl = (api) => (nodeKey) => (tabIds) => () => {
   // registers so the queue stays aligned with creation order.
   const settle = registerRestoreBind(nodeKey);
   const [first, ...rest] = tabIds;
-  return Promise.resolve(api.windows.create({ tabId: first }))
-    .then((w) => Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 }))))
-    .finally(settle);
+  // Once the window itself is created its onCreated will consume the entry, so
+  // settle(true) even if a later tabs.move rejects; only a failed windows.create
+  // (no window, no onCreated) drops the entry.
+  return Promise.resolve(api.windows.create({ tabId: first })).then(
+    (w) => { settle(true); return Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 }))); },
+    (err) => { settle(false); throw err; }
+  );
 };
 
 export const removeTabImpl = (api) => (tabId) => () =>
