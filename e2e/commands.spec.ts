@@ -242,6 +242,34 @@ test.describe("commands", () => {
     expect(windows.every((w: any) => w.tabs.length === 1)).toBe(true);
   });
 
+  test("restoring two same-url windows binds correctly even when tabs.onCreated beats windows.onCreated", async ({ page }) => {
+    // Same two-window same-url case, but the browser reports each new window's
+    // tab BEFORE its windows.onCreated. The background must hold those tab events
+    // until the window binds, or the FIFO fallback would cross-wire the restores.
+    await bootBackgroundAndSidebar(page, {
+      windowCreateReportsTabBeforeWindow: true,
+      windows: [
+        { id: 1, tabs: [{ id: 11, url: "http://x", title: "First", active: true }] },
+        { id: 2, tabs: [{ id: 21, url: "http://x", title: "Second" }] },
+      ],
+    });
+    await expect(page.getByText("First")).toBeVisible();
+
+    await fake(page, "closeWindow", 1);
+    await fake(page, "closeWindow", 2);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(4);
+
+    const closedWindowRows = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
+    await closedWindowRows.nth(0).locator(".title").click();
+    await closedWindowRows.nth(1).locator(".title").click();
+
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
+    const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
+    expect(windows.length).toBe(2);
+    for (const w of windows) expect(w.tabs.map((t: any) => t.url)).toEqual(["http://x"]);
+    expect(windows.every((w: any) => w.tabs.length === 1)).toBe(true);
+  });
+
   test("restoring a closed window restores its tabs in order", async ({ page }) => {
     await bootBackgroundAndSidebar(page, {
       windows: [
