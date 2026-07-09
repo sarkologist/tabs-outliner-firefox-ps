@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Tabs Outliner (PS rewrite)",
+  "name": "Grove — Tab Tree & Sessions",
   "version": "0.1.0",
-  "description": "A durable sidebar outline of your live and saved tabs and windows (PureScript rewrite).",
+  "description": "Keep as many tabs as you like. A durable, searchable sidebar outline of your live and saved windows — close tabs to reclaim memory and lose nothing.",
   "permissions": ["tabs", "sessions", "storage", "unlimitedStorage", "alarms", "downloads"],
   "icons": {
     "48": "icons/icon.svg",
     "96": "icons/icon.svg"
   },
   "action": {
-    "default_title": "Open Tabs Outliner",
+    "default_title": "Open Grove",
     "default_area": "menupanel",
     "default_icon": {
       "48": "icons/icon.svg",
@@ -20,7 +20,7 @@
     "scripts": ["background/background.js"]
   },
   "sidebar_action": {
-    "default_title": "Tabs Outliner (PS rewrite)",
+    "default_title": "Grove",
     "default_panel": "sidebar/sidebar.html",
     "default_icon": "icons/icon.svg",
     "open_at_install": true
@@ -39,7 +39,7 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "tabs-outliner-rewrite@example.local",
+      "id": "grove@sarkologist.github.io",
       "strict_min_version": "142.0",
       "data_collection_permissions": {
         "required": ["none"]

@@ -1,18 +1,21 @@
 {
-  "name": "tabs-outliner-rewrite",
+  "name": "grove",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "ps:build": "spago build",
     "ps:test": "spago test",
+    "clean": "node scripts/clean.mjs",
     "bundle": "node scripts/bundle.mjs",
     "copy-static": "node scripts/copy-static.mjs",
-    "build": "spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs",
+    "build": "node scripts/clean.mjs && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs",
+    "package": "pnpm run build && web-ext build --source-dir dist --artifacts-dir web-ext-artifacts --overwrite-dest",
+    "package:source": "node scripts/package-source.mjs",
     "test": "spago test",
     "test:e2e": "playwright test",
     "lint:ext": "web-ext lint --source-dir dist --no-config-discovery",
-    "check": "spago test && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs && web-ext lint --source-dir dist --no-config-discovery && playwright test"
+    "check": "node scripts/clean.mjs && spago test && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs && web-ext lint --source-dir dist --no-config-discovery && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",

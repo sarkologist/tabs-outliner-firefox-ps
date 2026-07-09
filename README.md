@@ -1,8 +1,28 @@
-# Tabs Outliner (PureScript rewrite)
+# Grove
 
-A Firefox sidebar extension that keeps a durable, editable outline of your live tabs and
-windows, plus the ones you save or restore — a clean-slate rewrite aimed at the smallest
-design that still delivers the essential product.
+*Tab Tree & Sessions for Firefox — keep every tab, lose nothing.*
+
+**Stop rationing your tabs.** Most tab tools treat open tabs as a problem to contain:
+prune them, suspend them, feel guilty about them. Grove flips the premise. Keep as many
+as you like — then close them freely to reclaim memory, because nothing is ever lost.
+Every window and tab you open, save, or close lands in a durable, searchable outline in
+the sidebar, backed up automatically and one click away from coming back. Tabs stop being
+fragile clutter you're afraid to touch and become a library you cultivate.
+
+Three promises make that shift safe to live by:
+
+- **Nothing is lost.** Unlimited local storage, an automatic daily backup, and
+  restore-by-URL on restart keep your tree — positions, custom titles, collapse state —
+  intact across closing, crashing, and restarting.
+- **Everything is findable.** A live, nested outline of your windows and tabs, with
+  grouping, renaming, drag-to-reorder, and search that reaches inside collapsed groups.
+  Whatever you keep, you can retrieve.
+- **Close without fear.** Closing a tab you've kept doesn't discard it — it greys out as
+  restorable history and frees the RAM. Reclaim memory with no anxiety; bring anything
+  back with a click.
+
+Grove is a clean-slate PureScript rewrite of the classic tree-style tab-outliner concept,
+pared down to the smallest design that still delivers the essential product.
 
 ## What it does
 
@@ -93,7 +113,7 @@ pnpm run build
 
 1. Open `about:debugging#/runtime/this-firefox`.
 2. **Load Temporary Add-on…** and pick `dist/manifest.json`.
-3. Open the **Tabs Outliner** sidebar.
+3. Open the **Grove** sidebar.
 
 Temporary add-ons are removed when Firefox restarts; rebuild and reload after changes.
 

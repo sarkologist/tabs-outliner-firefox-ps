@@ -5,6 +5,7 @@ output/
 .psc-package/
 test-results/
 playwright-report/
+web-ext-artifacts/
 *.log
 .DS_Store
 .purs-repl
