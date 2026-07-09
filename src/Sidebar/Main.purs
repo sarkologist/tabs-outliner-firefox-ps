@@ -319,7 +319,7 @@ handleAction = case _ of
       Just api -> do
         resp <- H.liftAff (attempt (request api (encodeRequest Export)))
         case resp of
-          Right json -> H.liftEffect (downloadJson "tabs-outliner.json" (stringify json))
+          Right json -> H.liftEffect (downloadJson "grove.json" (stringify json))
           _ -> pure unit
       Nothing -> pure unit
   ImportClick -> do
@@ -569,7 +569,7 @@ parseImport text = case jsonParser text of
     Right snap -> Right snap
     Left _ -> case portableToSnapshot json of
       Just snap -> Right snap
-      Nothing -> Left "Import failed: unrecognized format (expected this app's export or a Tab Session Outliner portable tree)."
+      Nothing -> Left "Import failed: unrecognized format (expected a Grove export or a legacy Tabs Outliner portable tree)."
 
 render :: State -> H.ComponentHTML Action () Aff
 render st =

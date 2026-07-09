@@ -41,8 +41,9 @@ pnpm install               # installs JS toolchain + PureScript package set
 pnpm run build             # clean dist/ -> spago build -> esbuild bundle -> copy static files
 ```
 
-The result in `dist/` is exactly what the submitted XPI contains. To verify it
-matches, build the package the same way the XPI was produced:
+The result in `dist/` is exactly what the submitted XPI contains. Build the
+package — and the source zip (`pnpm run package:source`) — from the **same clean
+commit**; `package:source` refuses a dirty tree so the XPI and source can't drift:
 
 ```sh
 pnpm run package           # runs the build, then `web-ext build` over dist/
@@ -75,7 +76,7 @@ Static assets (`manifest.json`, the HTML/CSS, icons) are copied verbatim from
 | `sessions` | Stamp each live tab with its outline-node id so a restore re-binds to the same node. |
 | `storage`, `unlimitedStorage` | Persist the outline locally (IndexedDB) with no quota cap. |
 | `alarms` | Schedule the once-a-day automatic backup. |
-| `downloads` | Write the backup file and user-initiated JSON exports. |
+| `downloads` | Write the automatic daily backup file. (Manual JSON export uses a Blob download and needs no permission.) |
 
 No host permissions, no content scripts, no remote code execution.
 

@@ -263,7 +263,7 @@ test.describe("toolbar", () => {
     const downloadPromise = page.waitForEvent("download");
     await page.locator("#export").click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("tabs-outliner.json");
+    expect(download.suggestedFilename()).toBe("grove.json");
     const parsed = JSON.parse(await readFile(await download.path(), "utf8"));
     expect(parsed.roots.length).toBeGreaterThan(0);
     expect(parsed.nodes.map((n: { title: string }) => n.title)).toContain("Alpha");
