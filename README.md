@@ -1,6 +1,6 @@
 # Grove
 
-*Tab Tree & Sessions for Firefox — keep every tab, lose nothing.*
+*A persistent tab tree for Firefox — keep every tab, lose nothing.*
 
 **Stop rationing your tabs.** Most tab tools treat open tabs as a problem to contain:
 prune them, suspend them, feel guilty about them. Grove flips the premise. Keep as many

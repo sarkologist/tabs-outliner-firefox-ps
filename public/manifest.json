@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Grove — Tab Tree & Sessions",
+  "name": "Grove — Persistent Tab Tree Manager",
   "version": "1.0.0",
   "description": "Keep as many tabs as you like. A durable, searchable sidebar outline of your live and saved windows — close tabs to reclaim memory and lose nothing.",
   "permissions": ["tabs", "sessions", "storage", "unlimitedStorage", "alarms", "downloads"],

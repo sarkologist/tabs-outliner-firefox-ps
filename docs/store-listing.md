@@ -8,10 +8,12 @@ Developer Hub, plus the assets you need to gather. Keep this file in sync with
 
 ## Name
 
-**Grove — Tab Tree & Sessions**
+**Grove — Persistent Tab Tree Manager**
 
 (Matches `manifest.name`. AMO allows ≤ 50 chars; the descriptor after the em dash
-is what makes Grove findable in AMO search — don't drop it.)
+is what makes Grove findable in AMO search — don't drop it. "Persistent" is the
+honest differentiator vs. live-only tree-tab tools; avoid "Sessions", which reads
+as a session-manager the add-on isn't.)
 
 ## Summary  (≤ 250 characters)
 
@@ -73,7 +75,7 @@ manifest), so no privacy policy should be required — but confirm this in the
 ## Listing metadata
 
 - **Category:** Tabs (primary); Privacy & Security or "Other" as secondary if allowed.
-- **Tags / keywords:** tab manager, tab tree, tree tabs, sessions, session manager, outline, tab outliner, backup, productivity, sidebar.
+- **Tags / keywords:** tab manager, tab tree, tree tabs, persistent tabs, save tabs, restore tabs, outline, backup, productivity, sidebar.
 - **Homepage:** the GitHub repo.
 - **Support site / email:** repo Issues, or a support email you monitor.
 - **License:** MPL-2.0 — the `LICENSE` file is in the repo root. Select "Mozilla Public License 2.0" in the AMO submission form to match.
