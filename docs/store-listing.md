@@ -76,7 +76,7 @@ manifest), so no privacy policy should be required — but confirm this in the
 - **Tags / keywords:** tab manager, tab tree, tree tabs, sessions, session manager, outline, tab outliner, backup, productivity, sidebar.
 - **Homepage:** the GitHub repo.
 - **Support site / email:** repo Issues, or a support email you monitor.
-- **License:** the repo has no `LICENSE` file yet — **add one before submitting**, since the source is publicly reviewable. MPL-2.0 (Mozilla's own, natural fit) or MIT are both fine; pick one and drop it in as `LICENSE`.
+- **License:** MPL-2.0 — the `LICENSE` file is in the repo root. Select "Mozilla Public License 2.0" in the AMO submission form to match.
 
 ## Screenshots to capture (at least 1, ideally 4–5; PNG, ~1280×800)
 
@@ -88,6 +88,6 @@ manifest), so no privacy policy should be required — but confirm this in the
 
 ## Before you upload
 
-- Bump the version if `0.1.0` has been used before — **AMO never lets a version number be reused**, and you may prefer to debut at `1.0.0`.
+- Version is `1.0.0` for the debut. **AMO never lets a version number be reused**, so bump it for every future upload.
 - Build the package: `pnpm run package` → `web-ext-artifacts/*.zip`.
 - Because the bundle is compiled + minified, you must also submit source: see [`reviewer-notes.md`](reviewer-notes.md) and run `pnpm run package:source`.
