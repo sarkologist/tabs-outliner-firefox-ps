@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { installFakeBrowser } from "./support/fake-browser";
 
-const REAL_EXPORT = "/Users/sark/code/tabs-outliner/tabs-outliner-tree-2026-06-12.json";
+// Point GROVE_REAL_EXPORT at a real Tabs Outliner export to run the large-tree
+// tests; unset (the default, and in CI / AMO source builds) skips them.
+const REAL_EXPORT = process.env.GROVE_REAL_EXPORT ?? "";
 
 const countNodes = (page: Page) =>
   page.evaluate(
@@ -46,7 +48,7 @@ test("baseline: empty-tree sidebar boot (fixed overhead floor)", async ({ contex
 });
 
 test("opening the sidebar on a ~26k-node tree (window projection, warm background)", async ({ context }) => {
-  test.skip(!existsSync(REAL_EXPORT), "real export not present on this machine");
+  test.skip(!existsSync(REAL_EXPORT), "set GROVE_REAL_EXPORT to a real export to run");
   test.setTimeout(120_000);
 
   await populateIdb(context);
