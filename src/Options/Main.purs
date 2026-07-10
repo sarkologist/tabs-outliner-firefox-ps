@@ -214,7 +214,7 @@ handleAction = case _ of
 render :: State -> H.ComponentHTML Action () Aff
 render st =
   HH.div [ HP.id "wrap" ]
-    [ HH.h1_ [ HH.text "Tabs Outliner — Keyboard shortcuts" ]
+    [ HH.h1_ [ HH.text "Grove — Keyboard shortcuts" ]
     , HH.p [ HP.class_ (ClassName "hint") ]
         [ HH.text "Shortcuts fire in the sidebar while you're not typing in a text box. Click Change, then press the keys you want (modifiers allowed). Press Esc to cancel." ]
     , conflictWarning st.overrides
@@ -296,7 +296,7 @@ backupsSection st =
   HH.div_
     ( [ HH.h2_ [ HH.text "Backups" ]
       , HH.p [ HP.class_ (ClassName "hint") ]
-          [ HH.text "Saves daily JSON exports to Downloads/tabs-outliner-backups." ]
+          [ HH.text "Saves daily JSON exports to Downloads/grove-backups." ]
       , HH.label [ HP.class_ (ClassName "toggle-row") ]
           [ HH.input
               [ HP.type_ HP.InputCheckbox

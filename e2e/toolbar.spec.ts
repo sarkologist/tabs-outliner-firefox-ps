@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { bootBackgroundAndSidebar } from "./support/harness";
 
-const REAL_EXPORT = "/Users/sark/code/tabs-outliner/tabs-outliner-tree-2026-06-12.json";
+// Point GROVE_REAL_EXPORT at a real Tabs Outliner export to run the large-tree
+// tests; unset (the default, and in CI / AMO source builds) skips them.
+const REAL_EXPORT = process.env.GROVE_REAL_EXPORT ?? "";
 
 const countNodes = (page: Page) =>
   page.evaluate(
@@ -263,7 +265,7 @@ test.describe("toolbar", () => {
     const downloadPromise = page.waitForEvent("download");
     await page.locator("#export").click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("tabs-outliner.json");
+    expect(download.suggestedFilename()).toBe("grove.json");
     const parsed = JSON.parse(await readFile(await download.path(), "utf8"));
     expect(parsed.roots.length).toBeGreaterThan(0);
     expect(parsed.nodes.map((n: { title: string }) => n.title)).toContain("Alpha");
@@ -330,7 +332,7 @@ test.describe("toolbar", () => {
   });
 
   test("imports a real ~26k-node portable export without choking", async ({ page }) => {
-    test.skip(!existsSync(REAL_EXPORT), "real export file not present on this machine");
+    test.skip(!existsSync(REAL_EXPORT), "set GROVE_REAL_EXPORT to a real export to run");
     test.setTimeout(90_000);
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));

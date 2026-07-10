@@ -489,7 +489,7 @@ const localDateSlug = (date) => {
 };
 
 export const backupFilename = () =>
-  `tabs-outliner-backups/tabs-outliner-${localDateSlug(new Date())}.json`;
+  `grove-backups/grove-${localDateSlug(new Date())}.json`;
 
 export const downloadBackupImpl = (api) => (filename) => (content) => () => {
   const downloads = api && api.downloads;

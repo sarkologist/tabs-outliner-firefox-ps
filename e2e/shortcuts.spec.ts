@@ -187,7 +187,7 @@ test.describe("manifest", () => {
   test("declares a menu action and opens the sidebar on install", async ({ page }) => {
     const res = await page.request.get("/manifest.json");
     const manifest = await res.json();
-    expect(manifest.action?.default_title).toBe("Open Tabs Outliner");
+    expect(manifest.action?.default_title).toBe("Open Grove");
     expect(manifest.action?.default_area).toBe("menupanel");
     expect(manifest.sidebar_action?.open_at_install).toBe(true);
   });
