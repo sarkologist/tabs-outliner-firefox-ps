@@ -2,12 +2,12 @@
   <rect width="64" height="64" rx="13" fill="#7c3aed" />
   <g fill="#ffffff">
     <circle cx="17" cy="18" r="4" />
-    <rect x="27" y="15" width="24" height="6" rx="3" />
+    <rect x="24" y="15" width="27" height="6" rx="3" />
     <circle cx="26" cy="33" r="4" />
-    <rect x="36" y="30" width="15" height="6" rx="3" />
+    <rect x="33" y="30" width="18" height="6" rx="3" />
     <circle cx="26" cy="47" r="4" />
-    <rect x="36" y="44" width="15" height="6" rx="3" />
-    <path d="M17 22 v25 h6" fill="none" stroke="#ffffff" stroke-width="2.5" />
-    <path d="M17 36 h6" fill="none" stroke="#ffffff" stroke-width="2.5" />
+    <rect x="33" y="44" width="18" height="6" rx="3" />
+    <path d="M17 18 V47 h6" fill="none" stroke="#ffffff" stroke-width="2.5" />
+    <path d="M17 33 h6" fill="none" stroke="#ffffff" stroke-width="2.5" />
   </g>
 </svg>
