@@ -54,7 +54,7 @@ pared down to the smallest design that still delivers the essential product.
 
 ## Reference: the original extension
 
-The extension this is modeled on lives locally at `~/code/tabs-outliner`. It's kept purely as
+The extension this is modeled on is the original **Tabs Outliner**. It's kept purely as
 a **reference for user-facing behavior** — what the product does, how it looks, how it feels —
 **not** as a source of implementation. The goal here is to be functionally equivalent to it
 (mostly; see [Scope](#scope)), reproducing its features and styling afresh while leaving behind
