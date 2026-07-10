@@ -40,7 +40,7 @@ relying on eyeballing the result.
 
 - Prefer a reviewer that is not the agent doing the implementation. If the
   implementing agent knows it is Codex, use Claude Code for the review instead
-  of codex-cli. Claude Code is installed at `/Users/sark/.local/bin/claude`.
+  of codex-cli. Claude Code is on PATH as `claude`.
 - Run Claude Code in non-interactive plan mode, scoped to the feature commit(s);
   tell it to inspect the diff and not modify files:
 
@@ -49,8 +49,8 @@ relying on eyeballing the result.
     and read any files you need; do NOT modify files. <what to scrutinize>"
   ```
 
-- If the implementing agent is not Codex, codex-cli is still available at
-  `/opt/homebrew/bin/codex`. Run it read-only, scoped to the feature commit(s);
+- If the implementing agent is not Codex, codex-cli is still available on PATH
+  as `codex`. Run it read-only, scoped to the feature commit(s);
   tell it to inspect the diff and not modify files:
 
   ```sh
