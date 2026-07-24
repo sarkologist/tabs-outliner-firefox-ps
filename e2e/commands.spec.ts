@@ -377,21 +377,23 @@ test.describe("commands", () => {
     await fake(page, "closeWindow", 1);
     await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
 
+    const creates = () =>
+      page.evaluate(() => (globalThis as any).__fake.windowCreateLog.length as number);
     const windowRow = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
+
+    // Absolute counts, and wait for the first create to land before clicking again:
+    // sampling a baseline mid-flight would let the FIRST create satisfy a
+    // "one more than before" assertion, passing even with no compensation at all.
     await windowRow.locator(".title").click();
+    await expect.poll(creates).toBe(1);
     // the create was rejected, so nothing came back
     await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
     await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
 
     // ...and the retraction ran, so a retry actually reaches the browser again
     // (before the fix, every later click produced no windows.create at all)
-    const createsBefore = await page.evaluate(
-      () => (globalThis as any).__fake.windowCreateLog.length
-    );
     await windowRow.locator(".title").click();
-    await expect
-      .poll(() => page.evaluate(() => (globalThis as any).__fake.windowCreateLog.length))
-      .toBe(createsBefore + 1);
+    await expect.poll(creates).toBe(2);
   });
 
   test("restoring a closed window restores its tabs in order", async ({ page }) => {

@@ -356,10 +356,15 @@ export const newWindowWithTabsImpl = (api) => (nodeKey) => (tabIds) => () => {
   return Promise.resolve(api.windows.create({ type: "normal", tabId: first })).then(
     (w) =>
       Promise.all(
+        // `Promise.resolve().then(...)` — not `Promise.resolve(api.tabs.move(...))`,
+        // which would evaluate the call outside the catch and let a SYNCHRONOUS
+        // throw escape, breaking the invariant above.
         rest.map((t) =>
-          Promise.resolve(api.tabs.move(t, { windowId: w.id, index: -1 })).catch((err) => {
-            console.error(`grove: moving tab ${t} into new window ${w.id} failed:`, err);
-          })
+          Promise.resolve()
+            .then(() => api.tabs.move(t, { windowId: w.id, index: -1 }))
+            .catch((err) => {
+              console.error(`grove: moving tab ${t} into new window ${w.id} failed:`, err);
+            })
         )
       ),
     (err) => { dropOnFailure(); throw err; }
