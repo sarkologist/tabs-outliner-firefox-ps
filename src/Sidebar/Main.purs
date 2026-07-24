@@ -243,7 +243,12 @@ handleAction = case _ of
     when (d >= overscan || d <= -overscan) (requestView false)
 
   Toggle nid value -> sendCommand (Collapse nid value)
-  ClickRow nid -> sendCommand (Activate nid)
+  -- Restore is the one command that can legitimately do NOTHING: every closed tab
+  -- under the clicked node may carry a url the browser refuses to open (file://,
+  -- about:, extension pages). Silence there reads as a broken build, so say it.
+  ClickRow nid -> do
+    ack <- sendCommandAck (Activate nid)
+    when (ack.unopenable > 0) (H.modify_ _ { notice = Just (unopenableNotice ack.unopenable) })
   CloseClick nid -> sendCommand (CloseNode nid)
   DeleteClick nid -> sendCommand (Delete nid)
   CutClick r -> H.modify_ _ { cut = Just { id: r.id, span: Just { index: r.index, subtreeEnd: r.subtreeEnd } } }
@@ -532,10 +537,10 @@ sendCommandAck cmd = do
         Left _ -> emptyCommandAck
     Nothing -> pure emptyCommandAck
 
-type CommandAck = { changed :: Boolean, missingSource :: Boolean }
+type CommandAck = { changed :: Boolean, missingSource :: Boolean, unopenable :: Int }
 
 emptyCommandAck :: CommandAck
-emptyCommandAck = { changed: false, missingSource: false }
+emptyCommandAck = { changed: false, missingSource: false, unopenable: 0 }
 
 decodeCommandAck :: Json -> CommandAck
 decodeCommandAck json = case (decodeJson json :: Either _ CommandAck) of
@@ -706,10 +711,34 @@ render st =
       ]
       [ HH.span [ HP.class_ (ClassName "overflow-text-icon") ] [ HH.text glyph ], HH.span_ [ HH.text label ] ]
 
+-- | Why a restore left tabs behind. Deliberately names the schemes: the tabs stay
+-- | visible in the tree, so without this the user sees rows that simply refuse to
+-- | open, with no way to tell a browser restriction from a bug.
+unopenableNotice :: Int -> String
+unopenableNotice n =
+  show n <> (if n == 1 then " tab can't" else " tabs can't")
+    <> " be reopened — Firefox won't open file://, about: or extension pages from an add-on. Kept here as history."
+
+-- | Dismissal is on the ✕ alone, not the whole banner. The banner is inserted
+-- | directly above the tree — i.e. right where the row the user just clicked was —
+-- | so a banner raised BY a row click appears under the cursor. With the whole
+-- | banner clickable, that same interaction can dismiss it before it is read.
 noticeBanner :: Maybe String -> Array (H.ComponentHTML Action () Aff)
 noticeBanner = case _ of
   Nothing -> []
-  Just msg -> [ HH.div [ HP.id "notice", HE.onClick \_ -> ClearNotice ] [ HH.text (msg <> "   ✕") ] ]
+  Just msg ->
+    [ HH.div [ HP.id "notice" ]
+        [ HH.span [ HP.class_ (ClassName "notice-text") ] [ HH.text msg ]
+        , HH.button
+            [ HP.id "notice-dismiss"
+            , HP.class_ (ClassName "notice-dismiss")
+            , HP.title "Dismiss"
+            , HP.attr (AttrName "aria-label") "Dismiss"
+            , HE.onClick \_ -> ClearNotice
+            ]
+            [ HH.text "✕" ]
+        ]
+    ]
 
 renderRow :: String -> Boolean -> Maybe Cut -> Maybe NodeId -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
 renderRow query dragging cut showInTreeFlash editing guide wi rowH r =

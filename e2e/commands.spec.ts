@@ -354,6 +354,42 @@ test.describe("commands", () => {
     expect(windows[0].tabs.map((t: any) => t.url)).toEqual(["https://a", "https://c"]);
   });
 
+  test("a window of un-openable tabs explains itself instead of doing nothing", async ({ page }) => {
+    // Reported as "a window group does not restore, and neither does any of its
+    // tabs": every tab was a local file, which Firefox refuses to open from an
+    // add-on ("Illegal URL"). The restore is genuinely impossible — but the click
+    // produced no patch, no action and no message, which reads as a broken build.
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "file:///Users/me/explainer.html", title: "Explainer", active: true },
+            { id: 12, url: "file:///Users/me/index.html", title: "Index" },
+          ],
+        },
+      ],
+    });
+    await expect.poll(() => titles(page)).toEqual(["Window", "Explainer", "Index"]);
+
+    await fake(page, "closeWindow", 1);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    await page.locator('.row[data-status="closed"]').filter({ hasText: "Window" }).locator(".title").click();
+
+    await expect(page.locator("#notice")).toContainText("2 tabs can't be reopened");
+    await expect(page.locator("#notice")).toContainText("file://");
+    // still no window, and the tabs are kept in place rather than dropped
+    expect(await page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    // dismissible, and singular for one tab
+    await page.locator("#notice-dismiss").click();
+    await expect(page.locator("#notice")).toHaveCount(0);
+    await page.locator('.row[data-status="closed"]').filter({ hasText: "Explainer" }).locator(".title").click();
+    await expect(page.locator("#notice")).toContainText("1 tab can't be reopened");
+  });
+
   test("a rejected windows.create leaves the window restorable instead of stuck", async ({ page }) => {
     // The runtime half of the WindowCreateFailed contract: a rejected create fires
     // no onCreated, so nothing consumes the container's pending-window entry. Left

@@ -28,7 +28,7 @@ import Effect.Channel as Channel
 import Effect.Persist as Persist
 import Effect.Profile as Profile
 import Model.Codec (encodeSnapshot)
-import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
+import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, unopenableOnRestore, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
@@ -280,6 +280,8 @@ main = launchAff_ do
       let r = applyCommand t cmd m
       let changed = not (isEmptyPatch r.patch) || not (Array.null r.actions)
       let missingSource = pasteSourceMissing cmd m
+      -- counted against the PRE-command model `m`, before the restore consumes it
+      let unopenable = unopenableOnRestore cmd m
       liftEffect do
         Ref.write r.model ref
         -- record the inverse so this command can be undone; a fresh edit
@@ -291,7 +293,7 @@ main = launchAff_ do
           Ref.write [] redoRef
       persistAndBroadcast api db versionRef r.patch
       runActions r.actions
-      pure (ackChangedJson changed missingSource)
+      pure (ackChangedJson changed missingSource unopenable)
     Right Undo -> stepStack undoRef redoRef
     Right Redo -> stepStack redoRef undoRef
     -- export needs the whole tree; it's a rare, explicit user action, so paying
@@ -355,8 +357,9 @@ pushBounded x xs = Array.take maxUndoDepth (Array.cons x xs)
 ackJson :: Json
 ackJson = encodeJson { ok: true }
 
-ackChangedJson :: Boolean -> Boolean -> Json
-ackChangedJson changed missingSource = encodeJson { ok: true, changed, missingSource }
+ackChangedJson :: Boolean -> Boolean -> Int -> Json
+ackChangedJson changed missingSource unopenable =
+  encodeJson { ok: true, changed, missingSource, unopenable }
 
 pasteSourceMissing :: Command -> Model -> Boolean
 pasteSourceMissing (PasteAfter source _) model = not (Map.member source model.nodes)

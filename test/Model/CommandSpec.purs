@@ -11,7 +11,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Codec (Snapshot)
-import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
+import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, unopenableOnRestore, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch, insertAtClamped, liveTabCountInWindow, liveWindowNode, ownedLiveTabPreorder)
@@ -1085,6 +1085,33 @@ spec = describe "Model.Command" do
     -- the two extension tabs stay put as closed history, urls intact
     (isLive <$> Map.lookup "c" activated.model.nodes) `shouldEqual` Just false
     (isLive <$> Map.lookup "z" activated.model.nodes) `shouldEqual` Just false
+
+  it "counts the tabs a restore can't reopen, so the click isn't silent" do
+    -- A window of local files restores NOTHING: no patch, no action. Without a
+    -- count to report, that click is indistinguishable from a broken build.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "w" KGroup 0.0) { title = "Window", children = [ "f1", "f2", "ok", "none" ] }
+            , (defaultNode "f1" KTab 0.0) { parent = Just "w", url = Just "file:///a.html", title = "F1" }
+            , (defaultNode "f2" KTab 0.0) { parent = Just "w", url = Just "about:reader?url=x", title = "F2" }
+            , (defaultNode "ok" KTab 0.0) { parent = Just "w", url = Just "https://ok", title = "OK" }
+            , (defaultNode "none" KTab 0.0) { parent = Just "w", url = Nothing, title = "No url" }
+            ]
+        , removes: []
+        , roots: Just [ "w" ]
+        }
+        emptyModel
+    -- two blocked schemes + one node with no url at all
+    unopenableOnRestore (Activate "w") m0 `shouldEqual` 3
+    -- clicking a single un-openable tab reports just itself
+    unopenableOnRestore (Activate "f1") m0 `shouldEqual` 1
+    unopenableOnRestore (Activate "ok") m0 `shouldEqual` 0
+    -- a tab already in flight is not "refused" — it must not be counted
+    let inFlight = m0 { pendingRestoreWindows = [ { node: "w", tabs: Cons "f1" Nil } ] }
+    unopenableOnRestore (Activate "w") inFlight `shouldEqual` 2
+    -- and this only speaks for restores
+    unopenableOnRestore (Delete "w") m0 `shouldEqual` 0
 
   it "a failed window create releases the container, so restore can be retried" do
     -- windows.create can still reject for a url no scheme filter anticipated. That

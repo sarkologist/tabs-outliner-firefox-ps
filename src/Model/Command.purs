@@ -17,7 +17,7 @@ import Data.Foldable (foldl)
 import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set as Set
 import Data.String (Pattern(..), stripPrefix)
 import Data.String.Common (toLower)
@@ -324,12 +324,9 @@ applyCommandRaw now cmd model = case cmd of
   restore :: NodeId -> CmdResult
   restore nid =
     let
-      queuedTabs = Set.fromFoldable
-        ( Array.concatMap Array.fromFoldable (Array.fromFoldable (Map.values model.pendingRestore) :: Array (List NodeId))
-            <> Array.concatMap (Array.fromFoldable <<< _.tabs) model.pendingRestoreWindows
-        )
+      queuedTabs = queuedRestoreTabs model
       queuedWindows = Set.fromFoldable (map _.node model.pendingRestoreWindows)
-      closedTabs = restoreTabs nid
+      closedTabs = closedOwnedTabs model nid
       -- only tabs with a url the browser will actually open can be reopened; keep
       -- subtree (preorder) order. Skipping an un-openable url (file:, about:, …)
       -- matters because a window batches all its tabs into one windows.create,
@@ -413,15 +410,6 @@ applyCommandRaw now cmd model = case cmd of
       , patch
       , actions: windowActions <> tabActions
       }
-
-  restoreTabs :: NodeId -> Array Node
-  restoreTabs nid =
-    Array.mapMaybe
-      ( \cid -> case Map.lookup cid model.nodes of
-          Just c | not (isLiveTab c) -> Just c
-          _ -> Nothing
-      )
-      (ownedTabPreorder model nid)
 
   groupNode :: NodeId -> CmdResult
   groupNode nid = case Map.lookup nid model.nodes of
@@ -554,6 +542,47 @@ applyCommandRaw now cmd model = case cmd of
                 Nothing -> noChange
                 Just p -> withPrune node.parent (withBrowser { upserts: [ p { children = spliceReplace nid kids p.children } ] <> promote (Just pid), removes: [ nid ], roots: Nothing })
               Nothing -> withBrowser { upserts: promote Nothing, removes: [ nid ], roots: Just (spliceReplace nid kids model.roots) }
+
+-- | Every tab node already awaiting a restore — queued into a live window, or
+-- | carried by a container still waiting for its browser window. Shared by
+-- | `restore` (which must not re-issue them) and `unopenableOnRestore` (which must
+-- | not count an in-flight tab as one the browser refused).
+queuedRestoreTabs :: Model -> Set.Set NodeId
+queuedRestoreTabs model = Set.fromFoldable
+  ( Array.concatMap Array.fromFoldable (Array.fromFoldable (Map.values model.pendingRestore) :: Array (List NodeId))
+      <> Array.concatMap (Array.fromFoldable <<< _.tabs) model.pendingRestoreWindows
+  )
+
+-- | The closed tab nodes a restore of `nid` would reopen, in subtree preorder.
+closedOwnedTabs :: Model -> NodeId -> Array Node
+closedOwnedTabs model nid =
+  Array.mapMaybe
+    ( \cid -> case Map.lookup cid model.nodes of
+        Just c | not (isLiveTab c) -> Just c
+        _ -> Nothing
+    )
+    (ownedTabPreorder model nid)
+
+-- | How many closed tabs an `Activate` will leave behind because the browser
+-- | refuses their url. Computed from the PRE-command model (like
+-- | `pasteSourceMissing`), so `CmdResult` keeps its shape.
+-- |
+-- | This exists because the honest answer to "why did nothing happen?" is
+-- | otherwise unavailable: clicking a container whose every closed tab is
+-- | un-openable — a window of `file://` pages, say — produces no patch and no
+-- | browser action, so the click is indistinguishable from a broken build. The
+-- | sidebar turns this count into a notice.
+unopenableOnRestore :: Command -> Model -> Int
+unopenableOnRestore (Activate nid) model = case Map.lookup nid model.nodes of
+  Just n | isNothing n.tabId ->
+    let queued = queuedRestoreTabs model
+    in Array.length
+      ( Array.filter
+          (\c -> not (Set.member c.id queued) && not (maybe false restorableUrl c.url))
+          (closedOwnedTabs model nid)
+      )
+  _ -> 0
+unopenableOnRestore _ _ = 0
 
 spliceReplace :: NodeId -> Array NodeId -> Array NodeId -> Array NodeId
 spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
