@@ -53,7 +53,12 @@ data Command
 -- | onAttached/onCreated events.
 data BrowserAction
   = FocusTab Int
-  | CreateTab (Maybe Int) (Maybe Int) (Maybe String)
+  -- | Open a tab: window, index, url, and — when the restore queued a node to
+  -- | rebind in that window — that node. A rejected create can then retract
+  -- | exactly its own queue entry (`TabCreateFailed`); leaving it queued would let
+  -- | it hijack the next tab to open in that window, since the queue is a FIFO
+  -- | matched by creation order.
+  | CreateTab (Maybe Int) (Maybe Int) (Maybe String) (Maybe NodeId)
   -- | Open one new browser window for the given urls, binding it to container
   -- | `NodeId` when it opens (the impure layer pairs the two, so the restore
   -- | can't cross-wire to another in-flight restore's window).
@@ -68,7 +73,7 @@ data BrowserAction
 derive instance eqBrowserAction :: Eq BrowserAction
 instance showBrowserAction :: Show BrowserAction where
   show (FocusTab t) = "FocusTab " <> show t
-  show (CreateTab w i u) = "CreateTab " <> show w <> " " <> show i <> " " <> show u
+  show (CreateTab w i u n) = "CreateTab " <> show w <> " " <> show i <> " " <> show u <> " " <> show n
   show (CreateWindow n us) = "CreateWindow " <> show n <> " " <> show us
   show (MoveTabToWindow t w i) = "MoveTabToWindow " <> show t <> " " <> show w <> " " <> show i
   show (NewWindowWithTabs n ts) = "NewWindowWithTabs " <> show n <> " " <> show ts
@@ -358,8 +363,11 @@ applyCommandRaw now cmd model = case cmd of
       newWindows = map (\w -> { node: w, tabs: List.fromFoldable (map _.id (forWindow w)) }) newWinIds
 
       tabActions = Array.mapMaybe (\x -> case x.target of
-        IntoWindow wid -> Just (CreateTab (Just wid) (restoreIndex wid x.id) (Just x.url))
-        IntoCurrent -> Just (CreateTab Nothing Nothing (Just x.url))
+        -- carries x.id: this tab IS queued below, so a rejected create must be
+        -- able to un-queue exactly it
+        IntoWindow wid -> Just (CreateTab (Just wid) (restoreIndex wid x.id) (Just x.url) (Just x.id))
+        -- IntoCurrent queues nothing (no window to key it by), so nothing to retract
+        IntoCurrent -> Just (CreateTab Nothing Nothing (Just x.url) Nothing)
         IntoNewWindow _ -> Nothing) ready
 
       -- queue each IntoWindow tab under its target window — a FIFO consumed as the
@@ -569,6 +577,13 @@ pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.sn
 -- | add-on's, or a stale uuid of ours), so the browser rejects them too. Before
 -- | they were filtered, one such tab silently doomed the restore of every other
 -- | tab sharing its window.
+-- |
+-- | `moz-extension:` is blocked wholesale, which also skips a saved tab pointing at
+-- | THIS add-on's own options page — the one such url the browser would accept.
+-- | Deliberate: telling the two apart needs the live extension origin, which this
+-- | pure reducer has no access to, and a persisted moz-extension url is usually
+-- | stale anyway (the uuid is per-install, so it dies on reinstall). Skipping one
+-- | marginal own-page restore beats letting any of them doom a whole window.
 blockedSchemes :: Array String
 blockedSchemes =
   [ "file:"

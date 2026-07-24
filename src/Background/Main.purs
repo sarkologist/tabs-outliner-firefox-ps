@@ -155,12 +155,20 @@ main = launchAff_ do
     -- every later action in the same restore. A failure is logged (restore used to
     -- fail with no trace anywhere) and may emit a compensating event to retract the
     -- optimistic model state the command already committed.
+    -- Compensating events go through the SAME queue as real browser events, not
+    -- straight to `dispatch`: the drainer is the only thing that orders them, so a
+    -- retraction can never overtake an event the listeners already enqueued.
+    enqueueEvent :: BrowserEvent -> Effect Unit
+    enqueueEvent ev = do
+      Ref.modify_ (\q -> Array.snoc q ev) queueRef
+      join (Ref.read kickRef)
+
     runActions :: Array BrowserAction -> Aff Unit
     runActions = traverse_ \act -> attempt (runAction api act) >>= case _ of
       Right _ -> pure unit
-      Left err -> do
-        liftEffect (Console.error ("background: browser action failed: " <> show act <> ": " <> message err))
-        traverse_ dispatch (compensating act)
+      Left err -> liftEffect do
+        Console.error ("background: browser action failed: " <> show act <> ": " <> message err)
+        traverse_ enqueueEvent (compensating act)
 
     -- Undo/redo step: pop one inverse patch off `from`, apply it (reusing the
     -- command persist/broadcast path), and push the resulting inverse onto `to`.
@@ -357,7 +365,7 @@ pasteSourceMissing _ _ = false
 runAction :: BrowserApi -> BrowserAction -> Aff Unit
 runAction api = case _ of
   FocusTab t -> Browser.focusTab api t
-  CreateTab w i u -> Browser.createTab api w i u
+  CreateTab w i u _ -> Browser.createTab api w i u
   CreateWindow n us -> Browser.createWindow api n us
   MoveTabToWindow t w i -> Browser.moveTabToWindow api t w i
   NewWindowWithTabs n ts -> Browser.newWindowWithTabs api n ts
@@ -369,10 +377,15 @@ runAction api = case _ of
 -- | pairing entry on the same failure — see `registerRestoreBind` — but that queue
 -- | is separate from the reducer's.) Every other action either changes no model
 -- | state up front or is re-derived from the events it does produce.
+-- |
+-- | `NewWindowWithTabs` relies on its FFI rejecting only when the window itself
+-- | was never created — a post-create `tabs.move` failure must not surface here,
+-- | or this would retract a binding the (successfully created) window still needs.
 compensating :: BrowserAction -> Array BrowserEvent
 compensating = case _ of
   CreateWindow node _ -> [ WindowCreateFailed { node } ]
   NewWindowWithTabs (Just node) _ -> [ WindowCreateFailed { node } ]
+  CreateTab (Just windowId) _ _ (Just node) -> [ TabCreateFailed { windowId, node } ]
   _ -> []
 
 -- | Did this command relocate real browser tabs (move them between windows or into

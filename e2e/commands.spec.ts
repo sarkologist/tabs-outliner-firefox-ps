@@ -354,6 +354,46 @@ test.describe("commands", () => {
     expect(windows[0].tabs.map((t: any) => t.url)).toEqual(["https://a", "https://c"]);
   });
 
+  test("a rejected windows.create leaves the window restorable instead of stuck", async ({ page }) => {
+    // The runtime half of the WindowCreateFailed contract: a rejected create fires
+    // no onCreated, so nothing consumes the container's pending-window entry. Left
+    // queued, Command.restore filters the container — and every tab under it — out
+    // as already-in-flight, forever, with no error surfaced anywhere. This drives
+    // the real background: the compensation has to come from runActions.
+    await bootBackgroundAndSidebar(page, {
+      rejectWindowCreateUrlsContaining: ["poison"],
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a", title: "Alpha", active: true },
+            { id: 12, url: "http://poison", title: "Poison" },
+          ],
+        },
+      ],
+    });
+    await expect.poll(() => titles(page)).toEqual(["Window", "Alpha", "Poison"]);
+
+    await fake(page, "closeWindow", 1);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    const windowRow = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
+    await windowRow.locator(".title").click();
+    // the create was rejected, so nothing came back
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    // ...and the retraction ran, so a retry actually reaches the browser again
+    // (before the fix, every later click produced no windows.create at all)
+    const createsBefore = await page.evaluate(
+      () => (globalThis as any).__fake.windowCreateLog.length
+    );
+    await windowRow.locator(".title").click();
+    await expect
+      .poll(() => page.evaluate(() => (globalThis as any).__fake.windowCreateLog.length))
+      .toBe(createsBefore + 1);
+  });
+
   test("restoring a closed window restores its tabs in order", async ({ page }) => {
     await bootBackgroundAndSidebar(page, {
       windows: [

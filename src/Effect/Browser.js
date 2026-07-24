@@ -346,8 +346,22 @@ export const newWindowWithTabsImpl = (api) => (nodeKey) => (tabIds) => () => {
   // Only a failed windows.create (no window, so no onCreated) drops the entry; if
   // the window is created its onCreated consumes it, even if a later tabs.move
   // rejects. `type: "normal"` so it inherits the sidebar.
+  //
+  // Those later moves are caught individually and never re-thrown, so a rejection
+  // from THIS function always means "the window was never created". The background
+  // depends on that: it answers a rejection with WindowCreateFailed, which retracts
+  // the container's pending binding — exactly the wrong move for a window that does
+  // exist and whose onCreated is still on its way. A move that fails just leaves
+  // its tab where it was; the tree re-settles from the events that did fire.
   return Promise.resolve(api.windows.create({ type: "normal", tabId: first })).then(
-    (w) => Promise.all(rest.map((t) => api.tabs.move(t, { windowId: w.id, index: -1 }))),
+    (w) =>
+      Promise.all(
+        rest.map((t) =>
+          Promise.resolve(api.tabs.move(t, { windowId: w.id, index: -1 })).catch((err) => {
+            console.error(`grove: moving tab ${t} into new window ${w.id} failed:`, err);
+          })
+        )
+      ),
     (err) => { dropOnFailure(); throw err; }
   );
 };
