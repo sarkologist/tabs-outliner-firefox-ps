@@ -150,6 +150,18 @@ main = launchAff_ do
           Nothing -> pure unit
         _ -> pure unit
 
+    -- Run a command's browser actions. Each is isolated: `traverse_` would abort
+    -- the whole list on the first rejection, so one un-openable url could cancel
+    -- every later action in the same restore. A failure is logged (restore used to
+    -- fail with no trace anywhere) and may emit a compensating event to retract the
+    -- optimistic model state the command already committed.
+    runActions :: Array BrowserAction -> Aff Unit
+    runActions = traverse_ \act -> attempt (runAction api act) >>= case _ of
+      Right _ -> pure unit
+      Left err -> do
+        liftEffect (Console.error ("background: browser action failed: " <> show act <> ": " <> message err))
+        traverse_ dispatch (compensating act)
+
     -- Undo/redo step: pop one inverse patch off `from`, apply it (reusing the
     -- command persist/broadcast path), and push the resulting inverse onto `to`.
     -- An empty stack is a no-op, so the sidebar can fire these unconditionally.
@@ -167,7 +179,7 @@ main = launchAff_ do
             Ref.write tail from
             Ref.modify_ (pushBounded a.inverse) to
           persistAndBroadcast api db versionRef a.patch
-          traverse_ (runAction api) a.actions
+          runActions a.actions
           pure ackJson
 
     -- Flush queued browser events (the boot backlog first, then live ones) through
@@ -270,7 +282,7 @@ main = launchAff_ do
           Ref.modify_ (pushBounded (inversePatch t m r.patch)) undoRef
           Ref.write [] redoRef
       persistAndBroadcast api db versionRef r.patch
-      traverse_ (runAction api) r.actions
+      runActions r.actions
       pure (ackChangedJson changed missingSource)
     Right Undo -> stepStack undoRef redoRef
     Right Redo -> stepStack redoRef undoRef
@@ -350,6 +362,18 @@ runAction api = case _ of
   MoveTabToWindow t w i -> Browser.moveTabToWindow api t w i
   NewWindowWithTabs n ts -> Browser.newWindowWithTabs api n ts
   RemoveTab t -> Browser.removeTab api t
+
+-- | The event(s) that retract a failed action's optimistic model state. A window
+-- | create that rejects fires no `windows.onCreated`, so nothing would otherwise
+-- | consume the container's `pendingRestoreWindows` entry. (The FFI drops its own
+-- | pairing entry on the same failure — see `registerRestoreBind` — but that queue
+-- | is separate from the reducer's.) Every other action either changes no model
+-- | state up front or is re-derived from the events it does produce.
+compensating :: BrowserAction -> Array BrowserEvent
+compensating = case _ of
+  CreateWindow node _ -> [ WindowCreateFailed { node } ]
+  NewWindowWithTabs (Just node) _ -> [ WindowCreateFailed { node } ]
+  _ -> []
 
 -- | Did this command relocate real browser tabs (move them between windows or into
 -- | a new one)? Such a command can't be undone — undo reverts only the tree, not

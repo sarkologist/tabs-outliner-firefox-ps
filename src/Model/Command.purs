@@ -560,10 +560,30 @@ pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.sn
 -- | reject them, and since a window restore batches every tab into one
 -- | `windows.create`, a single rejected url fails the WHOLE window (no window
 -- | appears). `file:` needs a user-granted file-URL access this add-on doesn't
--- | request; the rest are privileged/internal. A tab with such a url is left as
--- | closed history rather than restored.
+-- | request; the rest are privileged/internal/opaque. A tab with such a url is
+-- | left as closed history rather than restored.
+-- |
+-- | The `*-extension:` entries matter in practice: an imported Chrome Tabs
+-- | Outliner tree carries `chrome-extension:` pages that Firefox can never open,
+-- | and `moz-extension:` pages belong to a specific add-on install (another
+-- | add-on's, or a stale uuid of ours), so the browser rejects them too. Before
+-- | they were filtered, one such tab silently doomed the restore of every other
+-- | tab sharing its window.
 blockedSchemes :: Array String
-blockedSchemes = [ "file:", "about:", "chrome:", "resource:", "javascript:", "view-source:", "data:" ]
+blockedSchemes =
+  [ "file:"
+  , "about:"
+  , "chrome:"
+  , "resource:"
+  , "javascript:"
+  , "view-source:"
+  , "data:"
+  , "moz-extension:"
+  , "chrome-extension:"
+  , "blob:"
+  , "filesystem:"
+  , "jar:"
+  ]
 
 restorableUrl :: String -> Boolean
 restorableUrl u = let lu = toLower u in not (Array.any (\p -> isJust (stripPrefix (Pattern p) lu)) blockedSchemes)

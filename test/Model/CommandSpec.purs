@@ -1060,6 +1060,59 @@ spec = describe "Model.Command" do
     (_.url <$> Map.lookup "f" reopened.nodes) `shouldEqual` Just (Just "file:///Users/me/pic.webp")
     (_.parent <$> Map.lookup "f" reopened.nodes) `shouldEqual` Just (Just "w")
 
+  it "restoring a window skips extension-page tabs (chrome-extension:/moz-extension:)" do
+    -- Regression: a tree imported from Chrome Tabs Outliner carries
+    -- `chrome-extension:` pages Firefox can never open, and `moz-extension:` pages
+    -- belong to some other add-on install. Neither was filtered, so both reached
+    -- the batched windows.create — which Firefox rejects WHOLE, silently dooming
+    -- every healthy tab sharing that window.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "w" KGroup 0.0) { title = "Window", children = [ "a", "c", "z", "b" ] }
+            , (defaultNode "a" KTab 0.0) { parent = Just "w", url = Just "http://a", title = "A" }
+            , (defaultNode "c" KTab 0.0) { parent = Just "w", url = Just "chrome-extension://eiimnmioipafcokbfikbljfdeojpcgbh/blocked.html", title = "C" }
+            , (defaultNode "z" KTab 0.0) { parent = Just "w", url = Just "moz-extension://788a0681-0474-4c6d-89c6-9cd09cfa461a/options/options.html", title = "Z" }
+            , (defaultNode "b" KTab 0.0) { parent = Just "w", url = Just "https://b", title = "B" }
+            ]
+        , removes: []
+        , roots: Just [ "w" ]
+        }
+        emptyModel
+      activated = applyCommand 0.0 (Activate "w") m0
+    activated.actions `shouldEqual` [ CreateWindow "w" [ "http://a", "https://b" ] ]
+    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "a" (Cons "b" Nil) ]
+    -- the two extension tabs stay put as closed history, urls intact
+    (isLive <$> Map.lookup "c" activated.model.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "z" activated.model.nodes) `shouldEqual` Just false
+
+  it "a failed window create releases the container, so restore can be retried" do
+    -- windows.create can still reject for a url no scheme filter anticipated. That
+    -- fires no windows.onCreated, so without the WindowCreateFailed retraction the
+    -- container stays queued forever and EVERY later restore of it — or of any tab
+    -- under it — is filtered out as already-in-flight, silently and permanently.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "w" KGroup 0.0) { title = "Window", children = [ "a" ] }
+            , (defaultNode "a" KTab 0.0) { parent = Just "w", url = Just "http://a", title = "A" }
+            ]
+        , removes: []
+        , roots: Just [ "w" ]
+        }
+        emptyModel
+      first = applyCommand 0.0 (Activate "w") m0
+    first.actions `shouldEqual` [ CreateWindow "w" [ "http://a" ] ]
+    -- while the create is in flight, a second click must NOT open a second window
+    (applyCommand 0.0 (Activate "w") first.model).actions `shouldEqual` []
+    let failed = (applyBrowser 0.0 (WindowCreateFailed { node: "w" }) first.model).model
+    failed.pendingRestoreWindows `shouldEqual` []
+    -- and now the user can try again
+    (applyCommand 0.0 (Activate "w") failed).actions `shouldEqual` [ CreateWindow "w" [ "http://a" ] ]
+    -- a retraction naming an unknown container is a harmless no-op
+    (applyBrowser 0.0 (WindowCreateFailed { node: "nope" }) first.model).model.pendingRestoreWindows
+      `shouldEqual` first.model.pendingRestoreWindows
+
   it "property: one-tab restore from a saved group tolerates either window/tab event order" $
     quickCheck \(windowFirst :: Boolean) ->
       let

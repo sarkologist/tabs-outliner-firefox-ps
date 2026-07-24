@@ -24,6 +24,10 @@ data BrowserEvent
   -- | depends on the shared FIFO's head: two windows restored at once (or a stale
   -- | queue entry) can't cross-wire, and the wrong tab can't rebind into it.
   | WindowBound { node :: NodeId, windowId :: Int }
+  -- | A window we asked the browser to create never opened (the create rejected).
+  -- | Counterpart to `WindowBound`: it names the container that will now never be
+  -- | bound, so the reducer can retract that container's pending-window entry.
+  | WindowCreateFailed { node :: NodeId }
   | WindowClosed { windowId :: Int }
   | TabOpened OpenedTab
   | TabClosed { tabId :: Int }

@@ -66,6 +66,14 @@ applyBrowser now ev model = case ev of
     Just _ -> noop model
     Nothing -> fromMaybe (noop model) (bindWindowEntry now windowId node model)
 
+  -- The window we asked for will never arrive, so nothing would ever consume this
+  -- container's queue entry. Retract it, or the container stays "already
+  -- restoring" for the life of the background page — and `Command.restore`
+  -- silently filters out every later restore of it AND of any tab under it, so
+  -- the whole subtree becomes unclickable with no error anywhere.
+  WindowCreateFailed { node } ->
+    noop model { pendingRestoreWindows = Array.filter (\e -> e.node /= node) model.pendingRestoreWindows }
+
   WindowClosed { windowId } -> case liveWindowNode windowId model of
     Nothing -> noop model
     Just w ->
