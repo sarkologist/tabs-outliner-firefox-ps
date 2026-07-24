@@ -378,7 +378,9 @@ test.describe("commands", () => {
     await page.locator('.row[data-status="closed"]').filter({ hasText: "Window" }).locator(".title").click();
 
     await expect(page.locator("#notice")).toContainText("2 tabs can't be reopened");
-    await expect(page.locator("#notice")).toContainText("file://");
+    await expect(page.locator("#notice")).toContainText("local files");
+    // announced to assistive tech, since it arrives asynchronously
+    await expect(page.locator("#notice")).toHaveAttribute("role", "status");
     // still no window, and the tabs are kept in place rather than dropped
     expect(await page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
     await expect(page.locator('[data-status="closed"]')).toHaveCount(3);

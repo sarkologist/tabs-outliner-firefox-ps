@@ -711,13 +711,15 @@ render st =
       ]
       [ HH.span [ HP.class_ (ClassName "overflow-text-icon") ] [ HH.text glyph ], HH.span_ [ HH.text label ] ]
 
--- | Why a restore left tabs behind. Deliberately names the schemes: the tabs stay
--- | visible in the tree, so without this the user sees rows that simply refuse to
--- | open, with no way to tell a browser restriction from a bug.
+-- | Why a restore left tabs behind. The tabs stay visible in the tree, so without
+-- | this the user sees rows that simply refuse to open, with no way to tell a
+-- | browser restriction from a bug. Gives examples rather than claiming an exact
+-- | rule: the count also covers nodes with no recorded address, and what an
+-- | add-on may open is Firefox's call, not a list we can state exhaustively.
 unopenableNotice :: Int -> String
 unopenableNotice n =
   show n <> (if n == 1 then " tab can't" else " tabs can't")
-    <> " be reopened — Firefox won't open file://, about: or extension pages from an add-on. Kept here as history."
+    <> " be reopened — an add-on isn't allowed to open addresses like these (local files, about: and extension pages). Kept here as history."
 
 -- | Dismissal is on the ✕ alone, not the whole banner. The banner is inserted
 -- | directly above the tree — i.e. right where the row the user just clicked was —
@@ -727,7 +729,13 @@ noticeBanner :: Maybe String -> Array (H.ComponentHTML Action () Aff)
 noticeBanner = case _ of
   Nothing -> []
   Just msg ->
-    [ HH.div [ HP.id "notice" ]
+    -- a notice can appear asynchronously (a restore ack, an import result), so it
+    -- is a live region — otherwise a screen reader never learns it arrived
+    [ HH.div
+        [ HP.id "notice"
+        , HP.attr (AttrName "role") "status"
+        , HP.attr (AttrName "aria-live") "polite"
+        ]
         [ HH.span [ HP.class_ (ClassName "notice-text") ] [ HH.text msg ]
         , HH.button
             [ HP.id "notice-dismiss"
