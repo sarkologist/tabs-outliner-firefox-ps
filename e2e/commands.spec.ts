@@ -1,6 +1,20 @@
 import { test, expect, type Page } from "@playwright/test";
 import { bootBackgroundAndSidebar, fake, readNodes } from "./support/harness";
 
+// Click both closed Window rows back-to-back, without waiting for the first
+// restore to settle (that concurrency is the point of the tests using this).
+// Pin each row by node id FIRST: restoring one re-renders the list, so a
+// positional locator resolved after that click (`nth(1)`) can find nothing and
+// time out — a real flake these tests hit roughly a quarter of the time.
+async function clickRestoreBoth(page: Page) {
+  const closedWindowRows = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
+  await expect(closedWindowRows).toHaveCount(2);
+  const ids = await closedWindowRows.evaluateAll((els) =>
+    els.map((e) => e.getAttribute("data-node-id"))
+  );
+  for (const id of ids) await page.locator(`.row[data-node-id="${id}"] .title`).click();
+}
+
 const seed = {
   windows: [
     {
@@ -271,9 +285,7 @@ test.describe("commands", () => {
     expect(await page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
 
     // restore both closed windows
-    const closedWindowRows = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
-    await closedWindowRows.nth(0).locator(".title").click();
-    await closedWindowRows.nth(1).locator(".title").click();
+    await clickRestoreBoth(page);
 
     await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
 
@@ -302,9 +314,7 @@ test.describe("commands", () => {
     await fake(page, "closeWindow", 2);
     await expect(page.locator('[data-status="closed"]')).toHaveCount(4);
 
-    const closedWindowRows = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
-    await closedWindowRows.nth(0).locator(".title").click();
-    await closedWindowRows.nth(1).locator(".title").click();
+    await clickRestoreBoth(page);
 
     await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
     const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
