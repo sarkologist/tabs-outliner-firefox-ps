@@ -28,7 +28,7 @@ import Effect.Channel as Channel
 import Effect.Persist as Persist
 import Effect.Profile as Profile
 import Model.Codec (encodeSnapshot)
-import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
+import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, unopenableOnRestore, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
@@ -150,6 +150,26 @@ main = launchAff_ do
           Nothing -> pure unit
         _ -> pure unit
 
+    -- Run a command's browser actions. Each is isolated: `traverse_` would abort
+    -- the whole list on the first rejection, so one un-openable url could cancel
+    -- every later action in the same restore. A failure is logged (restore used to
+    -- fail with no trace anywhere) and may emit a compensating event to retract the
+    -- optimistic model state the command already committed.
+    -- Compensating events go through the SAME queue as real browser events, not
+    -- straight to `dispatch`: the drainer is the only thing that orders them, so a
+    -- retraction can never overtake an event the listeners already enqueued.
+    enqueueEvent :: BrowserEvent -> Effect Unit
+    enqueueEvent ev = do
+      Ref.modify_ (\q -> Array.snoc q ev) queueRef
+      join (Ref.read kickRef)
+
+    runActions :: Array BrowserAction -> Aff Unit
+    runActions = traverse_ \act -> attempt (runAction api act) >>= case _ of
+      Right _ -> pure unit
+      Left err -> liftEffect do
+        Console.error ("background: browser action failed: " <> show act <> ": " <> message err)
+        traverse_ enqueueEvent (compensating act)
+
     -- Undo/redo step: pop one inverse patch off `from`, apply it (reusing the
     -- command persist/broadcast path), and push the resulting inverse onto `to`.
     -- An empty stack is a no-op, so the sidebar can fire these unconditionally.
@@ -167,7 +187,7 @@ main = launchAff_ do
             Ref.write tail from
             Ref.modify_ (pushBounded a.inverse) to
           persistAndBroadcast api db versionRef a.patch
-          traverse_ (runAction api) a.actions
+          runActions a.actions
           pure ackJson
 
     -- Flush queued browser events (the boot backlog first, then live ones) through
@@ -260,6 +280,8 @@ main = launchAff_ do
       let r = applyCommand t cmd m
       let changed = not (isEmptyPatch r.patch) || not (Array.null r.actions)
       let missingSource = pasteSourceMissing cmd m
+      -- counted against the PRE-command model `m`, before the restore consumes it
+      let unopenable = unopenableOnRestore cmd m
       liftEffect do
         Ref.write r.model ref
         -- record the inverse so this command can be undone; a fresh edit
@@ -270,8 +292,8 @@ main = launchAff_ do
           Ref.modify_ (pushBounded (inversePatch t m r.patch)) undoRef
           Ref.write [] redoRef
       persistAndBroadcast api db versionRef r.patch
-      traverse_ (runAction api) r.actions
-      pure (ackChangedJson changed missingSource)
+      runActions r.actions
+      pure (ackChangedJson changed missingSource unopenable)
     Right Undo -> stepStack undoRef redoRef
     Right Redo -> stepStack redoRef undoRef
     -- export needs the whole tree; it's a rare, explicit user action, so paying
@@ -335,8 +357,9 @@ pushBounded x xs = Array.take maxUndoDepth (Array.cons x xs)
 ackJson :: Json
 ackJson = encodeJson { ok: true }
 
-ackChangedJson :: Boolean -> Boolean -> Json
-ackChangedJson changed missingSource = encodeJson { ok: true, changed, missingSource }
+ackChangedJson :: Boolean -> Boolean -> Int -> Json
+ackChangedJson changed missingSource unopenable =
+  encodeJson { ok: true, changed, missingSource, unopenable }
 
 pasteSourceMissing :: Command -> Model -> Boolean
 pasteSourceMissing (PasteAfter source _) model = not (Map.member source model.nodes)
@@ -345,11 +368,28 @@ pasteSourceMissing _ _ = false
 runAction :: BrowserApi -> BrowserAction -> Aff Unit
 runAction api = case _ of
   FocusTab t -> Browser.focusTab api t
-  CreateTab w i u -> Browser.createTab api w i u
+  CreateTab w i u _ -> Browser.createTab api w i u
   CreateWindow n us -> Browser.createWindow api n us
   MoveTabToWindow t w i -> Browser.moveTabToWindow api t w i
   NewWindowWithTabs n ts -> Browser.newWindowWithTabs api n ts
   RemoveTab t -> Browser.removeTab api t
+
+-- | The event(s) that retract a failed action's optimistic model state. A window
+-- | create that rejects fires no `windows.onCreated`, so nothing would otherwise
+-- | consume the container's `pendingRestoreWindows` entry. (The FFI drops its own
+-- | pairing entry on the same failure — see `registerRestoreBind` — but that queue
+-- | is separate from the reducer's.) Every other action either changes no model
+-- | state up front or is re-derived from the events it does produce.
+-- |
+-- | `NewWindowWithTabs` relies on its FFI rejecting only when the window itself
+-- | was never created — a post-create `tabs.move` failure must not surface here,
+-- | or this would retract a binding the (successfully created) window still needs.
+compensating :: BrowserAction -> Array BrowserEvent
+compensating = case _ of
+  CreateWindow node _ -> [ WindowCreateFailed { node } ]
+  NewWindowWithTabs (Just node) _ -> [ WindowCreateFailed { node } ]
+  CreateTab (Just windowId) _ _ (Just node) -> [ TabCreateFailed { windowId, node } ]
+  _ -> []
 
 -- | Did this command relocate real browser tabs (move them between windows or into
 -- | a new one)? Such a command can't be undone — undo reverts only the tree, not

@@ -66,6 +66,22 @@ applyBrowser now ev model = case ev of
     Just _ -> noop model
     Nothing -> fromMaybe (noop model) (bindWindowEntry now windowId node model)
 
+  -- The window we asked for will never arrive, so nothing would ever consume this
+  -- container's queue entry. Retract it, or the container stays "already
+  -- restoring" for the life of the background page — and `Command.restore`
+  -- silently filters out every later restore of it AND of any tab under it, so
+  -- the whole subtree becomes unclickable with no error anywhere.
+  WindowCreateFailed { node } ->
+    noop model { pendingRestoreWindows = Array.filter (\e -> e.node /= node) model.pendingRestoreWindows }
+
+  -- Same idea one level down: the tab will never arrive, so drop its slot from
+  -- that window's rebind queue. Left in place it is worse than a stuck restore —
+  -- the queue is matched by creation order, so the next tab to open in this window
+  -- (a restore of a different node, or one the user just opened) would rebind onto
+  -- this node instead.
+  TabCreateFailed { windowId, node } ->
+    noop model { pendingRestore = Map.update (dropQueued node) windowId model.pendingRestore }
+
   WindowClosed { windowId } -> case liveWindowNode windowId model of
     Nothing -> noop model
     Just w ->
@@ -129,6 +145,13 @@ applyBrowser now ev model = case ev of
           _ -> base
 
   TabAttached a -> attachTab now a.tabId a.windowId a.index model
+
+-- | Drop `node` from a window's rebind queue, removing the whole entry when that
+-- | empties it (so `popPendingRestore` sees no key rather than an empty list).
+dropQueued :: NodeId -> List.List NodeId -> Maybe (List.List NodeId)
+dropQueued node queue = case List.filter (_ /= node) queue of
+  List.Nil -> Nothing
+  rest -> Just rest
 
 -- | Bind the next pending restore/rehome container to `windowId`. Normally this
 -- | happens on WindowOpened, but Firefox may report the new window's first

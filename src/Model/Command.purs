@@ -17,7 +17,7 @@ import Data.Foldable (foldl)
 import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Set as Set
 import Data.String (Pattern(..), stripPrefix)
 import Data.String.Common (toLower)
@@ -53,7 +53,12 @@ data Command
 -- | onAttached/onCreated events.
 data BrowserAction
   = FocusTab Int
-  | CreateTab (Maybe Int) (Maybe Int) (Maybe String)
+  -- | Open a tab: window, index, url, and — when the restore queued a node to
+  -- | rebind in that window — that node. A rejected create can then retract
+  -- | exactly its own queue entry (`TabCreateFailed`); leaving it queued would let
+  -- | it hijack the next tab to open in that window, since the queue is a FIFO
+  -- | matched by creation order.
+  | CreateTab (Maybe Int) (Maybe Int) (Maybe String) (Maybe NodeId)
   -- | Open one new browser window for the given urls, binding it to container
   -- | `NodeId` when it opens (the impure layer pairs the two, so the restore
   -- | can't cross-wire to another in-flight restore's window).
@@ -68,7 +73,7 @@ data BrowserAction
 derive instance eqBrowserAction :: Eq BrowserAction
 instance showBrowserAction :: Show BrowserAction where
   show (FocusTab t) = "FocusTab " <> show t
-  show (CreateTab w i u) = "CreateTab " <> show w <> " " <> show i <> " " <> show u
+  show (CreateTab w i u n) = "CreateTab " <> show w <> " " <> show i <> " " <> show u <> " " <> show n
   show (CreateWindow n us) = "CreateWindow " <> show n <> " " <> show us
   show (MoveTabToWindow t w i) = "MoveTabToWindow " <> show t <> " " <> show w <> " " <> show i
   show (NewWindowWithTabs n ts) = "NewWindowWithTabs " <> show n <> " " <> show ts
@@ -319,12 +324,9 @@ applyCommandRaw now cmd model = case cmd of
   restore :: NodeId -> CmdResult
   restore nid =
     let
-      queuedTabs = Set.fromFoldable
-        ( Array.concatMap Array.fromFoldable (Array.fromFoldable (Map.values model.pendingRestore) :: Array (List NodeId))
-            <> Array.concatMap (Array.fromFoldable <<< _.tabs) model.pendingRestoreWindows
-        )
+      queuedTabs = queuedRestoreTabs model
       queuedWindows = Set.fromFoldable (map _.node model.pendingRestoreWindows)
-      closedTabs = restoreTabs nid
+      closedTabs = closedOwnedTabs model nid
       -- only tabs with a url the browser will actually open can be reopened; keep
       -- subtree (preorder) order. Skipping an un-openable url (file:, about:, …)
       -- matters because a window batches all its tabs into one windows.create,
@@ -358,8 +360,11 @@ applyCommandRaw now cmd model = case cmd of
       newWindows = map (\w -> { node: w, tabs: List.fromFoldable (map _.id (forWindow w)) }) newWinIds
 
       tabActions = Array.mapMaybe (\x -> case x.target of
-        IntoWindow wid -> Just (CreateTab (Just wid) (restoreIndex wid x.id) (Just x.url))
-        IntoCurrent -> Just (CreateTab Nothing Nothing (Just x.url))
+        -- carries x.id: this tab IS queued below, so a rejected create must be
+        -- able to un-queue exactly it
+        IntoWindow wid -> Just (CreateTab (Just wid) (restoreIndex wid x.id) (Just x.url) (Just x.id))
+        -- IntoCurrent queues nothing (no window to key it by), so nothing to retract
+        IntoCurrent -> Just (CreateTab Nothing Nothing (Just x.url) Nothing)
         IntoNewWindow _ -> Nothing) ready
 
       -- queue each IntoWindow tab under its target window — a FIFO consumed as the
@@ -405,15 +410,6 @@ applyCommandRaw now cmd model = case cmd of
       , patch
       , actions: windowActions <> tabActions
       }
-
-  restoreTabs :: NodeId -> Array Node
-  restoreTabs nid =
-    Array.mapMaybe
-      ( \cid -> case Map.lookup cid model.nodes of
-          Just c | not (isLiveTab c) -> Just c
-          _ -> Nothing
-      )
-      (ownedTabPreorder model nid)
 
   groupNode :: NodeId -> CmdResult
   groupNode nid = case Map.lookup nid model.nodes of
@@ -547,6 +543,47 @@ applyCommandRaw now cmd model = case cmd of
                 Just p -> withPrune node.parent (withBrowser { upserts: [ p { children = spliceReplace nid kids p.children } ] <> promote (Just pid), removes: [ nid ], roots: Nothing })
               Nothing -> withBrowser { upserts: promote Nothing, removes: [ nid ], roots: Just (spliceReplace nid kids model.roots) }
 
+-- | Every tab node already awaiting a restore — queued into a live window, or
+-- | carried by a container still waiting for its browser window. Shared by
+-- | `restore` (which must not re-issue them) and `unopenableOnRestore` (which must
+-- | not count an in-flight tab as one the browser refused).
+queuedRestoreTabs :: Model -> Set.Set NodeId
+queuedRestoreTabs model = Set.fromFoldable
+  ( Array.concatMap Array.fromFoldable (Array.fromFoldable (Map.values model.pendingRestore) :: Array (List NodeId))
+      <> Array.concatMap (Array.fromFoldable <<< _.tabs) model.pendingRestoreWindows
+  )
+
+-- | The closed tab nodes a restore of `nid` would reopen, in subtree preorder.
+closedOwnedTabs :: Model -> NodeId -> Array Node
+closedOwnedTabs model nid =
+  Array.mapMaybe
+    ( \cid -> case Map.lookup cid model.nodes of
+        Just c | not (isLiveTab c) -> Just c
+        _ -> Nothing
+    )
+    (ownedTabPreorder model nid)
+
+-- | How many closed tabs an `Activate` will leave behind because the browser
+-- | refuses their url. Computed from the PRE-command model (like
+-- | `pasteSourceMissing`), so `CmdResult` keeps its shape.
+-- |
+-- | This exists because the honest answer to "why did nothing happen?" is
+-- | otherwise unavailable: clicking a container whose every closed tab is
+-- | un-openable — a window of `file://` pages, say — produces no patch and no
+-- | browser action, so the click is indistinguishable from a broken build. The
+-- | sidebar turns this count into a notice.
+unopenableOnRestore :: Command -> Model -> Int
+unopenableOnRestore (Activate nid) model = case Map.lookup nid model.nodes of
+  Just n | isNothing n.tabId ->
+    let queued = queuedRestoreTabs model
+    in Array.length
+      ( Array.filter
+          (\c -> not (Set.member c.id queued) && not (maybe false restorableUrl c.url))
+          (closedOwnedTabs model nid)
+      )
+  _ -> 0
+unopenableOnRestore _ _ = 0
+
 spliceReplace :: NodeId -> Array NodeId -> Array NodeId -> Array NodeId
 spliceReplace x ys = Array.concatMap (\e -> if e == x then ys else [ e ])
 
@@ -560,10 +597,37 @@ pushPending pid xs = if Array.any (\e -> e.node == pid) xs then xs else Array.sn
 -- | reject them, and since a window restore batches every tab into one
 -- | `windows.create`, a single rejected url fails the WHOLE window (no window
 -- | appears). `file:` needs a user-granted file-URL access this add-on doesn't
--- | request; the rest are privileged/internal. A tab with such a url is left as
--- | closed history rather than restored.
+-- | request; the rest are privileged/internal/opaque. A tab with such a url is
+-- | left as closed history rather than restored.
+-- |
+-- | The `*-extension:` entries matter in practice: an imported Chrome Tabs
+-- | Outliner tree carries `chrome-extension:` pages that Firefox can never open,
+-- | and `moz-extension:` pages belong to a specific add-on install (another
+-- | add-on's, or a stale uuid of ours), so the browser rejects them too. Before
+-- | they were filtered, one such tab silently doomed the restore of every other
+-- | tab sharing its window.
+-- |
+-- | `moz-extension:` is blocked wholesale, which also skips a saved tab pointing at
+-- | THIS add-on's own options page — the one such url the browser would accept.
+-- | Deliberate: telling the two apart needs the live extension origin, which this
+-- | pure reducer has no access to, and a persisted moz-extension url is usually
+-- | stale anyway (the uuid is per-install, so it dies on reinstall). Skipping one
+-- | marginal own-page restore beats letting any of them doom a whole window.
 blockedSchemes :: Array String
-blockedSchemes = [ "file:", "about:", "chrome:", "resource:", "javascript:", "view-source:", "data:" ]
+blockedSchemes =
+  [ "file:"
+  , "about:"
+  , "chrome:"
+  , "resource:"
+  , "javascript:"
+  , "view-source:"
+  , "data:"
+  , "moz-extension:"
+  , "chrome-extension:"
+  , "blob:"
+  , "filesystem:"
+  , "jar:"
+  ]
 
 restorableUrl :: String -> Boolean
 restorableUrl u = let lu = toLower u in not (Array.any (\p -> isJust (stripPrefix (Pattern p) lu)) blockedSchemes)

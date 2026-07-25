@@ -367,7 +367,7 @@ test.describe("toolbar", () => {
     await expect(page.locator("#notice")).toBeVisible();
     await expect(page.locator("#notice")).toContainText("unrecognized format");
     // dismissable
-    await page.locator("#notice").click();
+    await page.locator("#notice-dismiss").click();
     await expect(page.locator("#notice")).toHaveCount(0);
   });
 });

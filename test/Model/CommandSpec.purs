@@ -11,7 +11,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Codec (Snapshot)
-import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, wrapRootTabsModel)
+import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, unopenableOnRestore, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
 import Model.Reconcile (applyBrowser)
 import Model.Tree (applyPatch, insertAtClamped, liveTabCountInWindow, liveWindowNode, ownedLiveTabPreorder)
@@ -150,7 +150,7 @@ restoreOne s nid =
           ]
       in
         { model: model', browser: [ nid ], nextTab: tabId + 1, windowId: Just wid }
-    Just { head: CreateTab (Just wid) index _, tail } | Array.null tail ->
+    Just { head: CreateTab (Just wid) index _ _, tail } | Array.null tail ->
       let
         tabId = s.nextTab
         title = tabTitle nid
@@ -375,7 +375,7 @@ applyBrowserAction salt s = case _ of
         s' = s { windows = replaceWindowIn window' s.windows, activeWindow = Just found.window.windowId }
       in
         enqueueEvents [ TabActivated { tabId, windowId: found.window.windowId } ] s'
-  CreateTab mWindow mIndex mUrl ->
+  CreateTab mWindow mIndex mUrl _ ->
     case mWindow >>= \windowId -> if Array.any (\w -> w.windowId == windowId) s.windows then Nothing else Just windowId of
       Just _ -> s
       Nothing ->
@@ -816,7 +816,7 @@ spec = describe "Model.Command" do
       activated = applyCommand 0.0 (Activate "n2") closed
       reopened = (applyBrowser 0.0 (openTab 99 1 0 "A" true) activated.model).model
     -- the window is still live, so the tab reopens back into it (not a new window)
-    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 0) (Just "http://A") ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 0) (Just "http://A") (Just "n2") ]
     -- same node id, now live and bound to the new tab; no extra node created
     (isLive <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just true
     (_.tabId <$> Map.lookup "n2" reopened.nodes) `shouldEqual` Just (Just 99)
@@ -827,7 +827,7 @@ spec = describe "Model.Command" do
       closedBoth = outlinerClose "n3" 12 (outlinerClose "n2" 11 base)
       withPending = closedBoth { pendingRestore = Map.insert 1 (Cons "n2" Nil) closedBoth.pendingRestore }
       activated = applyCommand 0.0 (Activate "n3") withPending
-    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://B") ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://B") (Just "n3") ]
     Map.lookup 1 activated.model.pendingRestore `shouldEqual` Just (Cons "n2" (Cons "n3" Nil))
 
   it "restoring rebinds the clicked node even when the recreated tab reports a different url" do
@@ -920,7 +920,7 @@ spec = describe "Model.Command" do
         }
         emptyModel
       activated = applyCommand 0.0 (Activate "n3") m0
-    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://b") ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://b") (Just "n3") ]
 
   it "restoring into an outer live window ignores nested live-window tabs in the browser index" do
     let
@@ -938,7 +938,7 @@ spec = describe "Model.Command" do
         }
         emptyModel
       activated = applyCommand 0.0 (Activate "B") m0
-    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 2) (Just "http://b") ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 2) (Just "http://b") (Just "B") ]
 
   -- The unification: a saved GROUP restores exactly like a saved window, but
   -- nested groups/windows remain separate restore boundaries.
@@ -1059,6 +1059,123 @@ spec = describe "Model.Command" do
     (isLive <$> Map.lookup "f" reopened.nodes) `shouldEqual` Just false
     (_.url <$> Map.lookup "f" reopened.nodes) `shouldEqual` Just (Just "file:///Users/me/pic.webp")
     (_.parent <$> Map.lookup "f" reopened.nodes) `shouldEqual` Just (Just "w")
+
+  it "restoring a window skips extension-page tabs (chrome-extension:/moz-extension:)" do
+    -- Regression: a tree imported from Chrome Tabs Outliner carries
+    -- `chrome-extension:` pages Firefox can never open, and `moz-extension:` pages
+    -- belong to some other add-on install. Neither was filtered, so both reached
+    -- the batched windows.create — which Firefox rejects WHOLE, silently dooming
+    -- every healthy tab sharing that window.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "w" KGroup 0.0) { title = "Window", children = [ "a", "c", "z", "b" ] }
+            , (defaultNode "a" KTab 0.0) { parent = Just "w", url = Just "http://a", title = "A" }
+            , (defaultNode "c" KTab 0.0) { parent = Just "w", url = Just "chrome-extension://eiimnmioipafcokbfikbljfdeojpcgbh/blocked.html", title = "C" }
+            , (defaultNode "z" KTab 0.0) { parent = Just "w", url = Just "moz-extension://788a0681-0474-4c6d-89c6-9cd09cfa461a/options/options.html", title = "Z" }
+            , (defaultNode "b" KTab 0.0) { parent = Just "w", url = Just "https://b", title = "B" }
+            ]
+        , removes: []
+        , roots: Just [ "w" ]
+        }
+        emptyModel
+      activated = applyCommand 0.0 (Activate "w") m0
+    activated.actions `shouldEqual` [ CreateWindow "w" [ "http://a", "https://b" ] ]
+    (map _.tabs activated.model.pendingRestoreWindows) `shouldEqual` [ Cons "a" (Cons "b" Nil) ]
+    -- the two extension tabs stay put as closed history, urls intact
+    (isLive <$> Map.lookup "c" activated.model.nodes) `shouldEqual` Just false
+    (isLive <$> Map.lookup "z" activated.model.nodes) `shouldEqual` Just false
+
+  it "counts the tabs a restore can't reopen, so the click isn't silent" do
+    -- A window of local files restores NOTHING: no patch, no action. Without a
+    -- count to report, that click is indistinguishable from a broken build.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "w" KGroup 0.0) { title = "Window", children = [ "f1", "f2", "ok", "none" ] }
+            , (defaultNode "f1" KTab 0.0) { parent = Just "w", url = Just "file:///a.html", title = "F1" }
+            , (defaultNode "f2" KTab 0.0) { parent = Just "w", url = Just "about:reader?url=x", title = "F2" }
+            , (defaultNode "ok" KTab 0.0) { parent = Just "w", url = Just "https://ok", title = "OK" }
+            , (defaultNode "none" KTab 0.0) { parent = Just "w", url = Nothing, title = "No url" }
+            ]
+        , removes: []
+        , roots: Just [ "w" ]
+        }
+        emptyModel
+    -- two blocked schemes + one node with no url at all
+    unopenableOnRestore (Activate "w") m0 `shouldEqual` 3
+    -- clicking a single un-openable tab reports just itself
+    unopenableOnRestore (Activate "f1") m0 `shouldEqual` 1
+    unopenableOnRestore (Activate "ok") m0 `shouldEqual` 0
+    -- a tab already in flight is not "refused" — it must not be counted
+    let inFlight = m0 { pendingRestoreWindows = [ { node: "w", tabs: Cons "f1" Nil } ] }
+    unopenableOnRestore (Activate "w") inFlight `shouldEqual` 2
+    -- and this only speaks for restores
+    unopenableOnRestore (Delete "w") m0 `shouldEqual` 0
+
+  it "a failed window create releases the container, so restore can be retried" do
+    -- windows.create can still reject for a url no scheme filter anticipated. That
+    -- fires no windows.onCreated, so without the WindowCreateFailed retraction the
+    -- container stays queued forever and EVERY later restore of it — or of any tab
+    -- under it — is filtered out as already-in-flight, silently and permanently.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "w" KGroup 0.0) { title = "Window", children = [ "a" ] }
+            , (defaultNode "a" KTab 0.0) { parent = Just "w", url = Just "http://a", title = "A" }
+            ]
+        , removes: []
+        , roots: Just [ "w" ]
+        }
+        emptyModel
+      first = applyCommand 0.0 (Activate "w") m0
+    first.actions `shouldEqual` [ CreateWindow "w" [ "http://a" ] ]
+    -- while the create is in flight, a second click must NOT open a second window
+    (applyCommand 0.0 (Activate "w") first.model).actions `shouldEqual` []
+    let failed = (applyBrowser 0.0 (WindowCreateFailed { node: "w" }) first.model).model
+    failed.pendingRestoreWindows `shouldEqual` []
+    -- and now the user can try again
+    (applyCommand 0.0 (Activate "w") failed).actions `shouldEqual` [ CreateWindow "w" [ "http://a" ] ]
+    -- a retraction naming an unknown container is a harmless no-op
+    (applyBrowser 0.0 (WindowCreateFailed { node: "nope" }) first.model).model.pendingRestoreWindows
+      `shouldEqual` first.model.pendingRestoreWindows
+
+  it "a failed tab create releases its queue slot, so the next tab is not hijacked" do
+    -- The rebind queue is a FIFO matched by creation ORDER, not by url. A tab whose
+    -- create was rejected must give its slot up: left in place, the next tab to open
+    -- in that window pops the dead node and binds onto it — the failed tab appears
+    -- to come back as the wrong page, and the tab that really opened is lost.
+    let
+      m0 = applyPatch
+        { upserts:
+            [ (defaultNode "w" KGroup 0.0) { windowId = Just 1, title = "Window", children = [ "a", "b" ] }
+            , (defaultNode "a" KTab 0.0) { parent = Just "w", url = Just "http://a", title = "A" }
+            , (defaultNode "b" KTab 0.0) { parent = Just "w", url = Just "http://b", title = "B" }
+            ]
+        , removes: []
+        , roots: Just [ "w" ]
+        }
+        emptyModel
+      restored = applyCommand 0.0 (Activate "w") m0
+    restored.actions `shouldEqual`
+      [ CreateTab (Just 1) (Just 0) (Just "http://a") (Just "a")
+      , CreateTab (Just 1) (Just 1) (Just "http://b") (Just "b")
+      ]
+    Map.lookup 1 restored.model.pendingRestore `shouldEqual` Just (Cons "a" (Cons "b" Nil))
+    -- A's create is rejected; B's succeeds and its tab arrives
+    let
+      afterFail = (applyBrowser 0.0 (TabCreateFailed { windowId: 1, node: "a" }) restored.model).model
+      afterB = (applyBrowser 0.0 (openTabU 52 1 0 "http://b" "B") afterFail).model
+    Map.lookup 1 afterFail.pendingRestore `shouldEqual` Just (Cons "b" Nil)
+    -- B bound to B's node; A stayed closed history rather than being hijacked
+    (_.tabId <$> Map.lookup "b" afterB.nodes) `shouldEqual` Just (Just 52)
+    (isLive <$> Map.lookup "a" afterB.nodes) `shouldEqual` Just false
+    (_.url <$> Map.lookup "a" afterB.nodes) `shouldEqual` Just (Just "http://a")
+    -- the queue is now empty, not an empty list left under the key
+    Map.lookup 1 afterB.pendingRestore `shouldEqual` Nothing
+    -- and A can simply be restored again
+    (applyCommand 0.0 (Activate "a") afterB).actions
+      `shouldEqual` [ CreateTab (Just 1) (Just 0) (Just "http://a") (Just "a") ]
 
   it "property: one-tab restore from a saved group tolerates either window/tab event order" $
     quickCheck \(windowFirst :: Boolean) ->
@@ -1221,7 +1338,7 @@ spec = describe "Model.Command" do
         , openTab 100 1 1 "B" false
         ]
     movedCmd.actions `shouldEqual` [ MoveTabToWindow 11 1 0 ]
-    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://B") ]
+    activated.actions `shouldEqual` [ CreateTab (Just 1) (Just 1) (Just "http://B") (Just "n3") ]
     -- the waived divergence: model live order [100, 11] vs the browser strip [11, 100]
     modelTabOrder 1 final `shouldEqual` [ 100, 11 ]
 

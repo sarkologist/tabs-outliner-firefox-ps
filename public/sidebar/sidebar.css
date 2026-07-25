@@ -297,6 +297,9 @@ body {
 
 #notice {
   flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   margin: 6px 10px;
   padding: 6px 10px;
   border-radius: 4px;
@@ -304,7 +307,34 @@ body {
   background: color-mix(in srgb, #c92525 12%, Canvas);
   border: 1px solid color-mix(in srgb, #c92525 40%, transparent);
   font-size: 12px;
+}
+
+.notice-text {
+  flex: 1;
+}
+
+/* the only dismiss affordance: see noticeBanner on why the banner itself is
+   deliberately not clickable */
+.notice-dismiss {
+  flex: none;
+  /* the banner is no longer clickable as a whole, so this is the ONLY dismiss
+     target — keep it at the 24px minimum rather than a bare glyph */
+  min-width: 24px;
+  min-height: 24px;
+  margin: -4px -4px -4px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
   cursor: pointer;
+}
+
+.notice-dismiss:hover {
+  opacity: 0.7;
 }
 
 /* Tree --------------------------------------------------------------------- */

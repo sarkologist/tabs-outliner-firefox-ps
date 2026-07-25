@@ -1,6 +1,20 @@
 import { test, expect, type Page } from "@playwright/test";
 import { bootBackgroundAndSidebar, fake, readNodes } from "./support/harness";
 
+// Click both closed Window rows back-to-back, without waiting for the first
+// restore to settle (that concurrency is the point of the tests using this).
+// Pin each row by node id FIRST: restoring one re-renders the list, so a
+// positional locator resolved after that click (`nth(1)`) can find nothing and
+// time out — a real flake these tests hit roughly a quarter of the time.
+async function clickRestoreBoth(page: Page) {
+  const closedWindowRows = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
+  await expect(closedWindowRows).toHaveCount(2);
+  const ids = await closedWindowRows.evaluateAll((els) =>
+    els.map((e) => e.getAttribute("data-node-id"))
+  );
+  for (const id of ids) await page.locator(`.row[data-node-id="${id}"] .title`).click();
+}
+
 const seed = {
   windows: [
     {
@@ -271,9 +285,7 @@ test.describe("commands", () => {
     expect(await page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
 
     // restore both closed windows
-    const closedWindowRows = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
-    await closedWindowRows.nth(0).locator(".title").click();
-    await closedWindowRows.nth(1).locator(".title").click();
+    await clickRestoreBoth(page);
 
     await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
 
@@ -302,9 +314,7 @@ test.describe("commands", () => {
     await fake(page, "closeWindow", 2);
     await expect(page.locator('[data-status="closed"]')).toHaveCount(4);
 
-    const closedWindowRows = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
-    await closedWindowRows.nth(0).locator(".title").click();
-    await closedWindowRows.nth(1).locator(".title").click();
+    await clickRestoreBoth(page);
 
     await expect(page.locator('[data-status="closed"]')).toHaveCount(0);
     const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
@@ -342,6 +352,86 @@ test.describe("commands", () => {
     await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(1);
     const windows = await page.evaluate(() => (globalThis as any).__fake.listWindows());
     expect(windows[0].tabs.map((t: any) => t.url)).toEqual(["https://a", "https://c"]);
+  });
+
+  test("a window of un-openable tabs explains itself instead of doing nothing", async ({ page }) => {
+    // Reported as "a window group does not restore, and neither does any of its
+    // tabs": every tab was a local file, which Firefox refuses to open from an
+    // add-on ("Illegal URL"). The restore is genuinely impossible — but the click
+    // produced no patch, no action and no message, which reads as a broken build.
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "file:///Users/me/explainer.html", title: "Explainer", active: true },
+            { id: 12, url: "file:///Users/me/index.html", title: "Index" },
+          ],
+        },
+      ],
+    });
+    await expect.poll(() => titles(page)).toEqual(["Window", "Explainer", "Index"]);
+
+    await fake(page, "closeWindow", 1);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    await page.locator('.row[data-status="closed"]').filter({ hasText: "Window" }).locator(".title").click();
+
+    await expect(page.locator("#notice")).toContainText("2 tabs can't be reopened");
+    await expect(page.locator("#notice")).toContainText("local files");
+    // announced to assistive tech, since it arrives asynchronously
+    await expect(page.locator("#notice")).toHaveAttribute("role", "status");
+    // still no window, and the tabs are kept in place rather than dropped
+    expect(await page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    // dismissible, and singular for one tab
+    await page.locator("#notice-dismiss").click();
+    await expect(page.locator("#notice")).toHaveCount(0);
+    await page.locator('.row[data-status="closed"]').filter({ hasText: "Explainer" }).locator(".title").click();
+    await expect(page.locator("#notice")).toContainText("1 tab can't be reopened");
+  });
+
+  test("a rejected windows.create leaves the window restorable instead of stuck", async ({ page }) => {
+    // The runtime half of the WindowCreateFailed contract: a rejected create fires
+    // no onCreated, so nothing consumes the container's pending-window entry. Left
+    // queued, Command.restore filters the container — and every tab under it — out
+    // as already-in-flight, forever, with no error surfaced anywhere. This drives
+    // the real background: the compensation has to come from runActions.
+    await bootBackgroundAndSidebar(page, {
+      rejectWindowCreateUrlsContaining: ["poison"],
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a", title: "Alpha", active: true },
+            { id: 12, url: "http://poison", title: "Poison" },
+          ],
+        },
+      ],
+    });
+    await expect.poll(() => titles(page)).toEqual(["Window", "Alpha", "Poison"]);
+
+    await fake(page, "closeWindow", 1);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    const creates = () =>
+      page.evaluate(() => (globalThis as any).__fake.windowCreateLog.length as number);
+    const windowRow = page.locator('.row[data-status="closed"]').filter({ hasText: "Window" });
+
+    // Absolute counts, and wait for the first create to land before clicking again:
+    // sampling a baseline mid-flight would let the FIRST create satisfy a
+    // "one more than before" assertion, passing even with no compensation at all.
+    await windowRow.locator(".title").click();
+    await expect.poll(creates).toBe(1);
+    // the create was rejected, so nothing came back
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.listWindows().length)).toBe(0);
+    await expect(page.locator('[data-status="closed"]')).toHaveCount(3);
+
+    // ...and the retraction ran, so a retry actually reaches the browser again
+    // (before the fix, every later click produced no windows.create at all)
+    await windowRow.locator(".title").click();
+    await expect.poll(creates).toBe(2);
   });
 
   test("restoring a closed window restores its tabs in order", async ({ page }) => {

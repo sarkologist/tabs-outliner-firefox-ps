@@ -29,6 +29,9 @@ export type Seed = {
   // windows.onCreated (Firefox does not order the two) — exercises the tab-event
   // buffering that keeps concurrent restores from cross-wiring.
   windowCreateReportsTabBeforeWindow?: boolean;
+  // Make windows.create reject (no window, no onCreated) when a url in the batch
+  // contains any of these substrings — how Firefox answers a url it refuses.
+  rejectWindowCreateUrlsContaining?: string[];
 };
 
 export function installFakeBrowser(seed: Seed) {
@@ -159,8 +162,19 @@ export function installFakeBrowser(seed: Seed) {
         return Promise.resolve({ id: win.id, type: win.type, focused: win.focused });
       },
       create: (props: any = {}) => {
-        const id = ++winSeq;
         driver.windowCreateLog.push({ ...props });
+        // Firefox rejects a windows.create outright — creating NO window and firing
+        // no onCreated — if any url in the batch is one it refuses to open. Seeded
+        // by substring so a test can poison a specific tab.
+        const poison = (seed?.rejectWindowCreateUrlsContaining ?? []).filter((needle) =>
+          (Array.isArray(props.url) ? props.url : props.url != null ? [props.url] : []).some(
+            (u: string) => String(u).includes(needle)
+          )
+        );
+        if (poison.length > 0) {
+          return Promise.reject(new Error(`Illegal URL: ${poison.join(", ")}`));
+        }
+        const id = ++winSeq;
         if (props.focused !== false) {
           for (const win of wins.values()) win.focused = false;
           currentWindowId = id;
