@@ -320,11 +320,16 @@ handleAction = case _ of
   -- The background writes the file itself (see its Export handler); all that comes
   -- back is an ack. Treat anything short of an explicit `ok: true` as failure and
   -- say so — this used to be the one path that could "succeed" into a junk file.
+  --
+  -- Forked, like the view retry: the ack only lands once the download has
+  -- completed, and if the user has "always ask where to save files" on, that is
+  -- however long the save dialog stays open. Awaiting it inline would hold the
+  -- action queue — and so every scroll and refresh — for the duration.
   ExportClick -> do
     H.modify_ _ { notice = Nothing }
     st <- H.get
     case st.api of
-      Just api -> do
+      Just api -> void $ H.fork do
         resp <- H.liftAff (attempt (request api (encodeRequest Export)))
         unless (either (const false) exportSucceeded resp) do
           H.modify_ _ { notice = Just exportFailedNotice }
@@ -723,18 +728,22 @@ unopenableNotice n =
   show n <> (if n == 1 then " tab can't" else " tabs can't")
     <> " be reopened — an add-on isn't allowed to open addresses like these (local files, about: and extension pages). Kept here as history."
 
--- | Did the background report writing the export file? A malformed, absent or
--- | oversized reply reads as failure: silence here is what let a broken export
--- | pass for a working one, and claiming success we can't confirm is worse than a
--- | false alarm when the file the user is counting on isn't there.
+-- | Did the background report writing the export file? A malformed or absent
+-- | reply reads as failure: silence here is what let a broken export pass for a
+-- | working one, and claiming success we can't confirm is worse than a false
+-- | alarm when the file the user is counting on isn't there.
 exportSucceeded :: Json -> Boolean
 exportSucceeded json = case (decodeJson json :: Either _ { ok :: Boolean }) of
   Right r -> r.ok
   Left _ -> false
 
+-- | Worded for both cases it covers: the background said the write failed, and
+-- | the background never answered (so a file may exist that we can't vouch for).
+-- | It must not claim more than we know — the whole point of the banner is that
+-- | an export you can't trust is the dangerous kind.
 exportFailedNotice :: String
 exportFailedNotice =
-  "Export failed — nothing was written. Check that downloads aren't blocked, then try again."
+  "Export didn't complete. Check your downloads before relying on the file, then try again."
 
 -- | Dismissal is on the ✕ alone, not the whole banner. The banner is inserted
 -- | directly above the tree — i.e. right where the row the user just clicked was —

@@ -34,6 +34,9 @@ test("automatic backups schedule daily exports from the options page", async ({ 
 
   const first = await page.evaluate(() => (globalThis as any).__fake.downloads[0]);
   expect(first.filename).toMatch(/^grove-backups\/grove-\d{4}-\d{2}-\d{2}\.json$/);
+  // Unattended: it must never raise a save dialog, whatever the user's
+  // "always ask where to save files" setting says (manual Export honours it).
+  expect(first.saveAs).toBe(false);
   const payload = JSON.parse(first.body);
   expect(payload.roots.length).toBeGreaterThan(0);
   expect(payload.nodes.map((n: { title: string }) => n.title)).toContain("Alpha");

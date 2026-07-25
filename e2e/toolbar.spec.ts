@@ -269,6 +269,9 @@ test.describe("toolbar", () => {
     await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.downloads.length)).toBe(1);
     const written = await page.evaluate(() => (globalThis as any).__fake.downloads[0]);
     expect(written.filename).toBe("grove.json");
+    // `saveAs` is omitted, so a manual export still honours the user's own
+    // "always ask where to save files" setting, as the old blob download did.
+    expect("saveAs" in written).toBe(false);
     const parsed = JSON.parse(written.body);
     expect(parsed.roots.length).toBeGreaterThan(0);
     expect(parsed.nodes.map((n: { title: string }) => n.title)).toContain("Alpha");
@@ -287,7 +290,7 @@ test.describe("toolbar", () => {
     await page.locator("#export").click();
     await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.downloads.length)).toBe(1);
     await page.evaluate(() => (globalThis as any).__fake.interruptDownload(1, "FILE_FAILED"));
-    await expect(page.locator("#notice")).toContainText("Export failed");
+    await expect(page.locator("#notice")).toContainText("Export didn't complete");
     await page.locator("#notice-dismiss").click();
     await expect(page.locator("#notice")).toBeHidden();
   });

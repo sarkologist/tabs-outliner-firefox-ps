@@ -116,7 +116,7 @@ main = launchAff_ do
     runAutomaticBackup = do
       m <- liftEffect (Ref.read ref)
       filename <- liftEffect Browser.backupFilename
-      Browser.downloadJsonFile api filename (stringify (encodeSnapshot m))
+      Browser.downloadBackupFile api filename (stringify (encodeSnapshot m))
       Browser.recordAutomaticBackupSuccess api
 
     runAutomaticBackupLogged :: Aff Unit
@@ -139,7 +139,7 @@ main = launchAff_ do
     runExport = do
       m <- liftEffect (Ref.read ref)
       let payload = stringify (encodeSnapshot m)
-      attempt (Browser.downloadJsonFile api Browser.exportFilename payload) >>= case _ of
+      attempt (Browser.downloadExportFile api payload) >>= case _ of
         Right _ -> pure (encodeJson { ok: true })
         Left err -> do
           liftEffect (Console.error ("background: export failed: " <> message err))

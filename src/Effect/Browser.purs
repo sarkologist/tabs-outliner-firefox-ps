@@ -24,14 +24,14 @@ module Effect.Browser
   , clearBackupAlarm
   , onBackupAlarm
   , backupFilename
-  , exportFilename
-  , downloadJsonFile
+  , downloadBackupFile
+  , downloadExportFile
   ) where
 
 import Prelude
 
 import Control.Promise (Promise, toAffE)
-import Data.Maybe (Maybe)
+import Data.Maybe (Maybe(..))
 import Data.Nullable (Nullable, toMaybe, toNullable)
 import Effect (Effect)
 import Effect.Aff (Aff)
@@ -162,7 +162,7 @@ foreign import ensureBackupAlarmImpl :: BrowserApi -> Effect (Promise Unit)
 foreign import clearBackupAlarmImpl :: BrowserApi -> Effect (Promise Unit)
 foreign import onBackupAlarmImpl :: BrowserApi -> Effect Unit -> Effect Unit
 foreign import backupFilename :: Effect String
-foreign import downloadJsonFileImpl :: BrowserApi -> String -> String -> Effect (Promise Unit)
+foreign import downloadJsonFileImpl :: BrowserApi -> String -> Nullable Boolean -> String -> Effect (Promise Unit)
 
 -- | Activate a tab and focus its window (the FFI resolves the window from the tab).
 focusTab :: BrowserApi -> Int -> Aff Unit
@@ -230,9 +230,18 @@ onBackupAlarm = onBackupAlarmImpl
 exportFilename :: String
 exportFilename = "grove.json"
 
--- | Write a JSON payload to the user's downloads, resolving only once the
--- | download has completed. Used by both the daily automatic backup and manual
--- | Export, which are background-side for the same reason: the payload is the
+-- | Write the daily automatic backup. Never prompts for a location — it runs
+-- | unattended, possibly with no sidebar open.
+downloadBackupFile :: BrowserApi -> String -> String -> Aff Unit
+downloadBackupFile api filename content =
+  toAffE (downloadJsonFileImpl api filename (toNullable (Just false)) content)
+
+-- | Write the file for a manual Export. Where it lands is left to the user's own
+-- | "Always ask where to save files" setting (the option is omitted rather than
+-- | forced), which is how the download behaved before it moved here.
+-- |
+-- | Both writers live in the background for the same reason: the payload is the
 -- | whole tree and must not cross `runtime.sendMessage`.
-downloadJsonFile :: BrowserApi -> String -> String -> Aff Unit
-downloadJsonFile api filename content = toAffE (downloadJsonFileImpl api filename content)
+downloadExportFile :: BrowserApi -> String -> Aff Unit
+downloadExportFile api content =
+  toAffE (downloadJsonFileImpl api exportFilename (toNullable Nothing) content)

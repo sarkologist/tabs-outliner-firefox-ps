@@ -516,7 +516,11 @@ export const backupFilename = () =>
 // must run in the BACKGROUND, because a whole-tree snapshot cannot be handed to
 // the sidebar over `runtime.sendMessage` — see the Export handler in
 // Background.Main. A Blob URL has no such size ceiling.
-export const downloadJsonFileImpl = (api) => (filename) => (content) => () => {
+//
+// `saveAs` null means "omit the option", leaving the save-location prompt to the
+// user's own "Always ask where to save files" setting — right for a download they
+// just asked for. The unattended backup passes false: it must never prompt.
+export const downloadJsonFileImpl = (api) => (filename) => (saveAs) => (content) => () => {
   const downloads = api && api.downloads;
   // Reject rather than resolve: both callers now report success to someone (a
   // notice in the sidebar, a recorded backup timestamp), and "no API, so nothing
@@ -532,13 +536,24 @@ export const downloadJsonFileImpl = (api) => (filename) => (content) => () => {
   if (typeof content !== "string" || content.length === 0) {
     return Promise.reject(new Error("refusing to write an empty download: " + filename));
   }
-  const blob = new Blob([content], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
+  // Completion is observed through downloads.onChanged, so resolving means the
+  // bytes really landed. Without it we could only resolve when the download
+  // STARTED — which both overstates success to the caller and would revoke the
+  // Blob URL out from under an in-flight write. Firefox always exposes onChanged
+  // alongside the `downloads` permission we declare, so refuse instead of
+  // guessing.
   const changes = downloads.onChanged;
-  const canObserve =
-    changes &&
-    typeof changes.addListener === "function" &&
-    typeof changes.removeListener === "function";
+  if (
+    !changes ||
+    typeof changes.addListener !== "function" ||
+    typeof changes.removeListener !== "function"
+  ) {
+    return Promise.reject(new Error("downloads.onChanged unavailable; cannot confirm the write"));
+  }
+  const options = { url: null, filename, conflictAction: "uniquify" };
+  if (saveAs !== null && saveAs !== undefined) options.saveAs = saveAs;
+  const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+  options.url = url;
   let revoked = false;
   const revoke = () => {
     if (!revoked) {
@@ -546,14 +561,6 @@ export const downloadJsonFileImpl = (api) => (filename) => (content) => () => {
       URL.revokeObjectURL(url);
     }
   };
-  if (!canObserve) {
-    return Promise.resolve(
-      downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
-    ).then(() => revoke(), (err) => {
-      revoke();
-      throw err;
-    });
-  }
   return new Promise((resolve, reject) => {
     let downloadId = null;
     const pending = [];
@@ -591,9 +598,7 @@ export const downloadJsonFileImpl = (api) => (filename) => (content) => () => {
       finishFromDelta(delta);
     };
     changes.addListener(listener);
-    Promise.resolve(
-      downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
-    ).then((id) => {
+    Promise.resolve(downloads.download(options)).then((id) => {
       downloadId = id;
       pending.slice().some(finishFromDelta);
     }, (err) => settle(reject, err));
