@@ -116,13 +116,34 @@ main = launchAff_ do
     runAutomaticBackup = do
       m <- liftEffect (Ref.read ref)
       filename <- liftEffect Browser.backupFilename
-      Browser.downloadBackup api filename (stringify (encodeSnapshot m))
+      Browser.downloadBackupFile api filename (stringify (encodeSnapshot m))
       Browser.recordAutomaticBackupSuccess api
 
     runAutomaticBackupLogged :: Aff Unit
     runAutomaticBackupLogged = attempt runAutomaticBackup >>= case _ of
       Left err -> liftEffect (Console.error ("background: automatic backup failed: " <> message err))
       Right _ -> pure unit
+
+    -- Manual Export writes the file HERE, from the background, exactly like the
+    -- automatic backup — it does not hand the snapshot back to the sidebar.
+    -- Returning it over `runtime.sendMessage` looks fine on a small tree and
+    -- silently corrupts a large one: past some size the response arrives as JS
+    -- `undefined` (measured on a real 19,451-node / 13.4 MB tree, 4.5 MB of it
+    -- base64 `data:` favicons) and — the part that made this invisible — the
+    -- promise RESOLVES with it rather than rejecting, so the sidebar's `attempt`
+    -- saw success and wrote `JSON.stringify(undefined)`: a .json file whose entire
+    -- contents were the seven characters "undefined". `browser.downloads` with a
+    -- Blob URL has no such ceiling, so the payload never crosses a context.
+    -- The reply is just an ack, so the user gets told when the write failed.
+    runExport :: Aff Json
+    runExport = do
+      m <- liftEffect (Ref.read ref)
+      let payload = stringify (encodeSnapshot m)
+      attempt (Browser.downloadExportFile api payload) >>= case _ of
+        Right _ -> pure (encodeJson { ok: true })
+        Left err -> do
+          liftEffect (Console.error ("background: export failed: " <> message err))
+          pure (encodeJson { ok: false })
 
     configureAutomaticBackups :: Boolean -> Boolean -> Aff Unit
     configureAutomaticBackups enabled runNow =
@@ -297,10 +318,9 @@ main = launchAff_ do
     Right Undo -> stepStack undoRef redoRef
     Right Redo -> stepStack redoRef undoRef
     -- export needs the whole tree; it's a rare, explicit user action, so paying
-    -- O(total) once here (rather than keeping a model copy in the sidebar) is fine.
-    Right Export -> do
-      m <- liftEffect (Ref.read ref)
-      pure (encodeSnapshot m)
+    -- O(total) once here (rather than keeping a model copy in the sidebar) is
+    -- fine. The tree is written to a file here, never returned — see `runExport`.
+    Right Export -> runExport
     Right (OpenFullSizeOutliner sourceWindowId) -> do
       Browser.openFullSizeOutliner api sourceWindowId
       pure ackJson

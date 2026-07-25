@@ -259,16 +259,40 @@ test.describe("toolbar", () => {
     await expect(page.locator("#open-full-size-menu")).toBeHidden();
   });
 
+  // The background writes the file (via browser.downloads), not the sidebar: the
+  // snapshot must never be returned across runtime.sendMessage. See the
+  // large-tree test below for why, and Background.Main's Export handler.
   test("export downloads the outline as JSON", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();
-    const downloadPromise = page.waitForEvent("download");
     await page.locator("#export").click();
-    const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe("grove.json");
-    const parsed = JSON.parse(await readFile(await download.path(), "utf8"));
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.downloads.length)).toBe(1);
+    const written = await page.evaluate(() => (globalThis as any).__fake.downloads[0]);
+    expect(written.filename).toBe("grove.json");
+    // `saveAs` is omitted, so a manual export still honours the user's own
+    // "always ask where to save files" setting, as the old blob download did.
+    expect("saveAs" in written).toBe(false);
+    const parsed = JSON.parse(written.body);
     expect(parsed.roots.length).toBeGreaterThan(0);
     expect(parsed.nodes.map((n: { title: string }) => n.title)).toContain("Alpha");
+    // no failure banner on the happy path
+    await expect(page.locator("#notice")).toBeHidden();
+  });
+
+  test("export says so when the file can't be written", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    // Firefox interrupts the download (disk full, blocked, cancelled): the old
+    // code had no failure path at all here, so the click did nothing visible.
+    await page.evaluate(() => {
+      (globalThis as any).__fake.autoCompleteDownloads = false;
+    });
+    await page.locator("#export").click();
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.downloads.length)).toBe(1);
+    await page.evaluate(() => (globalThis as any).__fake.interruptDownload(1, "FILE_FAILED"));
+    await expect(page.locator("#notice")).toContainText("Export didn't complete");
+    await page.locator("#notice-dismiss").click();
+    await expect(page.locator("#notice")).toBeHidden();
   });
 
   test("import adds an exported outline as closed history", async ({ page }) => {
