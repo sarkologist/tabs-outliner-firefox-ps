@@ -24,7 +24,8 @@ module Effect.Browser
   , clearBackupAlarm
   , onBackupAlarm
   , backupFilename
-  , downloadBackup
+  , exportFilename
+  , downloadJsonFile
   ) where
 
 import Prelude
@@ -161,7 +162,7 @@ foreign import ensureBackupAlarmImpl :: BrowserApi -> Effect (Promise Unit)
 foreign import clearBackupAlarmImpl :: BrowserApi -> Effect (Promise Unit)
 foreign import onBackupAlarmImpl :: BrowserApi -> Effect Unit -> Effect Unit
 foreign import backupFilename :: Effect String
-foreign import downloadBackupImpl :: BrowserApi -> String -> String -> Effect (Promise Unit)
+foreign import downloadJsonFileImpl :: BrowserApi -> String -> String -> Effect (Promise Unit)
 
 -- | Activate a tab and focus its window (the FFI resolves the window from the tab).
 focusTab :: BrowserApi -> Int -> Aff Unit
@@ -224,5 +225,14 @@ clearBackupAlarm api = toAffE (clearBackupAlarmImpl api)
 onBackupAlarm :: BrowserApi -> Effect Unit -> Effect Unit
 onBackupAlarm = onBackupAlarmImpl
 
-downloadBackup :: BrowserApi -> String -> String -> Aff Unit
-downloadBackup api filename content = toAffE (downloadBackupImpl api filename content)
+-- | Filename for a manual Export. Undated, unlike `backupFilename`: the browser
+-- | uniquifies (`grove(1).json`), so repeated exports never clobber each other.
+exportFilename :: String
+exportFilename = "grove.json"
+
+-- | Write a JSON payload to the user's downloads, resolving only once the
+-- | download has completed. Used by both the daily automatic backup and manual
+-- | Export, which are background-side for the same reason: the payload is the
+-- | whole tree and must not cross `runtime.sendMessage`.
+downloadJsonFile :: BrowserApi -> String -> String -> Aff Unit
+downloadJsonFile api filename content = toAffE (downloadJsonFileImpl api filename content)
