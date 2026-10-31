@@ -607,15 +607,21 @@ export const downloadJsonFileImpl = (api) => (filename) => (saveAs) => (content)
 
 // Re-encode a `data:` favicon too big to store as a PNG at most `limit` chars
 // long: 32px first (what the row slot needs on a HiDPI display), then 16px.
-// Resolves null when it cannot (an undecodable image, or one still over the
-// limit at 16px) — the node then keeps no icon rather than a huge one. Never
-// upscales. Only ever handed `data:` urls (see `Model.Favicon.needsShrink`), so
+// Resolves null when it cannot (an undecodable image, one still over the limit
+// at 16px, or one too large to decode safely) — the node then does not store
+// this icon, rather than a huge one. Never upscales. Only ever handed `data:` urls (see `Model.Favicon.needsShrink`), so
 // the canvas is never tainted and nothing is fetched.
+const MAX_FAVICON_PIXELS = 1024 * 1024;
+
 export const shrinkFaviconImpl = (src) => (limit) => () =>
   new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       try {
+        // the header's claimed size is known before the pixels are decoded; a
+        // page could claim 20000x20000 in a few bytes and have drawImage
+        // allocate gigabytes, so refuse anything no favicon needs
+        if (img.naturalWidth * img.naturalHeight > MAX_FAVICON_PIXELS) return resolve(null);
         const natural = Math.max(img.naturalWidth, img.naturalHeight);
         for (const target of [32, 16]) {
           const size = natural > 0 ? Math.min(target, natural) : target;

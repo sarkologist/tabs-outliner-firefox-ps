@@ -14,18 +14,20 @@ the build recipe; the source itself ships as `grove-source.zip`
 
 A Firefox sidebar extension that keeps a durable, editable outline of your live
 and saved tabs/windows, stored locally in IndexedDB. No analytics, no remote
-code, no server of its own, and no network request made by the add-on itself.
-Nothing is sent to the developer or to any third party, hence
+code, no server of its own, and the add-on never `fetch`es anything; the one
+request its pages can make is an open tab's favicon image (below). Nothing is sent to the developer or to any third party, hence
 `data_collection_permissions.required = ["none"]`.
 
 Row favicons: a saved (closed) row draws its icon only from bytes stored in the
 outline — the `data:` URL the `tabs` API reported while that tab was open,
 downscaled on a canvas when large — or a built-in glyph, so browsing saved tabs
-never contacts their sites; an imported file's icon URLs are discarded on
-import. An open tab's row shows the `favIconUrl` that tab reports. Firefox
-currently reports it as a `data:` URL (no request); if it is ever an `http(s)`
-URL, the browser loads that image, with `referrerpolicy="no-referrer"`, from the
-host of the page that tab already has open.
+never contacts their sites. An imported file's icon URLs are discarded on
+import, and a stored icon URL (from a tree saved by an older version) is never
+drawn on a saved row nor carried over when that tab is reopened. An open tab's
+row shows the `favIconUrl` that tab reports. For web pages Firefox typically
+reports a `data:` URL (no request); if it is an `http(s)` URL, the browser loads
+that image, with `referrerpolicy="no-referrer"`, from the host of the page that
+tab already has open.
 
 ## Build environment (pinned)
 
@@ -109,9 +111,9 @@ page, which needs no host permission (a `data:` image does not taint it).
 > The resulting `dist/` is the extension. Entry points: src/Background/Main.purs
 > → dist/background/background.js, src/Sidebar/Main.purs → dist/sidebar/sidebar.js,
 > src/Options/Main.purs → dist/options/options.js. Everything runs locally in the
-> browser (IndexedDB); the add-on makes no network requests of its own and
-> collects no data. Saved rows draw their favicons from bytes stored locally
-> (captured from the `data:` favIconUrl the tabs API reports while the tab is
-> open). An open tab's row shows the favIconUrl that tab reports — a `data:` URL
-> in current Firefox; should it be an http(s) URL, the browser loads it from the
-> host of the page that tab has open. Nothing is sent anywhere else.
+> browser (IndexedDB); the add-on never fetches anything and collects no data.
+> Saved rows draw their favicons from bytes stored locally (captured from the
+> `data:` favIconUrl the tabs API reports while the tab is open). An open tab's
+> row shows the favIconUrl that tab reports — typically a `data:` URL; should it
+> be an http(s) URL, the browser loads that image from the host of the page that
+> tab has open. Nothing is sent anywhere else.

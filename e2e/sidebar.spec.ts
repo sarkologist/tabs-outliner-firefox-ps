@@ -312,6 +312,36 @@ test.describe("sidebar view", () => {
     expect(beacon).toEqual([]);
   });
 
+  test("a url stored by an older version is not drawn when its tab is reopened", async ({ page }) => {
+    // a tree saved (or imported) before icons were captured as bytes still
+    // carries urls; reopening the tab must not hand one to an <img> before the
+    // tab reports its own icon
+    const legacy: string[] = [];
+    await page.route("https://legacy.example/**", (route) => {
+      legacy.push(route.request().url());
+      return route.abort();
+    });
+    await bootBackgroundAndSidebar(page, seed, {
+      persisted: {
+        nodes: [
+          record({ id: "g", kind: "group", title: "Saved", children: ["t"], favIconUrl: "https://legacy.example/g.png" }),
+          record({ id: "t", parent: "g", title: "Old", url: "http://old/page", favIconUrl: "https://legacy.example/t.png", closedAt: 0 }),
+        ],
+        roots: ["g"],
+      },
+    });
+    const old = page.locator(".row").filter({ hasText: "Old" });
+    await expect(old.locator(".favicon use")).toHaveAttribute("href", "#icon-globe");
+    // restore it: the group becomes a live window, the tab a live tab
+    await old.locator(".title").click();
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(0);
+    await expect(old.locator(".favicon-img")).toHaveCount(0);
+    await expect(page.locator(".row").filter({ hasText: "Saved" }).locator(".favicon-img")).toHaveCount(0);
+    const nodes = await readNodes(page);
+    expect(nodes.find((n) => n.id === "t").favIconUrl).toBeNull();
+    expect(legacy).toEqual([]);
+  });
+
   test("an oversized live icon is stored shrunk, and its closed row draws it", async ({ page }) => {
     // a 64px icon of noise is ~22 KB as a `data:` url — too big to keep on a node
     const BIG = noisePng(64);

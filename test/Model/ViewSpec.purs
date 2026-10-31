@@ -174,6 +174,22 @@ spec = describe "Model.View" do
     faviconOf "http://beacon.example/n1.png" `shouldEqual` [ Nothing ]
     faviconOf "moz-extension://x/icon.png" `shouldEqual` [ Nothing ]
 
+  it "a live window is not a tab: it draws stored bytes only" do
+    -- W (row 0) is live window 1; no tab reports a window's icon, so any url on
+    -- it is one a file claimed
+    let
+      windowIcon url =
+        map _.favIconUrl
+          ( sliceView
+              (m { nodes = Map.update (\w -> Just (w { favIconUrl = Just url })) "W" m.nodes })
+              ""
+              (computeOrder "" m)
+              0
+              1
+          )
+    windowIcon "https://beacon.example/w.png" `shouldEqual` [ Nothing ]
+    windowIcon "data:image/png;base64,AAAA" `shouldEqual` [ Just "data:image/png;base64,AAAA" ]
+
   it "spends a favicon budget across the whole window, not per row" do
     let
       big = mManyIcons 200

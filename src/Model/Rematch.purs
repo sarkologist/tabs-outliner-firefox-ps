@@ -24,7 +24,7 @@ import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
-import Model.Favicon (mergeReported)
+import Model.Favicon (mergeReported, storedBytes)
 import Model.Tree (insertAtClamped, liveInsertSlot, owningGroupAncestor)
 import Model.Types (Kind(..), Model, Node, NodeId, RuntimeTab, RuntimeWindow, defaultNode, isLiveTab)
 
@@ -293,7 +293,7 @@ matchTab now winId acc ct = case sessionMatch of
     { tabId = Just ct.tabId
     , title = ct.title
     , url = ct.url
-    , favIconUrl = mergeReported n.favIconUrl ct.favIconUrl
+    , favIconUrl = mergeReported (storedBytes n.favIconUrl) ct.favIconUrl
     , active = ct.active
     , closedAt = Nothing
     }

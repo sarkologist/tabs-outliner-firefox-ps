@@ -10,7 +10,7 @@ import Data.Set as Set
 import Data.String (length) as String
 import Data.String.Common (joinWith) as String
 import Model.Event (BrowserEvent(..))
-import Model.Favicon (importedIcon, isStorableIcon, mergeReported, needsShrink, reportedIcon, storedIconByteLimit)
+import Model.Favicon (importedIcon, isStorableIcon, mergeReported, needsShrink, reportedIcon, sameSite, storedIconByteLimit)
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
 import Model.Types (Model, emptyModel, isLive)
@@ -75,6 +75,15 @@ spec = describe "Model.Favicon" do
     -- a url is kept for the live row, but never displaces stored bytes
     mergeReported Nothing (Just remote) `shouldEqual` Just remote
     mergeReported (Just small) (Just remote) `shouldEqual` Just small
+    -- an empty url is the tab clearing its icon
+    mergeReported (Just small) (Just "") `shouldEqual` Nothing
+
+  it "tells whether two page urls are on the same site" do
+    sameSite (Just "https://a.example/x") (Just "https://a.example/y?q#f") `shouldEqual` true
+    sameSite (Just "https://a.example/x") (Just "https://b.example/x") `shouldEqual` false
+    sameSite (Just "https://a.example") (Just "https://a.example?x") `shouldEqual` true
+    sameSite (Just "https://a.example/") (Just "about:addons") `shouldEqual` false
+    sameSite Nothing (Just "https://a.example/") `shouldEqual` false
 
   it "keeps only storable bytes of an imported icon" do
     importedIcon (Just small) `shouldEqual` Just small
@@ -105,6 +114,29 @@ spec = describe "Model.Favicon" do
 
     it "a reported url never displaces stored bytes" do
       iconOf (run [ opened 11 (Just small), changed 11 (Just remote) ] emptyModel) `shouldEqual` Just (Just small)
+
+    it "navigating to another site drops the old site's icon" do
+      let
+        nav url = TabChanged { tabId: 11, url: Just url, title: Nothing, favIconUrl: Nothing }
+        live = run [ opened 11 (Just small) ] emptyModel
+      iconOf (run [ nav "http://a/other" ] live) `shouldEqual` Just (Just small)
+      iconOf (run [ nav "https://b.example/" ] live) `shouldEqual` Just Nothing
+      -- the new page's own icon, in the same event, is kept
+      iconOf (run [ TabChanged { tabId: 11, url: Just "https://b.example/", title: Nothing, favIconUrl: Just other } ] live)
+        `shouldEqual` Just (Just other)
+      -- the stale bytes are not protected from the new site's url either
+      iconOf (run [ nav "https://b.example/", changed 11 (Just remote) ] live) `shouldEqual` Just (Just remote)
+
+    it "an event that changes nothing writes nothing" do
+      let live = run [ opened 11 (Just small) ] emptyModel
+      (applyBrowser 0.0 (changed 11 (Just small)) live).patch.upserts `shouldEqual` []
+      Array.length (applyBrowser 0.0 (changed 11 (Just other)) live).patch.upserts `shouldEqual` 1
+
+    it "a stored url is not carried over when its tab is re-found" do
+      let
+        prior = run [ opened 11 (Just remote) ] emptyModel
+        rt = { tabId: 21, windowId: 2, openerTabId: Nothing, index: 0, url: Just "http://a", title: "A", active: true, favIconUrl: Nothing, nodeKey: Just "n2" }
+      iconOf ((rematchOnStartup 1.0 [ { windowId: 2, tabs: [ rt ] } ] prior).model) `shouldEqual` Just Nothing
 
     it "a closed tab keeps its stored bytes" do
       let

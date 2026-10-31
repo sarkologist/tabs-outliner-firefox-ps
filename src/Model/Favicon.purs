@@ -24,14 +24,16 @@ module Model.Favicon
   , isStorableIcon
   , needsShrink
   , mergeReported
+  , storedBytes
+  , sameSite
   , importedIcon
   , reportedIcon
   ) where
 
 import Prelude
 
-import Data.Maybe (Maybe(..), isJust)
-import Data.String (length, stripPrefix) as String
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.String (codePointFromChar, drop, indexOf, length, stripPrefix, takeWhile) as String
 import Data.String.Pattern (Pattern(..))
 import Model.Event (BrowserEvent(..))
 
@@ -64,15 +66,35 @@ needsShrink u = isIconBytes u && String.length u > storedIconByteLimit
 -- | * a pointer (an `https://` url — Firefox reports `data:`, but the API does not
 -- |   promise it) is kept for the live row to draw, but never displaces stored
 -- |   bytes: it would be dropped from view the moment the tab closed.
+-- |
+-- | An empty url is the tab saying it has no icon any more.
 mergeReported :: Maybe String -> Maybe String -> Maybe String
 mergeReported old = case _ of
   Nothing -> old
+  Just "" -> Nothing
   Just u
     | isStorableIcon u -> Just u
     | isIconBytes u -> old
     | otherwise -> case old of
         Just o | isIconBytes o -> old
         _ -> Just u
+
+-- | What a node carries across going live again (a restore, a startup re-find):
+-- | its stored bytes, never a url. A url on a closed node is never drawn, but one
+-- | saved before icons were captured — or claimed by a file imported then — must
+-- | not come back to life the moment its tab reopens, before the tab reports its
+-- | own icon.
+storedBytes :: Maybe String -> Maybe String
+storedBytes icon = icon >>= \u -> if isIconBytes u then Just u else Nothing
+
+-- | Do two page urls share a host? A tab that navigates to another site must not
+-- | keep the old site's icon until (if ever) the new page reports one.
+sameSite :: Maybe String -> Maybe String -> Boolean
+sameSite a b = map host a == map host b
+  where
+  host u = String.takeWhile (\c -> c /= String.codePointFromChar '/' && c /= String.codePointFromChar '?' && c /= String.codePointFromChar '#')
+    (fromMaybe u (afterScheme u))
+  afterScheme u = map (\i -> String.drop (i + 3) u) (String.indexOf (Pattern "://") u)
 
 -- | What an imported node keeps of the icon its file claimed: storable bytes
 -- | only. A claimed url is dropped outright — an imported node is closed, so it
