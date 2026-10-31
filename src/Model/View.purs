@@ -29,8 +29,10 @@ import Data.FoldableWithIndex (foldlWithIndex)
 import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
-import Data.Maybe (Maybe(..), fromMaybe)
-import Data.String as String
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.String (length, stripPrefix, take) as String
+import Data.String.Pattern (Pattern(..))
+import Data.Traversable (mapAccumL)
 import Model.Codec (kindStr, parseKind)
 import Model.Search (matchesSearch, normalizeSearchQuery)
 import Model.Scroll (activeTabInWindow)
@@ -114,7 +116,8 @@ sliceView model query order start count =
     lastRoot = Array.last model.roots
     window = Array.slice s (s + count) order
   in
-    Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model query lastRoot (s + off) oe) window)
+    budgetFavicons
+      (Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model query lastRoot (s + off) oe) window))
 
 -- | Resolve the start row for a view request. A target-centered request wins
 -- | over the caller's scroll start when the target exists in the current order.
@@ -129,17 +132,59 @@ startForView requested count targetNodeId order =
       Just i -> clamp 0 maxStart (centered i)
       Nothing -> clamp 0 maxStart requested
 
--- | A `data:` favicon travels inline in every view window that shows its row, so
--- | one pathological page (icons of hundreds of KB are real) could push a 50-row
--- | reply past what `runtime.sendMessage` will carry — and an over-large *response*
--- | resolves as `undefined` rather than rejecting, which is silent breakage. A 16px
--- | icon has no use for more than this; past it the row falls back to its kind
--- | glyph, keeping a window's worst case ~200 KB.
-faviconByteLimit :: Int
-faviconByteLimit = 4096
+-- Keeping the reply bounded ---------------------------------------------------
+--
+-- Favicons and urls travel inline in every view window, and `data:` favicons are
+-- what make a real tree heavy (4.5 MB of one 13.4 MB tree). The failure they
+-- threaten is not a loud one: an over-large `runtime.sendMessage` *response*
+-- resolves as `undefined` instead of rejecting, so the sidebar would simply stop
+-- painting (the bug Export hit). The window is NOT ~50 rows — the full-size view
+-- at minimum zoom asks for a row per 10.8px, so a tall display can ask for ~200 —
+-- hence a budget over the whole window, not just a per-row test.
 
+-- | Per icon: enough for a multi-resolution `.ico` or an SVG (what Firefox
+-- | actually hands back), past which it is not a 16px image any more.
+faviconByteLimit :: Int
+faviconByteLimit = 16384
+
+-- | Per window, across all its rows: the first rows that fit keep their icon and
+-- | the rest fall back to their kind glyph. Chosen so a window's favicons stay an
+-- | order of magnitude below the ~1.3 MB at which a reply was seen to vanish,
+-- | leaving room for the titles and urls beside them.
+faviconWindowByteBudget :: Int
+faviconWindowByteBudget = 131072
+
+-- | A url is a tooltip here, and no one reads 2 KB of one; capping it keeps a
+-- | tall window's urls bounded too (a share/state url can run to tens of KB).
+urlByteLimit :: Int
+urlByteLimit = 2048
+
+-- | Schemes an `<img>` in the sidebar may be pointed at. An imported tree carries
+-- | whatever `favIconUrl` the file claimed (`Model.PortableImport`), so this is
+-- | the same kind of gate `Model.Command`'s `blockedSchemes` is for urls: nothing
+-- | exotic reaches the DOM, and an `about:`/`chrome:` icon the sidebar could not
+-- | load anyway falls back to the kind glyph instead of a blank slot.
 renderableFavicon :: String -> Maybe String
-renderableFavicon u = if String.length u > faviconByteLimit then Nothing else Just u
+renderableFavicon u
+  | String.length u > faviconByteLimit = Nothing
+  | otherwise =
+      if Array.any (\scheme -> isJust (String.stripPrefix (Pattern scheme) u))
+        [ "https://", "http://", "data:image/", "moz-extension://" ] then Just u
+      else Nothing
+
+clampUrl :: String -> String
+clampUrl u = if String.length u <= urlByteLimit then u else String.take urlByteLimit u <> "\x2026"
+
+-- | Spend `faviconWindowByteBudget` left to right over a projected window: rows
+-- | past it keep everything but their icon.
+budgetFavicons :: Array ViewRow -> Array ViewRow
+budgetFavicons rows = (mapAccumL spend faviconWindowByteBudget rows).value
+  where
+  spend left r = case r.favIconUrl of
+    Just u
+      | String.length u <= left -> { accum: left - String.length u, value: r }
+      | otherwise -> { accum: left, value: r { favIconUrl = Nothing } }
+    Nothing -> { accum: left, value: r }
 
 toRow :: Model -> String -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
 toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
@@ -149,7 +194,7 @@ toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   , subtreeEnd: oe.subtreeEnd
   , kind: n.kind
   , title: displayTitle n
-  , url: n.url
+  , url: clampUrl <$> n.url
   , favIconUrl: n.favIconUrl >>= renderableFavicon
   , live: isLive n
   , active: n.active

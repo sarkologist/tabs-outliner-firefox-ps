@@ -49,24 +49,37 @@ test.describe("sidebar view", () => {
     await expect(page.getByText("Alpha")).toHaveCount(0);
   });
 
+  // a 1x1 transparent PNG: a favicon that really loads, with no network
+  const PNG =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=";
+
+  const iconSeed = {
+    windows: [
+      {
+        id: 1,
+        tabs: [
+          { id: 11, url: "http://a/page", title: "Alpha", active: true, favIconUrl: PNG },
+          { id: 12, url: "http://b/page", title: "Beta" },
+        ],
+      },
+    ],
+  };
+
   test("rows show the page favicon and its url as a tooltip", async ({ page }) => {
-    await bootBackgroundAndSidebar(page, {
-      windows: [
-        {
-          id: 1,
-          tabs: [
-            { id: 11, url: "http://a/page", title: "Alpha", active: true, favIconUrl: "http://a/favicon.ico" },
-            { id: 12, url: "http://b/page", title: "Beta" },
-          ],
-        },
-      ],
-    });
+    await bootBackgroundAndSidebar(page, iconSeed);
     await expect(page.getByText("Alpha")).toBeVisible();
 
     const alpha = page.locator(".row").filter({ hasText: "Alpha" });
-    await expect(alpha.locator(".favicon-img")).toHaveAttribute("src", "http://a/favicon.ico");
+    const img = alpha.locator(".favicon-img");
+    await expect(img).toHaveAttribute("src", PNG);
+    // it is a real image, not just an attribute
+    await expect.poll(() => img.evaluate((e: HTMLImageElement) => e.naturalWidth)).toBeGreaterThan(0);
+    // and it is not itself draggable — grabbing a row by its icon must drag the
+    // row, not start an image drag
+    await expect(img).toHaveAttribute("draggable", "false");
     // the url is the tooltip — the one thing a row has no room to show
     await expect(alpha.locator(".title")).toHaveAttribute("title", "http://a/page");
+    await expect(alpha.locator(".favicon")).toHaveAttribute("title", "http://a/page");
 
     // no favicon reported: the slot keeps its place with a kind glyph
     const beta = page.locator(".row").filter({ hasText: "Beta" });
@@ -78,6 +91,75 @@ test.describe("sidebar view", () => {
     const win = page.locator(".row").filter({ hasText: "Window" });
     await expect(win.locator(".favicon use")).toHaveAttribute("href", "#icon-window");
     await expect(win.locator(".title")).not.toHaveAttribute("title", /./);
+  });
+
+  test("a favicon that fails to load falls back to the kind glyph", async ({ page }) => {
+    // a saved page's icon url rots, and Firefox's upgrade-insecure-requests kills
+    // an http-only one; either way the row must not lose its icon column
+    await page.route("**/favicon.ico", (route) => route.abort());
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [{ id: 11, url: "http://a/page", title: "Alpha", active: true, favIconUrl: "/favicon.ico" }],
+        },
+      ],
+    });
+    const alpha = page.locator(".row").filter({ hasText: "Alpha" });
+    await expect(alpha.locator(".favicon use")).toHaveAttribute("href", "#icon-globe");
+    await expect(alpha.locator(".favicon-img")).toHaveCount(0);
+  });
+
+  test("a saved tab keeps its favicon; a group gets the folder glyph", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, iconSeed);
+    const row = (text: string) => page.locator(".row").filter({ hasText: text });
+    const act = async (text: string, btn: string) => {
+      await row(text).hover();
+      await row(text).locator(btn).click();
+    };
+    // the outliner's own close saves the row as closed history, icon and all —
+    // the privacy-relevant case: its favicon is drawn for a page we are not on
+    await act("Alpha", ".btn-close");
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
+    await expect(row("Alpha").locator(".favicon-img")).toHaveAttribute("src", PNG);
+
+    // a container that is not a live window reads as a folder, not a window
+    await act("Alpha", ".btn-group");
+    const group = page.locator(".row.kind-group");
+    await expect(group).toHaveCount(1);
+    await expect(group.locator(".favicon use")).toHaveAttribute("href", "#icon-folder");
+  });
+
+  // The silent failure this guards: an over-large `runtime.sendMessage` *response*
+  // resolves as `undefined` instead of rejecting (the Export bug — see
+  // export.spec and `messageResponseLimitBytes`). Favicons ride in every view
+  // window, a `data:` one can be 16 KB, and a tall full-size view at minimum zoom
+  // asks for ~200 rows, so without a per-window budget the reply would vanish and
+  // the sidebar would just stop painting.
+  test("a favicon-heavy window still fits in one message", async ({ page }) => {
+    const BIG_ICON = `data:image/png;base64,${"A".repeat(16_000)}`;
+    await bootBackgroundAndSidebar(page, {
+      messageResponseLimitBytes: 256 * 1024,
+      windows: [
+        {
+          id: 1,
+          tabs: Array.from({ length: 120 }, (_, i) => ({
+            id: 200 + i,
+            url: `http://t${i}/page`,
+            title: `Tab ${i}`,
+            active: i === 0,
+            favIconUrl: BIG_ICON,
+          })),
+        },
+      ],
+    });
+    // the window arrived: a viewport's worth of 16 KB icons did not sink the reply
+    await expect(page.locator("[role=treeitem]").first()).toBeVisible();
+    expect(await page.locator("[role=treeitem]").count()).toBeGreaterThan(20);
+    // rows past the budget keep everything but the icon (how many ride is pinned
+    // in ViewSpec; these stand-in icons are not decodable images, so the DOM here
+    // shows the load-failure glyph either way)
+    expect(await page.locator(".favicon use").count()).toBeGreaterThan(0);
   });
 
   test("hovering a row draws subtree guide lines, cleared on leave", async ({ page }) => {
