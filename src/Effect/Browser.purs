@@ -26,6 +26,7 @@ module Effect.Browser
   , backupFilename
   , downloadBackupFile
   , downloadExportFile
+  , shrinkFavicon
   ) where
 
 import Prelude
@@ -36,6 +37,7 @@ import Data.Nullable (Nullable, toMaybe, toNullable)
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Model.Event (BrowserEvent(..))
+import Model.Favicon (storedIconByteLimit)
 import Model.Types (RuntimeWindow)
 
 foreign import data BrowserApi :: Type
@@ -162,6 +164,7 @@ foreign import ensureBackupAlarmImpl :: BrowserApi -> Effect (Promise Unit)
 foreign import clearBackupAlarmImpl :: BrowserApi -> Effect (Promise Unit)
 foreign import onBackupAlarmImpl :: BrowserApi -> Effect Unit -> Effect Unit
 foreign import backupFilename :: Effect String
+foreign import shrinkFaviconImpl :: String -> Int -> Effect (Promise (Nullable String))
 foreign import downloadJsonFileImpl :: BrowserApi -> String -> Nullable Boolean -> String -> Effect (Promise Unit)
 
 -- | Activate a tab and focus its window (the FFI resolves the window from the tab).
@@ -245,3 +248,8 @@ downloadBackupFile api filename content =
 downloadExportFile :: BrowserApi -> String -> Aff Unit
 downloadExportFile api content =
   toAffE (downloadJsonFileImpl api exportFilename (toNullable Nothing) content)
+
+-- | A favicon's `data:` bytes re-encoded small enough to keep on a node (see
+-- | `Model.Favicon`), or Nothing when that is not possible.
+shrinkFavicon :: String -> Aff (Maybe String)
+shrinkFavicon src = toMaybe <$> toAffE (shrinkFaviconImpl src storedIconByteLimit)

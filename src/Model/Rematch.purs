@@ -24,6 +24,7 @@ import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Set (Set)
 import Data.Set as Set
 import Data.Tuple (Tuple(..), fst, snd)
+import Model.Favicon (mergeReported)
 import Model.Tree (insertAtClamped, liveInsertSlot, owningGroupAncestor)
 import Model.Types (Kind(..), Model, Node, NodeId, RuntimeTab, RuntimeWindow, defaultNode, isLiveTab)
 
@@ -292,7 +293,7 @@ matchTab now winId acc ct = case sessionMatch of
     { tabId = Just ct.tabId
     , title = ct.title
     , url = ct.url
-    , favIconUrl = ct.favIconUrl
+    , favIconUrl = mergeReported n.favIconUrl ct.favIconUrl
     , active = ct.active
     , closedAt = Nothing
     }
@@ -304,7 +305,7 @@ freshTab now winId acc ct =
     slot = liveInsertSlot model winId Nothing ct.index
     nid = mkId acc.nextId
     n = (defaultNode nid KTab now)
-      { title = ct.title, url = ct.url, favIconUrl = ct.favIconUrl, active = ct.active, tabId = Just ct.tabId, parent = Just slot.parent }
+      { title = ct.title, url = ct.url, favIconUrl = mergeReported Nothing ct.favIconUrl, active = ct.active, tabId = Just ct.tabId, parent = Just slot.parent }
     parent = Map.lookup slot.parent acc.nodes
     nodes' = case parent of
       Just p -> Map.insert slot.parent (p { children = insertAtClamped slot.index nid p.children }) (Map.insert nid n acc.nodes)

@@ -13,6 +13,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
+import Model.Favicon (mergeReported)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveInsertSlot, liveTabNode, liveWindowNode, mergePatch, ownedLiveTabPreorder, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, Step, defaultNode, emptyPatch, isLive)
 
@@ -116,7 +117,7 @@ applyBrowser now ev model = case ev of
       n' = n
         { title = fromMaybe n.title c.title
         , url = orElse n.url c.url
-        , favIconUrl = orElse n.favIconUrl c.favIconUrl
+        , favIconUrl = mergeReported n.favIconUrl c.favIconUrl
         }
     in
       commit model.nextId { upserts: [ n' ], removes: [], roots: Nothing } model
@@ -282,7 +283,7 @@ openFresh now t model =
     tabNode = (defaultNode tabNodeId KTab now)
       { title = t.title
       , url = t.url
-      , favIconUrl = t.favIconUrl
+      , favIconUrl = mergeReported Nothing t.favIconUrl
       , active = t.active
       , tabId = Just t.tabId
       , parent = Just rw.winId
@@ -312,7 +313,7 @@ rebindRestored _ t _ n model =
       , active = t.active
       , title = t.title
       , url = t.url
-      , favIconUrl = t.favIconUrl
+      , favIconUrl = mergeReported n.favIconUrl t.favIconUrl
       , closedAt = Nothing
       }
     patch = { upserts: [ n' ], removes: [], roots: Nothing }

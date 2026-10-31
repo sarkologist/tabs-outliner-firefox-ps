@@ -14,11 +14,18 @@ the build recipe; the source itself ships as `grove-source.zip`
 
 A Firefox sidebar extension that keeps a durable, editable outline of your live
 and saved tabs/windows, stored locally in IndexedDB. No analytics, no remote
-code, no server of its own: the only network requests are the row favicons the
-sidebar renders, which the browser fetches from each page's own host (the
-`favIconUrl` the `tabs` API reports, loaded with `referrerpolicy="no-referrer"`).
+code, no server of its own, and no network request made by the add-on itself.
 Nothing is sent to the developer or to any third party, hence
 `data_collection_permissions.required = ["none"]`.
+
+Row favicons: a saved (closed) row draws its icon only from bytes stored in the
+outline — the `data:` URL the `tabs` API reported while that tab was open,
+downscaled on a canvas when large — or a built-in glyph, so browsing saved tabs
+never contacts their sites; an imported file's icon URLs are discarded on
+import. An open tab's row shows the `favIconUrl` that tab reports. Firefox
+currently reports it as a `data:` URL (no request); if it is ever an `http(s)`
+URL, the browser loads that image, with `referrerpolicy="no-referrer"`, from the
+host of the page that tab already has open.
 
 ## Build environment (pinned)
 
@@ -83,8 +90,9 @@ Static assets (`manifest.json`, the HTML/CSS, icons) are copied verbatim from
 | `downloads` | Write the automatic daily backup file, and the manual JSON export. Both are written from the background page, because the whole-tree payload is too large to hand to the sidebar over `runtime.sendMessage`. |
 
 No host permissions, no content scripts, no remote code execution. Favicons are
-rendered as plain `<img>` elements pointed at the `favIconUrl` the `tabs` API
-reports; they need no host permission and no `fetch`.
+rendered as plain `<img>` elements; the add-on never `fetch`es one. Downscaling
+draws the `data:` URL the `tabs` API reported onto a canvas in the background
+page, which needs no host permission (a `data:` image does not taint it).
 
 ---
 
@@ -101,6 +109,9 @@ reports; they need no host permission and no `fetch`.
 > The resulting `dist/` is the extension. Entry points: src/Background/Main.purs
 > → dist/background/background.js, src/Sidebar/Main.purs → dist/sidebar/sidebar.js,
 > src/Options/Main.purs → dist/options/options.js. Everything runs locally in the
-> browser (IndexedDB) and the add-on collects no data. Its only network traffic
-> is favicon images, loaded by the browser from each page's own host to draw the
-> rows; nothing is sent anywhere else.
+> browser (IndexedDB); the add-on makes no network requests of its own and
+> collects no data. Saved rows draw their favicons from bytes stored locally
+> (captured from the `data:` favIconUrl the tabs API reports while the tab is
+> open). An open tab's row shows the favIconUrl that tab reports — a `data:` URL
+> in current Firefox; should it be an http(s) URL, the browser loads it from the
+> host of the page that tab has open. Nothing is sent anywhere else.

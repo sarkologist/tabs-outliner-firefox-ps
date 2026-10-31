@@ -23,6 +23,7 @@ import Data.String (Pattern(..), stripPrefix)
 import Data.String.Common (toLower)
 import Data.Tuple (Tuple(..))
 import Model.Codec (Snapshot, decodeSnapshot, encodeSnapshotData)
+import Model.Favicon (importedIcon)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveTabCountInWindow, liveWindowNode, mergePatch, ownedTabPreorder, owningGroupAncestor, pruneFrom, rootAncestor, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, defaultNode, emptyPatch, isLiveTab)
 
@@ -205,7 +206,8 @@ applyCommandRaw now cmd model = case cmd of
       -- imported nodes are inert history: every browser binding is dropped, so
       -- tabs/windows become restorable and containers plain saved groups, and
       -- references outside the imported set are dropped (never aliased onto live
-      -- nodes).
+      -- nodes). The file's claimed favicons keep only their stored bytes: a url
+      -- is the importer's, not ours to fetch (`Model.Favicon`).
       remapNode n = n
         { id = fromMaybe n.id (remap n.id)
         , parent = n.parent >>= remap
@@ -213,6 +215,7 @@ applyCommandRaw now cmd model = case cmd of
         , tabId = Nothing
         , windowId = Nothing
         , active = false
+        , favIconUrl = importedIcon n.favIconUrl
         }
       remapped = map remapNode snap.nodes
       patch = { upserts: remapped, removes: [], roots: Just (model.roots <> Array.mapMaybe remap snap.roots) }
