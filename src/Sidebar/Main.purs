@@ -791,7 +791,7 @@ renderRow query dragging cut showInTreeFlash editing guide wi rowH r =
     , HE.onDrop \_ -> DropOn r.id
     , HE.onDragEnd \_ -> DragEnd
     ]
-    [ toggleEl r, body query editing r, actionsEl query cut r, guideLayer guide wi ]
+    [ toggleEl r, faviconEl r, body query editing r, actionsEl query cut r, guideLayer guide wi ]
 
 rowClasses :: Boolean -> Maybe Cut -> Maybe NodeId -> ViewRow -> Array String
 rowClasses dragging cut showInTreeFlash r =
@@ -812,7 +812,40 @@ body query editing r = case editing of
       , HE.onBlur \_ -> CommitRename
       ]
   _ ->
-    HH.span [ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow r.id ] (titleContent query r)
+    HH.span
+      ([ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow r.id ] <> urlTooltip r)
+      (titleContent query r)
+
+-- | The row's url, as a native tooltip. A title is often a truncated fragment of
+-- | prose; the url is how the user tells two same-titled rows apart, and it is the
+-- | one thing the row has no room to show. Containers carry no url, hence no tip.
+urlTooltip :: forall r i. { url :: Maybe String | r } -> Array (HP.IProp (title :: String | i) Action)
+urlTooltip r = maybe [] (\u -> [ HP.title u ]) r.url
+
+-- | The 16px slot left of the label: the page's own favicon when we have one,
+-- | otherwise a glyph for the row's kind, so the column never goes ragged. The
+-- | icon is scenery, so it clicks through to the row (`alt=""`, no tab stop) and
+-- | sends no referrer when the url is remote.
+faviconEl :: ViewRow -> H.ComponentHTML Action () Aff
+faviconEl r =
+  HH.span
+    ([ HP.class_ (ClassName "favicon"), HE.onClick \_ -> ClickRow r.id ] <> urlTooltip r)
+    [ case r.favIconUrl of
+        Just u ->
+          HH.img
+            [ HP.class_ (ClassName "favicon-img")
+            , HP.src u
+            , HP.alt ""
+            , HP.attr (AttrName "referrerpolicy") "no-referrer"
+            , HP.attr (AttrName "loading") "lazy"
+            ]
+        Nothing -> iconWith [ "button-icon", "favicon-fallback" ] (kindGlyph r)
+    ]
+
+kindGlyph :: ViewRow -> String
+kindGlyph r = case r.kind of
+  KTab -> "globe"
+  KGroup -> if r.live then "window" else "folder"
 
 titleContent :: String -> ViewRow -> Array (H.ComponentHTML Action () Aff)
 titleContent query r =

@@ -7,6 +7,7 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.String.Common as String
 import Data.Tuple (Tuple(..))
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
 import Model.View (computeOrder, decodeView, encodeView, focusIndexOf, sliceView, startForView, viewStats)
@@ -31,6 +32,22 @@ m = emptyModel
   , byWindow = Map.fromFoldable [ Tuple 1 "W" ]
   , byTab = Map.fromFoldable [ Tuple 11 "A" ]
   }
+
+-- the same shape, with a page url + favicon on A and an absurdly large `data:`
+-- favicon on B (the kind that must not ride along in every view window)
+mIcons :: Model
+mIcons = m
+  { nodes = Map.union
+      ( Map.fromFoldable $ map (\n -> Tuple n.id n)
+          [ (node "A" KTab (Just "W") []) { tabId = Just 11, active = true, title = "A", url = Just "http://a/page", favIconUrl = Just "http://a/favicon.ico" }
+          , (node "B" KTab (Just "W") []) { title = "B", url = Just "http://b/page", favIconUrl = Just hugeFavicon }
+          ]
+      )
+      m.nodes
+  }
+
+hugeFavicon :: String
+hugeFavicon = "data:image/png;base64," <> String.joinWith "" (Array.replicate 5000 "A")
 
 spec :: Spec Unit
 spec = describe "Model.View" do
@@ -80,6 +97,36 @@ spec = describe "Model.View" do
           , byTab = Map.fromFoldable [ Tuple 11 "A", Tuple 12 "missing" ]
           }
     viewStats "" stale `shouldEqual` { nodeTotal: 5, openTabTotal: 0, matchTotal: 0 }
+
+  it "projects each row's url and favicon" do
+    let rows = sliceView mIcons "" (computeOrder "" mIcons) 1 1
+    map _.url rows `shouldEqual` [ Just "http://a/page" ]
+    map _.favIconUrl rows `shouldEqual` [ Just "http://a/favicon.ico" ]
+
+  it "drops a favicon too large to ride in every view window" do
+    -- the url still travels (it is small, and it is the row's tooltip); the row
+    -- falls back to its kind glyph instead of carrying ~5 KB of base64
+    let rows = sliceView mIcons "" (computeOrder "" mIcons) 2 1
+    map _.url rows `shouldEqual` [ Just "http://b/page" ]
+    map _.favIconUrl rows `shouldEqual` [ Nothing ]
+
+  it "round-trips a row's url and favicon on the wire" do
+    let
+      rows = sliceView mIcons "" (computeOrder "" mIcons) 1 1
+      view = { total: 5, rows, focusIndex: 1, serverMs: 0.0, nodeTotal: 5, openTabTotal: 1, matchTotal: 0 }
+    case decodeView (encodeView view) of
+      Right decoded ->
+        map (\r -> Tuple r.url r.favIconUrl) decoded.rows
+          `shouldEqual` [ Tuple (Just "http://a/page") (Just "http://a/favicon.ico") ]
+      Left err -> fail err
+
+  it "decodes a cached row saved before rows carried a url or favicon" do
+    let
+      json = """{"total":1,"focusIndex":-1,"serverMs":0,"rows":[{"id":"A","index":0,"depth":0,"subtreeEnd":1,"kind":"tab","title":"A","live":false,"active":false,"collapsed":false,"hasChildren":false,"isLastRoot":true}]}"""
+    case jsonParser json >>= decodeView of
+      Right decoded ->
+        map (\r -> Tuple r.url r.favIconUrl) decoded.rows `shouldEqual` [ Tuple Nothing Nothing ]
+      Left err -> fail err
 
   it "round-trips view stats on the wire" do
     let

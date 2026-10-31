@@ -49,6 +49,37 @@ test.describe("sidebar view", () => {
     await expect(page.getByText("Alpha")).toHaveCount(0);
   });
 
+  test("rows show the page favicon and its url as a tooltip", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a/page", title: "Alpha", active: true, favIconUrl: "http://a/favicon.ico" },
+            { id: 12, url: "http://b/page", title: "Beta" },
+          ],
+        },
+      ],
+    });
+    await expect(page.getByText("Alpha")).toBeVisible();
+
+    const alpha = page.locator(".row").filter({ hasText: "Alpha" });
+    await expect(alpha.locator(".favicon-img")).toHaveAttribute("src", "http://a/favicon.ico");
+    // the url is the tooltip — the one thing a row has no room to show
+    await expect(alpha.locator(".title")).toHaveAttribute("title", "http://a/page");
+
+    // no favicon reported: the slot keeps its place with a kind glyph
+    const beta = page.locator(".row").filter({ hasText: "Beta" });
+    await expect(beta.locator(".favicon-img")).toHaveCount(0);
+    await expect(beta.locator(".favicon use")).toHaveAttribute("href", "#icon-globe");
+    await expect(beta.locator(".title")).toHaveAttribute("title", "http://b/page");
+
+    // a live window is a container: window glyph, and no url to show
+    const win = page.locator(".row").filter({ hasText: "Window" });
+    await expect(win.locator(".favicon use")).toHaveAttribute("href", "#icon-window");
+    await expect(win.locator(".title")).not.toHaveAttribute("title", /./);
+  });
+
   test("hovering a row draws subtree guide lines, cleared on leave", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await expect(page.getByText("Alpha")).toBeVisible();

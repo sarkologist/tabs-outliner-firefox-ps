@@ -16,8 +16,10 @@
 // ceiling well below the snapshot, the pre-fix code cannot pass.
 //
 // The asymmetry that makes this the right shape: a GetView reply is bounded by the
-// viewport (~50 rows, and ViewRow carries no url or favicon), so the view protocol
-// is unaffected by tree size. Only the export payload ever scaled with it.
+// viewport (~50 rows; a row carries its url and, unless it is implausibly large
+// for a 16px icon, its favicon — see `faviconByteLimit`), so the view protocol is
+// bounded by the window, not by tree size. Only the export payload ever scaled
+// with it.
 
 import { test, expect, type Page } from "@playwright/test";
 import { installFakeBrowser } from "./support/fake-browser";

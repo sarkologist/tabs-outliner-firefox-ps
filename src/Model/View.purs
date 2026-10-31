@@ -30,6 +30,7 @@ import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.String as String
 import Model.Codec (kindStr, parseKind)
 import Model.Search (matchesSearch, normalizeSearchQuery)
 import Model.Scroll (activeTabInWindow)
@@ -49,6 +50,8 @@ type ViewRow =
   , subtreeEnd :: Int
   , kind :: Kind
   , title :: String
+  , url :: Maybe String
+  , favIconUrl :: Maybe String
   , live :: Boolean
   , active :: Boolean
   , collapsed :: Boolean
@@ -126,6 +129,18 @@ startForView requested count targetNodeId order =
       Just i -> clamp 0 maxStart (centered i)
       Nothing -> clamp 0 maxStart requested
 
+-- | A `data:` favicon travels inline in every view window that shows its row, so
+-- | one pathological page (icons of hundreds of KB are real) could push a 50-row
+-- | reply past what `runtime.sendMessage` will carry — and an over-large *response*
+-- | resolves as `undefined` rather than rejecting, which is silent breakage. A 16px
+-- | icon has no use for more than this; past it the row falls back to its kind
+-- | glyph, keeping a window's worst case ~200 KB.
+faviconByteLimit :: Int
+faviconByteLimit = 4096
+
+renderableFavicon :: String -> Maybe String
+renderableFavicon u = if String.length u > faviconByteLimit then Nothing else Just u
+
 toRow :: Model -> String -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
 toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   { id: n.id
@@ -134,6 +149,8 @@ toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   , subtreeEnd: oe.subtreeEnd
   , kind: n.kind
   , title: displayTitle n
+  , url: n.url
+  , favIconUrl: n.favIconUrl >>= renderableFavicon
   , live: isLive n
   , active: n.active
   , collapsed: n.collapsed
@@ -178,6 +195,8 @@ type RowWire =
   , subtreeEnd :: Int
   , kind :: String
   , title :: String
+  , url :: Maybe String
+  , favIconUrl :: Maybe String
   , live :: Boolean
   , active :: Boolean
   , collapsed :: Boolean
@@ -189,14 +208,14 @@ type RowWire =
 rowToWire :: ViewRow -> RowWire
 rowToWire r =
   { id: r.id, index: r.index, depth: r.depth, subtreeEnd: r.subtreeEnd, kind: kindStr r.kind
-  , title: r.title, live: r.live, active: r.active, collapsed: r.collapsed
+  , title: r.title, url: r.url, favIconUrl: r.favIconUrl, live: r.live, active: r.active, collapsed: r.collapsed
   , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot, isSearchMatch: if r.isSearchMatch then Just true else Nothing
   }
 
 rowFromWire :: RowWire -> ViewRow
 rowFromWire r =
   { id: r.id, index: r.index, depth: r.depth, subtreeEnd: r.subtreeEnd, kind: parseKind r.kind
-  , title: r.title, live: r.live, active: r.active, collapsed: r.collapsed
+  , title: r.title, url: r.url, favIconUrl: r.favIconUrl, live: r.live, active: r.active, collapsed: r.collapsed
   , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot, isSearchMatch: r.isSearchMatch == Just true
   }
 
