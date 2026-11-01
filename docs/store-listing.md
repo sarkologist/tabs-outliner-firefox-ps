@@ -114,7 +114,7 @@ Paste into the upload's "Release notes" field.
 ### 1.1.0
 
 - Rows show each site's favicon, and hovering a row shows its url.
-- Saved (closed) rows draw their icon from bytes stored locally, so browsing your outline never contacts the sites in it.
+- Saved (closed) rows draw their icon from bytes stored locally, so browsing your outline never contacts the sites in it. Rows saved before this version get their icon the next time their tab is open.
 - Fixed: Export could write a file containing only "undefined" on a large tree.
-- Fixed: one url Firefox refuses to open no longer stops a whole window from restoring, and a restore that can't proceed now says so.
+- Fixed: one url Firefox refuses to open no longer stops a whole window from restoring, and a restore blocked by such urls now says why.
 - Polished the toolbar icon.
