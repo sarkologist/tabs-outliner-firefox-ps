@@ -80,13 +80,19 @@ manifest), so no privacy policy should be required — but confirm this in the
 - **Support site / email:** repo Issues, or a support email you monitor.
 - **License:** MPL-2.0 — the `LICENSE` file is in the repo root. Select "Mozilla Public License 2.0" in the AMO submission form to match.
 
-## Screenshots to capture (at least 1, ideally 4–5; PNG, ~1280×800)
+## Screenshots
 
-1. The sidebar showing a rich nested tree — live tabs plus greyed-out restorable history.
-2. Search with matches highlighted inside a collapsed group.
-3. A drag-reorder in progress showing the drop-preview guide line.
-4. The options page (configurable keyboard shortcuts).
-5. Undo/redo or JSON export in action.
+`pnpm screenshots` renders the sidebar shots into `docs/screenshots/` from a
+curated demo outline (`screenshots/demo-tree.ts`: well-known sites, no personal
+data), in Playwright's Firefox. Where that Firefox can't launch, use
+`pnpm screenshots:chromium` (same shots; the accent colour and font rendering
+differ slightly). Re-run it whenever the sidebar's look changes. Captions, as on
+the listing:
+
+1. `1-outline.png` — Keep as many tabs as you like. Close them to reclaim memory — nothing is lost, and your tree survives every restart.
+2. `2-drag.png` — Reorganize by dragging, with a live drop preview; hover any row for quick actions — group, rename, cut, delete.
+3. `3-search.png` — Find anything in seconds — search across thousands of tabs, including matches tucked inside collapsed groups.
+4. Options page (captured by hand) — Make it yours — fully remappable keyboard shortcuts and automatic daily backups.
 
 ## Before you upload
 

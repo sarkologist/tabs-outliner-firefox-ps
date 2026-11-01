@@ -15,6 +15,8 @@
     "test": "spago test",
     "test:e2e": "playwright test",
     "lint:ext": "web-ext lint --source-dir dist --no-config-discovery",
+    "screenshots": "pnpm run build && playwright test -c playwright.screenshots.config.ts --project firefox",
+    "screenshots:chromium": "pnpm run build && playwright test -c playwright.screenshots.config.ts --project chromium",
     "check": "node scripts/clean.mjs && spago test && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs && web-ext lint --source-dir dist --no-config-discovery && playwright test"
   },
   "devDependencies": {

@@ -1,0 +1,5 @@
+# Listing screenshots and their fixtures are not source: keep them out of the
+# AMO source zip (`git archive`, see scripts/package-source.mjs).
+/screenshots export-ignore
+/docs/screenshots export-ignore
+/playwright.screenshots.config.ts export-ignore
