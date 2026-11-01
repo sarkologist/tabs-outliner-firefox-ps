@@ -1,5 +1,65 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page, type Request } from "@playwright/test";
+import { crc32, deflateSync } from "node:zlib";
 import { bootBackgroundAndSidebar, fake, readNodes } from "./support/harness";
+
+// A real, decodable `size`x`size` PNG of random pixels, as a `data:` url: noise
+// does not compress, so even a modest size is far past what a node may keep.
+function noisePng(size: number): string {
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([head, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr.set([8, 6, 0, 0, 0], 8); // 8-bit RGBA
+  const raw = Buffer.alloc(size * (size * 4 + 1));
+  for (let y = 0; y < size; y++) {
+    const row = y * (size * 4 + 1);
+    for (let i = 1; i <= size * 4; i++) raw[row + i] = Math.floor(Math.random() * 256);
+    raw[row + 4 * size] = 255; // keep the last pixel opaque, so it is not blank
+  }
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+  return `data:image/png;base64,${png.toString("base64")}`;
+}
+
+// Every network request the page makes from now on (a `data:` image makes none).
+function recordRequests(page: Page): Request[] {
+  const seen: Request[] = [];
+  page.on("request", (r) => {
+    if (!r.url().startsWith("data:")) seen.push(r);
+  });
+  return seen;
+}
+
+// a node record in the shape `Model.Codec` persists
+const record = (over: Record<string, unknown>) => ({
+  id: "",
+  kind: "tab",
+  parent: null,
+  children: [],
+  title: "",
+  customTitle: null,
+  url: null,
+  favIconUrl: null,
+  active: false,
+  collapsed: false,
+  createdAt: 0,
+  closedAt: null,
+  tabId: null,
+  windowId: null,
+  sessionId: null,
+  ...over,
+});
 
 const seed = {
   windows: [
@@ -133,26 +193,25 @@ test.describe("sidebar view", () => {
   // The silent failure this guards: an over-large `runtime.sendMessage` *response*
   // resolves as `undefined` instead of rejecting (the Export bug — see
   // export.spec and `messageResponseLimitBytes`). Favicons ride in every view
-  // window, a `data:` one can be 16 KB, and a tall full-size view at minimum zoom
-  // asks for ~200 rows, so without a per-window budget the reply would vanish and
-  // the sidebar would just stop painting.
+  // window, and a tall full-size view at minimum zoom asks for ~200 rows, so
+  // without a per-window budget the reply would vanish and the sidebar would just
+  // stop painting. Icons captured now are capped at 4 KB, but a tree saved before
+  // that keeps its icons as they were — up to 16 KB each, on closed rows.
   test("a favicon-heavy window still fits in one message", async ({ page }) => {
     const BIG_ICON = `data:image/png;base64,${"A".repeat(16_000)}`;
-    await bootBackgroundAndSidebar(page, {
-      messageResponseLimitBytes: 256 * 1024,
-      windows: [
-        {
-          id: 1,
-          tabs: Array.from({ length: 120 }, (_, i) => ({
-            id: 200 + i,
-            url: `http://t${i}/page`,
-            title: `Tab ${i}`,
-            active: i === 0,
-            favIconUrl: BIG_ICON,
-          })),
+    const tabs = Array.from({ length: 120 }, (_, i) =>
+      record({ id: `t${i}`, parent: "g", title: `Tab ${i}`, url: `http://t${i}/page`, favIconUrl: BIG_ICON, closedAt: 0 })
+    );
+    await bootBackgroundAndSidebar(
+      page,
+      { messageResponseLimitBytes: 256 * 1024, windows: [] },
+      {
+        persisted: {
+          nodes: [record({ id: "g", kind: "group", title: "Saved", children: tabs.map((t) => t.id) }), ...tabs],
+          roots: ["g"],
         },
-      ],
-    });
+      }
+    );
     // the window arrived: a viewport's worth of 16 KB icons did not sink the reply
     await expect(page.locator("[role=treeitem]").first()).toBeVisible();
     expect(await page.locator("[role=treeitem]").count()).toBeGreaterThan(20);
@@ -160,6 +219,165 @@ test.describe("sidebar view", () => {
     // in ViewSpec; these stand-in icons are not decodable images, so the DOM here
     // shows the load-failure glyph either way)
     expect(await page.locator(".favicon use").count()).toBeGreaterThan(0);
+  });
+
+  // Stored icons ---------------------------------------------------------------
+  // A closed row is a page the user is not on: drawing it must not talk to that
+  // site. It draws the bytes captured while the tab was live, or a glyph.
+
+  test("a closed row draws its stored icon without a network request", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, iconSeed);
+    const alpha = page.locator(".row").filter({ hasText: "Alpha" });
+    await expect(alpha.locator(".favicon-img")).toHaveAttribute("src", PNG);
+    const requests = recordRequests(page);
+    await alpha.hover();
+    await alpha.locator(".btn-close").click();
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
+    const img = page.locator('.row[data-status="closed"] .favicon-img');
+    await expect(img).toHaveAttribute("src", PNG);
+    await expect.poll(() => img.evaluate((e: HTMLImageElement) => e.naturalWidth)).toBeGreaterThan(0);
+    // and it stays that way across a re-render
+    await fake(page, "openTab", { id: 13, windowId: 1, url: "http://c", title: "Gamma" });
+    await expect(page.getByText("Gamma")).toBeVisible();
+    await expect(img).toHaveAttribute("src", PNG);
+    expect(requests.map((r) => r.url())).toEqual([]);
+  });
+
+  test("a closed row never fetches the icon url its live tab reported", async ({ page }) => {
+    let hits = 0;
+    await page.route("https://icons.example/**", (route) => {
+      hits++;
+      return route.fulfill({ contentType: "image/png", body: Buffer.from(PNG.split(",")[1], "base64") });
+    });
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a/page", title: "Alpha", active: true, favIconUrl: "https://icons.example/alpha.png" },
+            { id: 12, url: "http://b/page", title: "Beta" },
+          ],
+        },
+      ],
+    });
+    const alpha = page.locator(".row").filter({ hasText: "Alpha" });
+    // live: the tab is already talking to that host, so its row may point there
+    // (and this is how the test sees a request at all)
+    await expect.poll(() => alpha.locator(".favicon-img").evaluate((e: HTMLImageElement) => e.naturalWidth)).toBeGreaterThan(0);
+    expect(hits).toBeGreaterThan(0);
+    const before = hits;
+    await alpha.hover();
+    await alpha.locator(".btn-close").click();
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(1);
+    // closed, with no stored bytes: the kind glyph, not the url
+    const closed = page.locator('.row[data-status="closed"]');
+    await expect(closed.locator(".favicon-img")).toHaveCount(0);
+    await expect(closed.locator(".favicon use")).toHaveAttribute("href", "#icon-globe");
+    await fake(page, "openTab", { id: 13, windowId: 1, url: "http://c", title: "Gamma" });
+    await expect(page.getByText("Gamma")).toBeVisible();
+    expect(hits).toBe(before);
+  });
+
+  test("an imported tree's claimed icon urls are never fetched", async ({ page }) => {
+    // a crafted export: a unique url per node at one host, so scrolling past a
+    // row would tell that host the row was seen
+    const beacon: string[] = [];
+    await page.route("https://beacon.example/**", (route) => {
+      beacon.push(route.request().url());
+      return route.abort();
+    });
+    await bootBackgroundAndSidebar(page, seed);
+    await expect(page.getByText("Alpha")).toBeVisible();
+    const snapshot = JSON.stringify({
+      nodes: [
+        record({ id: "g1", kind: "group", children: ["t1", "t2"], title: "Crafted", favIconUrl: "https://beacon.example/g1.png" }),
+        record({ id: "t1", parent: "g1", title: "Tracked", url: "http://t1", favIconUrl: "https://beacon.example/t1.png" }),
+        record({ id: "t2", parent: "g1", title: "WithBytes", url: "http://t2", favIconUrl: PNG }),
+      ],
+      roots: ["g1"],
+    });
+    page.on("filechooser", (fc) =>
+      fc.setFiles({ name: "outline.json", mimeType: "application/json", buffer: Buffer.from(snapshot) })
+    );
+    await page.locator("#import").click();
+    await expect(page.getByText("Tracked")).toBeVisible();
+    // imported bytes are drawn; an imported url is not even kept
+    await expect(page.locator(".row").filter({ hasText: "WithBytes" }).locator(".favicon-img")).toHaveAttribute("src", PNG);
+    const tracked = page.locator(".row").filter({ hasText: "Tracked" });
+    await expect(tracked.locator(".favicon-img")).toHaveCount(0);
+    await expect(tracked.locator(".favicon use")).toHaveAttribute("href", "#icon-globe");
+    const nodes = await readNodes(page);
+    expect(nodes.find((n) => n.title === "Tracked").favIconUrl).toBeNull();
+    expect(nodes.find((n) => n.title === "Crafted").favIconUrl).toBeNull();
+    expect(beacon).toEqual([]);
+  });
+
+  test("a url stored by an older version is not drawn when its tab is reopened", async ({ page }) => {
+    // a tree saved (or imported) before icons were captured as bytes still
+    // carries urls; reopening the tab must not hand one to an <img> before the
+    // tab reports its own icon
+    const legacy: string[] = [];
+    await page.route("https://legacy.example/**", (route) => {
+      legacy.push(route.request().url());
+      return route.abort();
+    });
+    await bootBackgroundAndSidebar(page, seed, {
+      persisted: {
+        nodes: [
+          record({ id: "g", kind: "group", title: "Saved", children: ["t"], favIconUrl: "https://legacy.example/g.png" }),
+          record({ id: "t", parent: "g", title: "Old", url: "http://old/page", favIconUrl: "https://legacy.example/t.png", closedAt: 0 }),
+        ],
+        roots: ["g"],
+      },
+    });
+    const old = page.locator(".row").filter({ hasText: "Old" });
+    await expect(old.locator(".favicon use")).toHaveAttribute("href", "#icon-globe");
+    // restore it: the group becomes a live window, the tab a live tab
+    await old.locator(".title").click();
+    await expect(page.locator('.row[data-status="closed"]')).toHaveCount(0);
+    await expect(old.locator(".favicon-img")).toHaveCount(0);
+    await expect(page.locator(".row").filter({ hasText: "Saved" }).locator(".favicon-img")).toHaveCount(0);
+    const nodes = await readNodes(page);
+    expect(nodes.find((n) => n.id === "t").favIconUrl).toBeNull();
+    expect(legacy).toEqual([]);
+  });
+
+  test("an oversized live icon is stored shrunk, and its closed row draws it", async ({ page }) => {
+    // a 64px icon of noise is ~22 KB as a `data:` url — too big to keep on a node
+    const BIG = noisePng(64);
+    expect(BIG.length).toBeGreaterThan(16_384);
+    const storedIcon = async (title: string) =>
+      (await readNodes(page)).find((n) => n.title === title)?.favIconUrl ?? null;
+    // one tab open at boot (the backfill path), one reported later (a live event)
+    await bootBackgroundAndSidebar(page, {
+      windows: [
+        {
+          id: 1,
+          tabs: [
+            { id: 11, url: "http://a/page", title: "Alpha", active: true, favIconUrl: BIG },
+            { id: 12, url: "http://b/page", title: "Beta" },
+          ],
+        },
+      ],
+    });
+    await expect(page.getByText("Beta")).toBeVisible();
+    await fake(page, "updateTab", 12, { favIconUrl: BIG });
+    for (const title of ["Alpha", "Beta"]) {
+      await expect.poll(() => storedIcon(title)).toMatch(/^data:image\/png;base64,/);
+      const stored = (await storedIcon(title)) as string;
+      expect(stored.length).toBeLessThanOrEqual(4096);
+    }
+    const requests = recordRequests(page);
+    const alpha = page.locator(".row").filter({ hasText: "Alpha" });
+    await alpha.hover();
+    await alpha.locator(".btn-close").click();
+    const img = page.locator('.row[data-status="closed"] .favicon-img');
+    await expect(img).toHaveAttribute("src", (await storedIcon("Alpha")) as string);
+    // a real image, downscaled (never past the 32px a HiDPI slot needs)
+    const width = await img.evaluate(async (e: HTMLImageElement) => (await e.decode(), e.naturalWidth));
+    expect(width).toBeGreaterThan(0);
+    expect(width).toBeLessThanOrEqual(32);
+    expect(requests.map((r) => r.url())).toEqual([]);
   });
 
   test("hovering a row draws subtree guide lines, cleared on leave", async ({ page }) => {

@@ -53,6 +53,18 @@ favicon n = prefix <> String.joinWith "" (Array.replicate (n - String.length pre
   where
   prefix = "data:image/png;base64,"
 
+-- the projected favicon of row A (index 1), given its icon and its binding
+faviconOfRow :: String -> (Node -> Node) -> Array (Maybe String)
+faviconOfRow url bind =
+  map _.favIconUrl
+    ( sliceView
+        (m { nodes = Map.insert "A" (bind ((node "A" KTab (Just "W") []) { title = "A", favIconUrl = Just url })) m.nodes })
+        ""
+        (computeOrder "" m)
+        1
+        1
+    )
+
 hugeFavicon :: String
 hugeFavicon = favicon 16385
 
@@ -143,21 +155,40 @@ spec = describe "Model.View" do
 
   it "renders only favicon schemes an <img> may be pointed at" do
     let
-      faviconOf url =
-        map _.favIconUrl
-          ( sliceView
-              (m { nodes = Map.insert "A" ((node "A" KTab (Just "W") []) { title = "A", favIconUrl = Just url }) m.nodes })
-              ""
-              (computeOrder "" m)
-              1
-              1
-          )
-    -- an imported tree carries whatever favIconUrl the file claimed
+      -- A is the live tab (tab 11)
+      faviconOf url = faviconOfRow url (\n -> n { tabId = Just 11 })
     faviconOf "https://a/i.png" `shouldEqual` [ Just "https://a/i.png" ]
     faviconOf "data:image/png;base64,AAAA" `shouldEqual` [ Just "data:image/png;base64,AAAA" ]
     faviconOf "javascript:alert(1)" `shouldEqual` [ Nothing ]
     faviconOf "chrome://branding/content/icon32.png" `shouldEqual` [ Nothing ]
     faviconOf "data:text/html,<script>x</script>" `shouldEqual` [ Nothing ]
+
+  it "renders a closed row's icon from stored bytes only, never a url" do
+    let
+      -- the same row, closed: a page the user is not on
+      faviconOf url = faviconOfRow url identity
+    faviconOf "data:image/png;base64,AAAA" `shouldEqual` [ Just "data:image/png;base64,AAAA" ]
+    -- a url would be a request to that site — the leak (and, for an imported
+    -- tree, the beacon) this rule exists to close
+    faviconOf "https://a/i.png" `shouldEqual` [ Nothing ]
+    faviconOf "http://beacon.example/n1.png" `shouldEqual` [ Nothing ]
+    faviconOf "moz-extension://x/icon.png" `shouldEqual` [ Nothing ]
+
+  it "a live window is not a tab: it draws stored bytes only" do
+    -- W (row 0) is live window 1; no tab reports a window's icon, so any url on
+    -- it is one a file claimed
+    let
+      windowIcon url =
+        map _.favIconUrl
+          ( sliceView
+              (m { nodes = Map.update (\w -> Just (w { favIconUrl = Just url })) "W" m.nodes })
+              ""
+              (computeOrder "" m)
+              0
+              1
+          )
+    windowIcon "https://beacon.example/w.png" `shouldEqual` [ Nothing ]
+    windowIcon "data:image/png;base64,AAAA" `shouldEqual` [ Just "data:image/png;base64,AAAA" ]
 
   it "spends a favicon budget across the whole window, not per row" do
     let

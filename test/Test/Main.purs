@@ -6,6 +6,7 @@ import Effect (Effect)
 import Test.Model.CodecSpec as CodecSpec
 import Test.Model.CommandSpec as CommandSpec
 import Test.Model.DropSpec as DropSpec
+import Test.Model.FaviconSpec as FaviconSpec
 import Test.Model.GuardSpec as GuardSpec
 import Test.Model.GuideSpec as GuideSpec
 import Test.Model.PortableImportSpec as PortableImportSpec
@@ -31,6 +32,7 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   CodecSpec.spec
   CommandSpec.spec
   DropSpec.spec
+  FaviconSpec.spec
   RematchSpec.spec
   PortableImportSpec.spec
   GuardSpec.spec

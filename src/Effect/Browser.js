@@ -604,3 +604,42 @@ export const downloadJsonFileImpl = (api) => (filename) => (saveAs) => (content)
     }, (err) => settle(reject, err));
   });
 };
+
+// Re-encode a `data:` favicon too big to store as a PNG at most `limit` chars
+// long: 32px first (what the row slot needs on a HiDPI display), then 16px.
+// Resolves null when it cannot (an undecodable image, one still over the limit
+// at 16px, or one too large to decode safely) — the node then does not store
+// this icon, rather than a huge one. Never upscales. Only ever handed `data:` urls (see `Model.Favicon.needsShrink`), so
+// the canvas is never tainted and nothing is fetched.
+const MAX_FAVICON_PIXELS = 1024 * 1024;
+
+export const shrinkFaviconImpl = (src) => (limit) => () =>
+  new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        // the header's claimed size is known before the pixels are decoded; a
+        // page could claim 20000x20000 in a few bytes and have drawImage
+        // allocate gigabytes, so refuse anything no favicon needs
+        if (img.naturalWidth * img.naturalHeight > MAX_FAVICON_PIXELS) return resolve(null);
+        const natural = Math.max(img.naturalWidth, img.naturalHeight);
+        for (const target of [32, 16]) {
+          const size = natural > 0 ? Math.min(target, natural) : target;
+          const scale = natural > 0 ? size / natural : 1;
+          const w = Math.max(1, Math.round((img.naturalWidth || size) * scale));
+          const h = Math.max(1, Math.round((img.naturalHeight || size) * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          const out = canvas.toDataURL("image/png");
+          if (out.startsWith("data:image/png") && out.length <= limit) return resolve(out);
+        }
+        resolve(null);
+      } catch (_) {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });

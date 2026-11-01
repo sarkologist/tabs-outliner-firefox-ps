@@ -11,9 +11,9 @@ import Data.Argonaut.Encode (encodeJson)
 import Data.Array as Array
 import Data.DateTime.Instant (unInstant)
 import Data.Either (Either(..))
-import Data.Foldable (traverse_)
+import Data.Foldable (for_, traverse_)
 import Data.Map as Map
-import Data.Maybe (Maybe(..), isNothing)
+import Data.Maybe (Maybe(..), isNothing, maybe)
 import Data.Newtype (unwrap)
 import Effect (Effect)
 import Effect.Aff (Aff, attempt, launchAff_)
@@ -30,6 +30,7 @@ import Effect.Profile as Profile
 import Model.Codec (encodeSnapshot)
 import Model.Command (BrowserAction(..), Command(..), Request(..), applyCommand, decodeRequest, unopenableOnRestore, wrapRootTabsModel)
 import Model.Event (BrowserEvent(..))
+import Model.Favicon (needsShrink, reportedIcon)
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
 import Model.Tree (mergePatch)
@@ -58,10 +59,39 @@ main = launchAff_ do
   kickRef <- liftEffect (Ref.new (pure unit :: Effect Unit))
   backupPendingRef <- liftEffect (Ref.new false)
   backupKickRef <- liftEffect (Ref.new (pure unit :: Effect Unit))
+  -- Per-tab count of icons reported so far, so a shrink that finishes after the
+  -- tab reported a newer icon (or closed) is discarded instead of landing on top.
+  iconGenRef <- liftEffect (Ref.new (Map.empty :: Map.Map Int Int))
+  let
+    -- Every event — the browser's, and the ones we synthesize (a compensating
+    -- retraction, a shrunk favicon) — goes through this one queue: the drainer is
+    -- the only thing that orders them, so a synthesized event can never overtake
+    -- one the listeners already enqueued.
+    enqueueEvent :: BrowserEvent -> Effect Unit
+    enqueueEvent ev = do
+      Ref.modify_ (\q -> Array.snoc q ev) queueRef
+      join (Ref.read kickRef)
+
+    -- Capture a live tab's icon as stored bytes (see `Model.Favicon`). A small
+    -- `data:` icon is stored by the reducer as it is; a big one is re-encoded off
+    -- the event path and arrives later as an ordinary `TabChanged`. The count is
+    -- bumped here, at enqueue time, so it tracks queue order.
+    captureIcon :: Int -> String -> Effect Unit
+    captureIcon tabId icon = do
+      gen <- Map.lookup tabId <$> Ref.modify (Map.alter (Just <<< maybe 1 (_ + 1)) tabId) iconGenRef
+      when (needsShrink icon) $ launchAff_ do
+        shrunk <- Browser.shrinkFavicon icon
+        liftEffect do
+          current <- Map.lookup tabId <$> Ref.read iconGenRef
+          when (current == gen) $ for_ shrunk \small ->
+            enqueueEvent (TabChanged { tabId, url: Nothing, title: Nothing, favIconUrl: Just small })
   liftEffect $ Browser.initSidebarAction api
   liftEffect $ Browser.subscribe api \ev -> do
-    Ref.modify_ (\q -> Array.snoc q ev) queueRef
-    join (Ref.read kickRef)
+    traverse_ (\r -> captureIcon r.tabId r.icon) (reportedIcon ev)
+    case ev of
+      TabClosed { tabId } -> Ref.modify_ (Map.delete tabId) iconGenRef
+      _ -> pure unit
+    enqueueEvent ev
   liftEffect $ Browser.onBackupAlarm api do
     Ref.write true backupPendingRef
     join (Ref.read backupKickRef)
@@ -69,6 +99,13 @@ main = launchAff_ do
   loaded <- Persist.load db
   t0 <- liftEffect nowMs
   wins <- Browser.getAllWindows api
+  -- backfill: a tab already open at boot is a live sighting like any other, so a
+  -- tree saved before icons were captured fills in as its tabs are seen. A tab
+  -- that already reported an icon by event (while this snapshot was being taken)
+  -- is skipped: the snapshot may be older than that event.
+  liftEffect $ for_ (wins >>= _.tabs) \rt -> for_ rt.favIconUrl \icon -> do
+    seen <- Map.member rt.tabId <$> Ref.read iconGenRef
+    unless seen (captureIcon rt.tabId icon)
 
   -- Boot: re-bind reopened tabs to their existing nodes by url; the patch
   -- touches only changed nodes, so subsequent boots are O(change).
@@ -176,13 +213,8 @@ main = launchAff_ do
     -- every later action in the same restore. A failure is logged (restore used to
     -- fail with no trace anywhere) and may emit a compensating event to retract the
     -- optimistic model state the command already committed.
-    -- Compensating events go through the SAME queue as real browser events, not
-    -- straight to `dispatch`: the drainer is the only thing that orders them, so a
-    -- retraction can never overtake an event the listeners already enqueued.
-    enqueueEvent :: BrowserEvent -> Effect Unit
-    enqueueEvent ev = do
-      Ref.modify_ (\q -> Array.snoc q ev) queueRef
-      join (Ref.read kickRef)
+    -- Compensating events go through the SAME queue as real browser events
+    -- (`enqueueEvent`), not straight to `dispatch`.
 
     runActions :: Array BrowserAction -> Aff Unit
     runActions = traverse_ \act -> attempt (runAction api act) >>= case _ of

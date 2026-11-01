@@ -13,6 +13,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Set as Set
 import Model.Event (BrowserEvent(..), OpenedTab)
+import Model.Favicon (mergeReported, sameSite, storedBytes)
 import Model.Tree (applyPatch, insertAtClamped, isAncestorOrSelf, liveInsertSlot, liveTabNode, liveWindowNode, mergePatch, ownedLiveTabPreorder, pruneFrom, subtreeIds)
 import Model.Types (Kind(..), Model, Node, NodeId, Patch, PendingWindow, Step, defaultNode, emptyPatch, isLive)
 
@@ -113,13 +114,20 @@ applyBrowser now ev model = case ev of
 
   TabChanged c -> withTab c.tabId model \_ n ->
     let
+      url' = orElse n.url c.url
+      -- navigating to another site drops the old site's icon (the new page
+      -- reports its own, usually in a later event)
+      oldIcon = if sameSite n.url url' then n.favIconUrl else Nothing
       n' = n
         { title = fromMaybe n.title c.title
-        , url = orElse n.url c.url
-        , favIconUrl = orElse n.favIconUrl c.favIconUrl
+        , url = url'
+        , favIconUrl = mergeReported oldIcon c.favIconUrl
         }
     in
-      commit model.nextId { upserts: [ n' ], removes: [], roots: Nothing } model
+      -- an event that changes nothing (a re-reported title, a re-shrunk icon on
+      -- every event-page wake) writes nothing and pings no sidebar
+      if n' == n then noop model
+      else commit model.nextId { upserts: [ n' ], removes: [], roots: Nothing } model
 
   TabActivated a -> activateTab a.tabId a.windowId model
 
@@ -282,7 +290,7 @@ openFresh now t model =
     tabNode = (defaultNode tabNodeId KTab now)
       { title = t.title
       , url = t.url
-      , favIconUrl = t.favIconUrl
+      , favIconUrl = mergeReported Nothing t.favIconUrl
       , active = t.active
       , tabId = Just t.tabId
       , parent = Just rw.winId
@@ -312,7 +320,7 @@ rebindRestored _ t _ n model =
       , active = t.active
       , title = t.title
       , url = t.url
-      , favIconUrl = t.favIconUrl
+      , favIconUrl = mergeReported (storedBytes n.favIconUrl) t.favIconUrl
       , closedAt = Nothing
       }
     patch = { upserts: [ n' ], removes: [], roots: Nothing }

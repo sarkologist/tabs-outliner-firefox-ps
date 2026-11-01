@@ -34,10 +34,11 @@ import Data.String (length, stripPrefix, take) as String
 import Data.String.Pattern (Pattern(..))
 import Data.Traversable (mapAccumL)
 import Model.Codec (kindStr, parseKind)
+import Model.Favicon (isIconBytes)
 import Model.Search (matchesSearch, normalizeSearchQuery)
 import Model.Scroll (activeTabInWindow)
 import Model.Tree (Entry, searchVisible, visible)
-import Model.Types (Kind(..), Model, NodeId, displayTitle, isLive)
+import Model.Types (Kind(..), Model, NodeId, displayTitle, isLive, isLiveTab)
 
 -- A visible-order entry tagged with the flat index just past its subtree (used by
 -- the drop preview to land a drop after a collapsed/expanded group's whole span).
@@ -159,18 +160,19 @@ faviconWindowByteBudget = 131072
 urlByteLimit :: Int
 urlByteLimit = 2048
 
--- | Schemes an `<img>` in the sidebar may be pointed at. An imported tree carries
--- | whatever `favIconUrl` the file claimed (`Model.PortableImport`), so this is
--- | the same kind of gate `Model.Command`'s `blockedSchemes` is for urls: nothing
--- | exotic reaches the DOM, and an `about:`/`chrome:` icon the sidebar could not
--- | load anyway falls back to the kind glyph instead of a blank slot.
-renderableFavicon :: String -> Maybe String
-renderableFavicon u
+-- | What an `<img>` in the sidebar may be pointed at. A CLOSED row gets icon
+-- | bytes only: anything else would be a request to a site the user is not on
+-- | (see `Model.Favicon`). A live TAB may also point at the url it reports —
+-- | that tab is already talking to that host — gated to the schemes an image can
+-- | load from, the same kind of gate `Model.Command`'s `blockedSchemes` is for
+-- | urls: nothing exotic reaches the DOM, and an `about:`/`chrome:` icon the
+-- | sidebar could not load anyway falls back to the kind glyph.
+renderableFavicon :: Boolean -> String -> Maybe String
+renderableFavicon liveTab u
   | String.length u > faviconByteLimit = Nothing
-  | otherwise =
-      if Array.any (\scheme -> isJust (String.stripPrefix (Pattern scheme) u))
-        [ "https://", "http://", "data:image/", "moz-extension://" ] then Just u
-      else Nothing
+  | isIconBytes u = Just u
+  | liveTab && Array.any (\scheme -> isJust (String.stripPrefix (Pattern scheme) u)) [ "https://", "http://", "moz-extension://" ] = Just u
+  | otherwise = Nothing
 
 clampUrl :: String -> String
 clampUrl u = if String.length u <= urlByteLimit then u else String.take urlByteLimit u <> "\x2026"
@@ -188,6 +190,7 @@ budgetFavicons rows = (mapAccumL spend faviconWindowByteBudget rows).value
 
 toRow :: Model -> String -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
 toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
+  let live = isLive n in
   { id: n.id
   , index: i
   , depth: oe.depth
@@ -195,8 +198,10 @@ toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   , kind: n.kind
   , title: displayTitle n
   , url: clampUrl <$> n.url
-  , favIconUrl: n.favIconUrl >>= renderableFavicon
-  , live: isLive n
+  -- a live window is live too, but no tab of its own reports its icon: only a
+  -- url a file claimed could be sitting there
+  , favIconUrl: n.favIconUrl >>= renderableFavicon (isLiveTab n)
+  , live
   , active: n.active
   , collapsed: n.collapsed
   , hasChildren: not (Array.null n.children)

@@ -810,6 +810,18 @@ spec = describe "Model.Command" do
     (_.url <$> Map.lookup "n5" r.model.nodes) `shouldEqual` Just (Just "http://t")
     (_.parent <$> Map.lookup "n5" r.model.nodes) `shouldEqual` Just (Just "n4")
 
+  it "import keeps a node's stored icon bytes and drops a claimed icon url" do
+    let
+      bytes = "data:image/png;base64,AAAA"
+      grp = (defaultNode "g1" KGroup 0.0) { title = "G", children = [ "t1", "t2" ], favIconUrl = Just "https://beacon.example/g1.png" }
+      t1 = (defaultNode "t1" KTab 0.0) { title = "T1", url = Just "http://t1", parent = Just "g1", favIconUrl = Just bytes }
+      t2 = (defaultNode "t2" KTab 0.0) { title = "T2", url = Just "http://t2", parent = Just "g1", favIconUrl = Just "https://beacon.example/t2.png" }
+      r = applyCommand 0.0 (Import { nodes: [ grp, t1, t2 ], roots: [ "g1" ] }) base
+    -- g1 -> n4, t1 -> n5, t2 -> n6
+    (_.favIconUrl <$> Map.lookup "n4" r.model.nodes) `shouldEqual` Just Nothing
+    (_.favIconUrl <$> Map.lookup "n5" r.model.nodes) `shouldEqual` Just (Just bytes)
+    (_.favIconUrl <$> Map.lookup "n6" r.model.nodes) `shouldEqual` Just Nothing
+
   it "restore re-binds the existing node when the tab re-opens (no duplicate)" do
     let
       closed = outlinerClose "n2" 11 (runEvents [ openTab 11 1 0 "A" true ])
