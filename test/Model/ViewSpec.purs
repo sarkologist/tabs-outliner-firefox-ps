@@ -2,6 +2,7 @@ module Test.Model.ViewSpec where
 
 import Prelude
 
+import Data.Argonaut.Core (stringify)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
@@ -68,15 +69,25 @@ faviconOfRow url bind =
 hugeFavicon :: String
 hugeFavicon = favicon 16385
 
--- one window of `n` tabs, each with a 16 KB favicon: what a tall full-size view
--- at minimum zoom asks for, and what the per-window budget has to survive
+-- a `data:` favicon of exactly `n` characters, distinct for each `i`
+distinctFavicon :: Int -> Int -> String
+distinctFavicon i n = prefix <> String.joinWith "" (Array.replicate (n - String.length prefix) "A")
+  where
+  prefix = "data:image/png;base64," <> show i <> "/"
+
+-- one window of `n` tabs, each with its own 16 KB favicon: what a tall full-size
+-- view at minimum zoom asks for, and what the per-window budget has to survive
 mManyIcons :: Int -> Model
-mManyIcons n = emptyModel
+mManyIcons n = mIconsBy n (\i -> distinctFavicon i 16384)
+
+-- one window of `n` tabs, tab `i` carrying `iconOf i`
+mIconsBy :: Int -> (Int -> String) -> Model
+mIconsBy n iconOf = emptyModel
   { roots = [ "W" ]
   , nodes = Map.fromFoldable $ map (\x -> Tuple x.id x)
       ( [ (node "W" KGroup Nothing (map tabId (Array.range 1 n))) { windowId = Just 1, title = "W" } ]
           <> map
-            ( \i -> (node (tabId i) KTab (Just "W") []) { title = tabId i, favIconUrl = Just (favicon 16384) }
+            ( \i -> (node (tabId i) KTab (Just "W") []) { title = tabId i, favIconUrl = Just (iconOf i) }
             )
             (Array.range 1 n)
       )
@@ -200,6 +211,36 @@ spec = describe "Model.View" do
     withIcons `shouldEqual` 8
     Array.length rows `shouldEqual` 200
     map _.title (Array.take 1 (Array.drop 8 rows)) `shouldEqual` [ "T9" ]
+
+  it "charges a repeated icon once, so a column of one site keeps every icon" do
+    let
+      -- a column of YouTube rows is one icon over and over: per-row charging let
+      -- ~40 copies of it spend the budget and blanked every row below them
+      same = mIconsBy 200 (const (favicon 16384))
+      rows = sliceView same "" (computeOrder "" same) 1 200
+    Array.length (Array.filter (\r -> r.favIconUrl == Just (favicon 16384)) rows) `shouldEqual` 200
+
+  it "still fits a small new icon after a big one ran the budget out" do
+    let
+      -- eight 16 KB icons spend all but 0 of 131072; a repeat of one of them is
+      -- free, a ninth distinct one is not
+      mixed = mIconsBy 10 (\i -> if i <= 8 then distinctFavicon i 16384 else if i == 9 then distinctFavicon 1 16384 else distinctFavicon i 16384)
+      rows = sliceView mixed "" (computeOrder "" mixed) 1 10
+    map (\r -> r.favIconUrl /= Nothing) rows `shouldEqual` (Array.replicate 9 true <> [ false ])
+
+  it "sends a repeated icon over the wire once" do
+    let
+      same = mIconsBy 50 (const (favicon 4096))
+      rows = sliceView same "" (computeOrder "" same) 1 50
+      view = { total: 51, rows, focusIndex: -1, serverMs: 0.0, nodeTotal: 51, openTabTotal: 0, matchTotal: 0 }
+      wire = encodeView view
+      bare = encodeView view { rows = map (_ { favIconUrl = Nothing }) rows }
+    -- 50 rows, one 4 KB icon: the icons add it once (plus a slot index per row),
+    -- not 50 times
+    (String.length (stringify wire) - String.length (stringify bare) < 2 * 4096) `shouldEqual` true
+    case decodeView wire of
+      Right decoded -> map _.favIconUrl decoded.rows `shouldEqual` Array.replicate 50 (Just (favicon 4096))
+      Left err -> fail err
 
   it "clamps a url to a length a tooltip can use" do
     let

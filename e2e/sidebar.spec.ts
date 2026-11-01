@@ -198,9 +198,11 @@ test.describe("sidebar view", () => {
   // stop painting. Icons captured now are capped at 4 KB, but a tree saved before
   // that keeps its icons as they were — up to 16 KB each, on closed rows.
   test("a favicon-heavy window still fits in one message", async ({ page }) => {
-    const BIG_ICON = `data:image/png;base64,${"A".repeat(16_000)}`;
+    // a distinct icon per row: the budget charges each icon once, so repeats of
+    // one icon would not test it
+    const bigIcon = (i: number) => `data:image/png;base64,${i}/${"A".repeat(16_000)}`;
     const tabs = Array.from({ length: 120 }, (_, i) =>
-      record({ id: `t${i}`, parent: "g", title: `Tab ${i}`, url: `http://t${i}/page`, favIconUrl: BIG_ICON, closedAt: 0 })
+      record({ id: `t${i}`, parent: "g", title: `Tab ${i}`, url: `http://t${i}/page`, favIconUrl: bigIcon(i), closedAt: 0 })
     );
     await bootBackgroundAndSidebar(
       page,
@@ -219,6 +221,34 @@ test.describe("sidebar view", () => {
     // in ViewSpec; these stand-in icons are not decodable images, so the DOM here
     // shows the load-failure glyph either way)
     expect(await page.locator(".favicon use").count()).toBeGreaterThan(0);
+  });
+
+  // A window is mostly a few sites over and over. Charging the budget per row let
+  // a column of one site's icon spend it ~40 rows down and blank every row below
+  // (the "same domain, no favicon" report); an icon repeated down the column is
+  // paid for, and sent, once.
+  test("a column of one site's icon keeps it on every row", async ({ page }) => {
+    await page.setViewportSize({ width: 400, height: 1400 });
+    const ICON = noisePng(40); // ~9 KB: per-row charging would cover ~14 rows
+    const tabs = Array.from({ length: 90 }, (_, i) =>
+      record({ id: `t${i}`, parent: "g", title: `Video ${i}`, url: `http://video.example/${i}`, favIconUrl: ICON, closedAt: 0 })
+    );
+    await bootBackgroundAndSidebar(
+      page,
+      { windows: [] },
+      {
+        persisted: {
+          nodes: [record({ id: "g", kind: "group", title: "Saved", children: tabs.map((t) => t.id) }), ...tabs],
+          roots: ["g"],
+        },
+      }
+    );
+    const videoRows = page.locator(".row").filter({ hasText: "Video" });
+    await expect(videoRows.first()).toBeVisible();
+    const rendered = await videoRows.count();
+    expect(rendered).toBeGreaterThan(30);
+    await expect(videoRows.locator(".favicon-img")).toHaveCount(rendered);
+    await expect(videoRows.locator(".favicon use")).toHaveCount(0);
   });
 
   // Stored icons ---------------------------------------------------------------
