@@ -7,7 +7,9 @@ module Model.View
   , View
   , ViewStats
   , OrderEntry
+  , OriginIcons
   , computeOrder
+  , originIcons
   , sliceView
   , startForView
   , focusIndexOf
@@ -18,6 +20,7 @@ module Model.View
 
 import Prelude
 
+import Control.Alt ((<|>))
 import Data.Argonaut.Core (Json)
 import Data.Argonaut.Decode (decodeJson, printJsonDecodeError)
 import Data.Argonaut.Encode (encodeJson)
@@ -35,7 +38,7 @@ import Data.String (length, stripPrefix, take) as String
 import Data.String.Pattern (Pattern(..))
 import Data.Traversable (mapAccumL)
 import Model.Codec (kindStr, parseKind)
-import Model.Favicon (isIconBytes)
+import Model.Favicon (isIconBytes, origin)
 import Model.Search (matchesSearch, normalizeSearchQuery)
 import Model.Scroll (activeTabInWindow)
 import Model.Tree (Entry, searchVisible, visible)
@@ -107,9 +110,36 @@ withSubtreeEnds entries =
       , ends: foldl (\m s -> Map.insert s.idx i m) acc.ends r.init
       }
 
+-- Sharing a site's icon ------------------------------------------------------
+--
+-- Icons are captured per tab, while it is live, so most of a saved tree has none:
+-- rows saved before capture existed, or imported, or closed before their page
+-- reported one. A row without an icon of its own borrows one its origin already
+-- has: bytes the tree holds, so drawing it still makes no request (`Model.Favicon`).
+-- Per origin, not per host or page, because that is what a site's fallback
+-- `/favicon.ico` is scoped to; a page that declares its own (Docs vs Sheets on one
+-- host) can borrow a sibling's until its own tab is seen.
+
+-- | Each origin's shared icon: the stored bytes most of its tabs carry (so a
+-- | one-off variant, an unread badge, loses to the site's usual icon), ties going
+-- | to the smaller. O(nodes); the background caches it per model version.
+type OriginIcons = Map.Map String String
+
+originIcons :: Model -> OriginIcons
+originIcons model = map pick (foldl tally Map.empty model.nodes)
+  where
+  tally acc n = case n.kind, n.url >>= origin, n.favIconUrl of
+    KTab, Just o, Just u | isIconBytes u && String.length u <= faviconByteLimit ->
+      Map.alter (Just <<< Map.insertWith (+) u 1 <<< fromMaybe Map.empty) o acc
+    _, _, _ -> acc
+  pick counts = fromMaybe "" (_.icon <$> foldlWithIndex better Nothing counts)
+  better u best c = case best of
+    Just b | b.count > c || (b.count == c && String.length b.icon <= String.length u) -> best
+    _ -> Just { icon: u, count: c }
+
 -- | Project the rows in window `[start, start+count)` of an already-computed order.
-sliceView :: Model -> String -> Array OrderEntry -> Int -> Int -> Array ViewRow
-sliceView model query order start count =
+sliceView :: Model -> OriginIcons -> String -> Array OrderEntry -> Int -> Int -> Array ViewRow
+sliceView model icons query order start count =
   let
     total = Array.length order
     -- clamp to the last legal window, so a start past a shrunk order (collapse/
@@ -119,7 +149,7 @@ sliceView model query order start count =
     window = Array.slice s (s + count) order
   in
     budgetFavicons
-      (Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model query lastRoot (s + off) oe) window))
+      (Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model icons query lastRoot (s + off) oe) window))
 
 -- | Resolve the start row for a view request. A target-centered request wins
 -- | over the caller's scroll start when the target exists in the current order.
@@ -198,8 +228,8 @@ budgetFavicons rows = (mapAccumL spend { left: faviconWindowByteBudget, admitted
       | otherwise -> { accum: acc, value: r { favIconUrl = Nothing } }
     Nothing -> { accum: acc, value: r }
 
-toRow :: Model -> String -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
-toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
+toRow :: Model -> OriginIcons -> String -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
+toRow model icons query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   let live = isLive n in
   { id: n.id
   , index: i
@@ -209,8 +239,10 @@ toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
   , title: displayTitle n
   , url: clampUrl <$> n.url
   -- a live window is live too, but no tab of its own reports its icon: only a
-  -- url a file claimed could be sitting there
-  , favIconUrl: n.favIconUrl >>= renderableFavicon (isLiveTab n)
+  -- url a file claimed could be sitting there. A tab without one borrows its
+  -- origin's.
+  , favIconUrl: (n.favIconUrl >>= renderableFavicon (isLiveTab n))
+      <|> (if n.kind == KTab then n.url >>= origin >>= flip Map.lookup icons else Nothing)
   , live
   , active: n.active
   , collapsed: n.collapsed

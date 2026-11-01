@@ -10,7 +10,7 @@ import Data.Set as Set
 import Data.String (length) as String
 import Data.String.Common (joinWith) as String
 import Model.Event (BrowserEvent(..))
-import Model.Favicon (importedIcon, isStorableIcon, mergeReported, needsShrink, reportedIcon, sameSite, storedIconByteLimit)
+import Model.Favicon (importedIcon, isStorableIcon, mergeReported, needsShrink, origin, reportedIcon, sameSite, storedIconByteLimit)
 import Model.Reconcile (applyBrowser)
 import Model.Rematch (rematchOnStartup)
 import Model.Types (Model, emptyModel, isLive)
@@ -84,6 +84,17 @@ spec = describe "Model.Favicon" do
     sameSite (Just "https://a.example") (Just "https://a.example?x") `shouldEqual` true
     sameSite (Just "https://a.example/") (Just "about:addons") `shouldEqual` false
     sameSite Nothing (Just "https://a.example/") `shouldEqual` false
+
+  it "takes a web page url's origin: scheme, host and port" do
+    origin "https://www.YouTube.com/watch?v=x#t=1" `shouldEqual` Just "https://www.youtube.com"
+    origin "http://localhost:8080/a?b" `shouldEqual` Just "http://localhost:8080"
+    origin "https://a.example?x" `shouldEqual` Just "https://a.example"
+    -- scheme is part of it: an http page does not share an https page's icon
+    (origin "http://a.example/" == origin "https://a.example/") `shouldEqual` false
+    origin "about:addons" `shouldEqual` Nothing
+    origin "file:///Users/x/page.html" `shouldEqual` Nothing
+    origin "moz-extension://abc/page.html" `shouldEqual` Nothing
+    origin "https://" `shouldEqual` Nothing
 
   it "keeps only storable bytes of an imported icon" do
     importedIcon (Just small) `shouldEqual` Just small
