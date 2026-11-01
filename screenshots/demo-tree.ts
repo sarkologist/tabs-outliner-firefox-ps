@@ -23,7 +23,7 @@ export const liveSeed: Seed = {
       tabs: [
         { id: 11, url: "https://doc.rust-lang.org/book/", title: "The Rust Programming Language", favIconUrl: icon("doc.rust-lang.org"), active: true },
         { id: 12, url: "https://doc.rust-lang.org/std/iter/trait.Iterator.html", title: "Iterator in std::iter - Rust", favIconUrl: icon("doc.rust-lang.org") },
-        { id: 13, url: "https://github.com/rust-lang/rustlings", title: "rust-lang/rustlings: Small exercises to get you used to reading and writing Rust code", favIconUrl: icon("github.com") },
+        { id: 13, url: "https://github.com/rust-lang/rustlings", title: "GitHub - rust-lang/rustlings: 🦀 Small exercises to get you used to reading and writing Rust code!", favIconUrl: icon("github.com") },
         { id: 14, url: "https://stackoverflow.com/questions/tagged/rust", title: "Newest 'rust' Questions - Stack Overflow", favIconUrl: icon("stackoverflow.com") },
         { id: 15, url: "https://developer.mozilla.org/en-US/docs/WebAssembly", title: "WebAssembly | MDN", favIconUrl: icon("developer.mozilla.org") },
       ],
@@ -48,21 +48,22 @@ const saved: Saved[] = [
       wiki("Philosopher's Walk"),
     ]),
     tab("OpenStreetMap", "https://www.openstreetmap.org/#map=13/35.0116/135.7681", "openstreetmap.org"),
-    tab("Learn Japanese - Duolingo", "https://www.duolingo.com/course/ja/en/Learn-Japanese", "duolingo.com"),
+    tab("Duolingo - The world's best way to learn a language", "https://www.duolingo.com/", "duolingo.com"),
   ]),
   group("Astronomy", [
-    tab("Astronomy Picture of the Day", "https://apod.nasa.gov/apod/astropix.html", "nasa.gov"),
-    tab("James Webb Space Telescope - NASA Science", "https://science.nasa.gov/mission/webb/", "nasa.gov", [
-      wiki("James Webb Space Telescope"),
+    // APOD has no favicon: its row shows the kind glyph, as the sidebar does
+    { title: "Astronomy Picture of the Day", url: "https://apod.nasa.gov/apod/astropix.html" },
+    wiki("James Webb Space Telescope", [
       tab("ESA - Webb", "https://www.esa.int/Science_Exploration/Space_Science/Webb", "esa.int"),
+      wiki("Hubble Space Telescope"),
     ]),
     tab("Cosmology and astronomy | Khan Academy", "https://www.khanacademy.org/science/cosmology-and-astronomy", "khanacademy.org"),
     tab("Powers of Ten (1977) - YouTube", "https://www.youtube.com/watch?v=0fKBhvDjuy0", "youtube.com"),
   ]),
   group("Weekend baking", [
-    tab("Easy sourdough bread recipe | BBC Good Food", "https://www.bbcgoodfood.com/recipes/sourdough-bread", "bbcgoodfood.com"),
-    tab("Neapolitan Pizza Dough Recipe | Serious Eats", "https://www.seriouseats.com/neapolitan-pizza-dough-recipe", "seriouseats.com"),
     wiki("Sourdough"),
+    tab("Bread recipes | BBC Good Food", "https://www.bbcgoodfood.com/recipes/collection/bread-recipes", "bbcgoodfood.com"),
+    tab("Serious Eats", "https://www.seriouseats.com/", "seriouseats.com"),
   ]),
   group("Reading list", [
     tab("Pride and Prejudice by Jane Austen | Project Gutenberg", "https://www.gutenberg.org/ebooks/1342", "gutenberg.org"),
@@ -70,13 +71,13 @@ const saved: Saved[] = [
     tab("Internet Archive: Digital Library of Free & Borrowable Books", "https://archive.org/", "archive.org"),
   ]),
   group(
-    "Python",
+    "Programming",
     [
-      tab("3.13.0 Documentation", "https://docs.python.org/3/", "python.org", [
+      tab("Python documentation", "https://docs.python.org/3/", "python.org", [
         tab("itertools — Functions creating iterators for efficient looping", "https://docs.python.org/3/library/itertools.html", "python.org"),
-        tab("Iterator Types — Built-in Types", "https://docs.python.org/3/library/stdtypes.html#iterator-types", "python.org"),
+        tab("The Python Tutorial", "https://docs.python.org/3/tutorial/", "python.org"),
       ]),
-      tab("Iterators and generators - JavaScript | MDN", "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Iterators_and_generators", "developer.mozilla.org"),
+      tab("Iterators - Rust By Example", "https://doc.rust-lang.org/rust-by-example/trait/iter.html", "doc.rust-lang.org"),
       tab("Welcome to Python.org", "https://www.python.org/", "python.org"),
     ],
     true

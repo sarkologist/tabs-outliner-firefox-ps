@@ -84,10 +84,18 @@ manifest), so no privacy policy should be required — but confirm this in the
 
 `pnpm screenshots` renders the sidebar shots into `docs/screenshots/` from a
 curated demo outline (`screenshots/demo-tree.ts`: well-known sites, no personal
-data), in Playwright's Firefox. Where that Firefox can't launch, use
-`pnpm screenshots:chromium` (same shots; the accent colour and font rendering
-differ slightly). Re-run it whenever the sidebar's look changes. Captions, as on
-the listing:
+data), in Playwright's Firefox (one-time setup: `pnpm exec playwright install
+firefox`). Where that Firefox can't launch, `pnpm screenshots:chromium` renders
+the same shots in Chromium; its form controls, accent colour and font
+rendering differ, so prefer Firefox for what gets uploaded. Output follows the
+host's system font and accent colour, so re-rendering on another machine changes
+the PNGs slightly. Re-run it whenever the sidebar's look changes.
+
+The committed PNGs are currently the **Chromium** render — re-render in Firefox
+before uploading. AMO frames screenshots at 1280×800 (16:10); these are
+sidebar-shaped and get letterboxed, as the 1.0.0 listing's were.
+
+Captions, as on the listing:
 
 1. `1-outline.png` — Keep as many tabs as you like. Close them to reclaim memory — nothing is lost, and your tree survives every restart.
 2. `2-drag.png` — Reorganize by dragging, with a live drop preview; hover any row for quick actions — group, rename, cut, delete.

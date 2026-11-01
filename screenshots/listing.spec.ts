@@ -12,12 +12,12 @@ async function bootSidebar(page: Page) {
   await page.addInitScript(installFakeBrowser, liveSeed);
   await page.route("**/sidebar/sidebar.html", async (route) => {
     const html = await readFile("dist/sidebar/sidebar.html", "utf8");
+    const tag = '<script src="sidebar.js"></script>';
+    // fail here, not as a puzzling timeout with no background answering
+    if (!html.includes(tag)) throw new Error(`sidebar.html no longer loads its script as ${tag}`);
     await route.fulfill({
       contentType: "text/html",
-      body: html.replace(
-        '<script src="sidebar.js"></script>',
-        '<script src="../background/background.js"></script><script src="sidebar.js"></script>'
-      ),
+      body: html.replace(tag, `<script src="../background/background.js"></script>${tag}`),
     });
   });
   await page.goto("/sidebar/sidebar.html");
@@ -55,10 +55,34 @@ async function calm(page: Page) {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 }
 
-// A drag's pointer is drawn by the OS, so a screenshot has neither it nor the
-// dragged row's ghost. Draw both into the page: the ghost (a faded copy of the
-// dragged row) and an arrow cursor with its tip at (x, y).
-async function drawPointer(page: Page, dragged: string, x: number, y: number) {
+// The OS draws the pointer, and during a drag the dragged row's ghost, so a
+// screenshot has neither. Draw them into the page.
+const CURSOR_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="33" viewBox="0 0 12 18">' +
+  '<path d="M.5.5v15.2l3.6-3.5 2.5 5.6 2.4-1-2.5-5.5h5z" fill="#111" stroke="#fff" stroke-width="1" stroke-linejoin="round"/></svg>';
+
+// An arrow cursor with its tip at (x, y).
+async function drawCursor(page: Page, x: number, y: number) {
+  await page.evaluate(
+    ([svg, x, y]) => {
+      const cursor = document.createElement("div");
+      cursor.innerHTML = svg as string;
+      Object.assign(cursor.style, {
+        position: "fixed",
+        left: `${x}px`,
+        top: `${y}px`,
+        pointerEvents: "none",
+        zIndex: "1001",
+        filter: "drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.35))",
+      });
+      document.body.append(cursor);
+    },
+    [CURSOR_SVG, x, y] as const
+  );
+}
+
+// A faded copy of the dragged row, held at the point (x, y) it was grabbed by.
+async function drawGhost(page: Page, dragged: string, x: number, y: number) {
   await page.evaluate(
     ([text, x, y]) => {
       const row = [...document.querySelectorAll<HTMLElement>(".row")].find((r) => r.textContent?.includes(text as string))!;
@@ -80,19 +104,6 @@ async function drawPointer(page: Page, dragged: string, x: number, y: number) {
         zIndex: "1000",
       });
       document.body.append(ghost);
-      const cursor = document.createElement("div");
-      cursor.innerHTML =
-        '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="33" viewBox="0 0 12 18">' +
-        '<path d="M.5.5v15.2l3.6-3.5 2.5 5.6 2.4-1-2.5-5.5h5z" fill="#111" stroke="#fff" stroke-width="1" stroke-linejoin="round"/></svg>';
-      Object.assign(cursor.style, {
-        position: "fixed",
-        left: `${x as number}px`,
-        top: `${y as number}px`,
-        pointerEvents: "none",
-        zIndex: "1001",
-        filter: "drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.35))",
-      });
-      document.body.append(cursor);
     },
     [dragged, x, y] as const
   );
@@ -102,6 +113,11 @@ const rowOf = (page: Page, text: string) => page.locator(".row").filter({ hasTex
 
 test("outline", async ({ page }) => {
   await bootSidebar(page);
+  // the pointer over a row reveals its actions; draw it on one (rename)
+  const hovered = rowOf(page, "Iterator in std::iter");
+  await hovered.hover();
+  const action = (await hovered.locator(".node-actions button").nth(2).boundingBox())!;
+  await drawCursor(page, action.x + action.width / 2, action.y + action.height / 2);
   await shoot(page, "1-outline");
 });
 
@@ -112,10 +128,9 @@ test("drag", async ({ page }) => {
   const target = rowOf(page, "Kinkaku-ji");
   await target.dispatchEvent("dragover");
   await expect(page.locator(".drop-indicator")).toHaveCount(1);
-  // and the row actions, as hovering any row reveals them
-  await rowOf(page, "Learn Japanese").hover();
   const line = (await target.boundingBox())!;
-  await drawPointer(page, "Arashiyama", 230, line.y);
+  await drawGhost(page, "Arashiyama", 230, line.y);
+  await drawCursor(page, 230, line.y);
   // close in on the Kyoto group, like the original listing's zoomed shot
   const top = (await rowOf(page, "Trip to Kyoto").boundingBox())!.y;
   const last = (await rowOf(page, "Astronomy Picture").boundingBox())!;
@@ -124,7 +139,7 @@ test("drag", async ({ page }) => {
 
 test("search", async ({ page }) => {
   await bootSidebar(page);
-  // matches inside the collapsed Python group are found too
+  // matches inside the collapsed Programming group are found too
   await page.locator("#search").fill("iter");
   await expect(rowOf(page, "itertools")).toBeVisible();
   const last = (await page.locator(".row").last().boundingBox())!;
