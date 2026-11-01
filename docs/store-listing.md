@@ -96,13 +96,25 @@ letterboxed, as the 1.0.0 listing's were.
 
 Captions, as on the listing:
 
-1. `1-outline.png` — Keep as many tabs as you like. Close them to reclaim memory — nothing is lost, and your tree survives every restart.
-2. `2-drag.png` — Reorganize by dragging, with a live drop preview; hover any row for quick actions — group, rename, cut, delete.
+1. `1-outline.png` — Keep as many tabs as you like. Close them to reclaim memory — nothing is lost, and your tree survives every restart. Hover any row for quick actions — group, rename, cut, delete.
+2. `2-drag.png` — Reorganize by dragging, with a live drop preview.
 3. `3-search.png` — Find anything in seconds — search across thousands of tabs, including matches tucked inside collapsed groups.
 4. Options page (captured by hand) — Make it yours — fully remappable keyboard shortcuts and automatic daily backups.
 
 ## Before you upload
 
-- Version is `1.0.0` for the debut. **AMO never lets a version number be reused**, so bump it for every future upload.
+- Version is `1.1.0` (`public/manifest.json` and `package.json`). **AMO never lets a version number be reused**, so bump it for every future upload.
 - Build the package: `pnpm run package` → `web-ext-artifacts/*.zip`.
 - Because the bundle is compiled + minified, you must also submit source: see [`reviewer-notes.md`](reviewer-notes.md) and run `pnpm run package:source`.
+
+## Version notes
+
+Paste into the upload's "Release notes" field.
+
+### 1.1.0
+
+- Rows show each site's favicon, and hovering a row shows its url.
+- Saved (closed) rows draw their icon from bytes stored locally, so browsing your outline never contacts the sites in it. Rows saved before this version get their icon the next time their tab is open.
+- Fixed: Export could write a file containing only "undefined" on a large tree.
+- Fixed: one url Firefox refuses to open no longer stops a whole window from restoring, and a restore blocked by such urls now says why.
+- Polished the toolbar icon.
