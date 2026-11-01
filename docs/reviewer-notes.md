@@ -54,7 +54,9 @@ pnpm install               # installs JS toolchain + PureScript package set
 pnpm run build             # clean dist/ -> spago build -> esbuild bundle -> copy static files
 ```
 
-The result in `dist/` is exactly what the submitted XPI contains. Build the
+The result in `dist/` is exactly what the submitted XPI contains. CI checks this
+on every change (`pnpm run check:source`): it rebuilds from the source zip with
+these steps and requires a byte-identical `dist/`. Build the
 package — and the source zip (`pnpm run package:source`) — from the **same clean
 commit**; `package:source` refuses a dirty tree so the XPI and source can't drift:
 

@@ -50,3 +50,23 @@ jobs:
           name: test-results
           path: test-results/
           retention-days: 7
+
+  # The AMO source zip must rebuild the shipped dist/ (scripts/check-source-repro.mjs).
+  source-repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.11.0
+
+      # pnpm via Corepack, as the reviewer recipe in docs/reviewer-notes.md does.
+      - run: corepack enable
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run check:source
