@@ -113,9 +113,9 @@ Paste into the upload's "Release notes" field.
 
 ### 1.1.1
 
-- Saved rows with no icon of their own now show their site's icon, borrowed from other saved tabs of the same site (still from local bytes, no network request).
+- Saved rows with no icon of their own now show their site's icon, borrowed from other tabs of the same site (still from local bytes, no network request).
 - Fixed: in a long list of one site's tabs, rows past the first few dozen lost their icon.
-- Fixed: the first click in a sidebar opened after Firefox had been idle could be ignored.
+- Fixed: after Firefox had been idle, the first click in the sidebar could be ignored (e.g. restoring a saved window took two clicks).
 
 ### 1.1.0
 
