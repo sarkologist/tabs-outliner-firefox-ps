@@ -28,9 +28,15 @@ it's considered done.
 `pnpm check` is the single gate, and it must pass before a PR:
 
 ```
-spago unit/property/guard tests → spago build → esbuild bundle
-  → copy-static → web-ext lint → Playwright e2e
+dev-path check → spago unit/property/guard tests → spago build
+  → esbuild bundle → copy-static → web-ext lint → Playwright e2e
 ```
+
+GitHub Actions runs the same `pnpm check` on every PR and push to `master`
+(`.github/workflows/ci.yml`); `master` requires it to pass. The dev-path check
+(`scripts/check-dev-paths.mjs`) fails on absolute developer home/toolchain paths
+in tracked files, since the AMO source zip ships every committed file to
+Mozilla's reviewers.
 
 The project has a strict **no-manual-testing** contract: the whole suite is
 deterministic and headless. Add unit + e2e coverage for new behavior rather than
