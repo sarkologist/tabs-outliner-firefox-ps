@@ -17,7 +17,8 @@
     "lint:ext": "web-ext lint --source-dir dist --no-config-discovery",
     "screenshots": "pnpm run build && playwright test -c playwright.screenshots.config.ts --project firefox",
     "screenshots:chromium": "pnpm run build && playwright test -c playwright.screenshots.config.ts --project chromium",
-    "check": "node scripts/clean.mjs && spago test && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs && web-ext lint --source-dir dist --no-config-discovery && playwright test"
+    "lint:paths": "node scripts/check-dev-paths.mjs",
+    "check": "node scripts/check-dev-paths.mjs && node scripts/clean.mjs && spago test && spago build && node scripts/bundle.mjs && node scripts/copy-static.mjs && web-ext lint --source-dir dist --no-config-discovery && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",
