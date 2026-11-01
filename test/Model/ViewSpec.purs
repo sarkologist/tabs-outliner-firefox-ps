@@ -313,6 +313,47 @@ spec = describe "Model.View" do
     shared [ { url: "https://a.example/1", icon: Just big }, { url: "https://a.example/2", icon: Just small } ]
       `shouldEqual` Just small
 
+  it "breaks an equal tie the same way every time" do
+    let
+      x = distinctFavicon 1 500
+      y = distinctFavicon 2 500
+      shared sites = Map.lookup "https://a.example" (originIcons (mSites sites))
+    shared [ { url: "https://a.example/1", icon: Just x }, { url: "https://a.example/2", icon: Just y } ]
+      `shouldEqual` shared [ { url: "https://a.example/2", icon: Just y }, { url: "https://a.example/1", icon: Just x } ]
+
+  it "keeps a live tab's own icon url over its origin's bytes" do
+    let
+      yt = distinctFavicon 1 100
+      model = mSites [ { url: "https://a.example/1", icon: Just yt }, { url: "https://a.example/2", icon: Just "https://a.example/own.png" } ]
+      -- T2 is live: the url its page reports is its own icon
+      live = model { nodes = Map.update (\n -> Just (n { tabId = Just 7 })) "T2" model.nodes }
+      rows = sliceView live (originIcons live) "" (computeOrder "" live) 2 1
+    map _.favIconUrl rows `shouldEqual` [ Just "https://a.example/own.png" ]
+
+  it "lends a saved row its origin's bytes in place of an icon url it cannot draw" do
+    let
+      yt = distinctFavicon 1 100
+      -- T2 is closed and holds an old icon url: never drawn (it would be a request),
+      -- so it borrows like a row with nothing
+      model = mSites [ { url: "https://a.example/1", icon: Just yt }, { url: "https://a.example/2", icon: Just "https://a.example/favicon.ico" } ]
+      rows = sliceView model (originIcons model) "" (computeOrder "" model) 2 1
+    map _.favIconUrl rows `shouldEqual` [ Just yt ]
+
+  it "pays for rows' own icons before lending any" do
+    let
+      -- T1..T8: eight origins, each with its own 16 KB icon (outside the window);
+      -- T9..T16 borrow them; T17 has an icon of its own. In the window T9..T17 the
+      -- budget (8 x 16 KB) goes to T17's own icon first, then 7 of the 8 lent ones.
+      site i icon = { url: "https://o" <> show i <> ".example/", icon }
+      model = mSites
+        ( map (\i -> site i (Just (distinctFavicon i 16384))) (Array.range 1 8)
+            <> map (\i -> site i Nothing) (Array.range 1 8)
+            <> [ site 9 (Just (distinctFavicon 9 16384)) ]
+        )
+      rows = sliceView model (originIcons model) "" (computeOrder "" model) 9 9
+    (Array.last rows >>= _.favIconUrl) `shouldEqual` Just (distinctFavicon 9 16384)
+    Array.length (Array.filter (\r -> r.favIconUrl /= Nothing) rows) `shouldEqual` 8
+
   it "shares only stored bytes, never an icon url" do
     let
       -- a live tab may draw the url its page reports, but lending that url to a

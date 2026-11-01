@@ -95,6 +95,15 @@ spec = describe "Model.Favicon" do
     origin "file:///Users/x/page.html" `shouldEqual` Nothing
     origin "moz-extension://abc/page.html" `shouldEqual` Nothing
     origin "https://" `shouldEqual` Nothing
+    -- a default port is the same origin; another port is not
+    origin "https://a.example:443/x" `shouldEqual` Just "https://a.example"
+    origin "http://a.example:80/" `shouldEqual` Just "http://a.example"
+    origin "https://a.example:8443/" `shouldEqual` Just "https://a.example:8443"
+    origin "http://[::1]:8080/x" `shouldEqual` Just "http://[::1]:8080"
+    -- userinfo stays in: such a url only shares with itself, never with the host
+    -- (or the host it pretends to be)
+    (origin "https://a.example@b.example/" == origin "https://b.example/") `shouldEqual` false
+    (origin "https://a.example@b.example/" == origin "https://a.example/") `shouldEqual` false
 
   it "keeps only storable bytes of an imported icon" do
     importedIcon (Just small) `shouldEqual` Just small

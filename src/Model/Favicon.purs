@@ -36,7 +36,7 @@ import Prelude
 import Control.Alt ((<|>))
 import Control.Alternative (guard)
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
-import Data.String (codePointFromChar, drop, indexOf, length, stripPrefix, takeWhile, toLower) as String
+import Data.String (codePointFromChar, drop, indexOf, length, stripPrefix, stripSuffix, take, takeWhile, toLower) as String
 import Data.String.Pattern (Pattern(..))
 import Data.Tuple (Tuple(..))
 import Model.Event (BrowserEvent(..))
@@ -100,14 +100,18 @@ sameSite a b = map host a == map host b
     (fromMaybe u (afterScheme u))
   afterScheme u = map (\i -> String.drop (i + 3) u) (String.indexOf (Pattern "://") u)
 
--- | A web page url's origin (scheme, host, port), lowercased: the scope a site's
--- | fallback `/favicon.ico` lives in, so the unit `Model.View` shares a captured
--- | icon across. Nothing for anything but http(s) — no site, no shared icon.
+-- | A web page url's origin (scheme, host, port), lowercased, with a scheme's
+-- | default port dropped: the scope a site's fallback `/favicon.ico` lives in, so
+-- | the unit `Model.View` shares a captured icon across. Nothing for anything but
+-- | http(s) — no site, no shared icon. Reads only the url's head (a host is at
+-- | most 253 characters; a url can run to tens of KB).
 origin :: String -> Maybe String
 origin u = do
-  let lower = String.toLower u
+  let lower = String.toLower (String.take 300 u)
   Tuple scheme rest <- after "https://" lower <|> after "http://" lower
-  let host = String.takeWhile (\c -> c /= String.codePointFromChar '/' && c /= String.codePointFromChar '?' && c /= String.codePointFromChar '#') rest
+  let
+    authority = String.takeWhile (\c -> c /= String.codePointFromChar '/' && c /= String.codePointFromChar '?' && c /= String.codePointFromChar '#') rest
+    host = fromMaybe authority (String.stripSuffix (Pattern (if scheme == "https://" then ":443" else ":80")) authority)
   guard (host /= "")
   pure (scheme <> host)
   where
