@@ -3,11 +3,12 @@ module Test.Model.ViewSpec where
 import Prelude
 
 import Data.Argonaut.Core (stringify)
+import Data.Argonaut.Decode (decodeJson)
 import Data.Argonaut.Parser (jsonParser)
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.String (length) as String
 import Data.String.Common (joinWith) as String
 import Data.Tuple (Tuple(..))
@@ -220,13 +221,30 @@ spec = describe "Model.View" do
       rows = sliceView same "" (computeOrder "" same) 1 200
     Array.length (Array.filter (\r -> r.favIconUrl == Just (favicon 16384)) rows) `shouldEqual` 200
 
-  it "still fits a small new icon after a big one ran the budget out" do
+  it "lets a repeat of an admitted icon ride free once the budget is spent" do
     let
-      -- eight 16 KB icons spend all but 0 of 131072; a repeat of one of them is
-      -- free, a ninth distinct one is not
-      mixed = mIconsBy 10 (\i -> if i <= 8 then distinctFavicon i 16384 else if i == 9 then distinctFavicon 1 16384 else distinctFavicon i 16384)
+      -- eight distinct 16 KB icons spend all 131072; row 9 repeats one of them
+      -- (free), row 10 is a ninth distinct one (dropped)
+      mixed = mIconsBy 10 (\i -> if i == 9 then distinctFavicon 1 16384 else distinctFavicon i 16384)
       rows = sliceView mixed "" (computeOrder "" mixed) 1 10
     map (\r -> r.favIconUrl /= Nothing) rows `shouldEqual` (Array.replicate 9 true <> [ false ])
+
+  it "points each row at its own icon in the wire table" do
+    let
+      a = distinctFavicon 1 64
+      b = distinctFavicon 2 64
+      dropped = hugeFavicon -- past the per-icon cap: never rendered
+      icons = [ Just a, Just dropped, Just b, Just a, Nothing, Just b ]
+      model = mIconsBy 6 (\i -> fromMaybe "" (join (Array.index icons (i - 1))))
+      rows = sliceView model "" (computeOrder "" model) 1 6
+      view = { total: 7, rows, focusIndex: -1, serverMs: 0.0, nodeTotal: 7, openTabTotal: 0, matchTotal: 0 }
+      wire = encodeView view
+      wireShape = decodeJson wire :: Either _ { icons :: Array String, rows :: Array { icon :: Maybe Int } }
+    map (\w -> { icons: w.icons, slots: map _.icon w.rows }) wireShape
+      `shouldEqual` Right { icons: [ a, b ], slots: [ Just 0, Nothing, Just 1, Just 0, Nothing, Just 1 ] }
+    case decodeView wire of
+      Right decoded -> map _.favIconUrl decoded.rows `shouldEqual` [ Just a, Nothing, Just b, Just a, Nothing, Just b ]
+      Left err -> fail err
 
   it "sends a repeated icon over the wire once" do
     let
