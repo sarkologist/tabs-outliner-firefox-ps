@@ -91,8 +91,7 @@ rendering differ, so prefer Firefox for what gets uploaded. Output follows the
 host's system font and accent colour, so re-rendering on another machine changes
 the PNGs slightly. Re-run it whenever the sidebar's look changes.
 
-The committed PNGs are currently the **Chromium** render — re-render in Firefox
-before uploading. AMO frames screenshots at 1280×800 (16:10); these are
+AMO frames screenshots at 1280×800 (16:10); these are
 sidebar-shaped and get letterboxed, as the 1.0.0 listing's were.
 
 Captions, as on the listing:
