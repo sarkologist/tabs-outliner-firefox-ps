@@ -162,6 +162,8 @@ export function installFakeBrowser(seed: Seed) {
     windows: {
       getAll: (opts: any = {}) => {
         driver.getAllCalls++;
+        if (driver.failGetAll)
+          return (driver._getAllGate ?? Promise.resolve()).then(() => Promise.reject(new Error("getAll failed")));
         // Capture the snapshot at CALL time — before awaiting any gate — exactly as
         // a real getAll reflects the windows at the instant it ran. A test can hold
         // boot open on `driver._getAllGate` to drive the "an event arrives after the
@@ -416,6 +418,8 @@ export function installFakeBrowser(seed: Seed) {
     // how many times windows.getAll has been called, and an optional gate a test
     // can use to suspend boot mid-snapshot (see windows.getAll above).
     getAllCalls: 0,
+    // when true, windows.getAll rejects, so a test can make boot fail
+    failGetAll: false,
     _getAllGate: null as Promise<void> | null,
     _releaseGetAll: null as (() => void) | null,
     blockGetAll: () => {

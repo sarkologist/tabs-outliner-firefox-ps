@@ -16,15 +16,16 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing, maybe)
 import Data.Newtype (unwrap)
 import Effect (Effect)
-import Effect.Aff (Aff, attempt, launchAff_)
+import Effect.Aff (Aff, attempt, launchAff_, runAff_, throwError)
 import Effect.Class (liftEffect)
 import Effect.Class.Console as Console
-import Effect.Exception (message)
+import Effect.Exception (Error, message)
 import Effect.Now (now)
 import Effect.Ref as Ref
 import Effect.Browser (BrowserApi)
 import Effect.Browser as Browser
 import Effect.Channel as Channel
+import Effect.Gate as Gate
 import Effect.Persist as Persist
 import Effect.Profile as Profile
 import Model.Codec (encodeSnapshot)
@@ -42,7 +43,22 @@ nowMs :: Effect Number
 nowMs = (unwrap <<< unInstant) <$> now
 
 main :: Effect Unit
-main = launchAff_ do
+main = do
+  serveGate <- Gate.new
+  runAff_ (bootFailed serveGate) (boot serveGate)
+
+-- | A boot that throws never opens the gate, so open it with a handler that
+-- | rejects: held and later requests fail at once (the sidebar's `GetView` retry
+-- | can see that) instead of waiting forever.
+bootFailed :: Gate.Gate (Json -> Aff Json) -> Either Error Unit -> Effect Unit
+bootFailed serveGate = case _ of
+  Left err -> do
+    Console.error ("background: boot failed: " <> message err)
+    Gate.open serveGate \_ -> throwError err
+  Right _ -> pure unit
+
+boot :: Gate.Gate (Json -> Aff Json) -> Aff Unit
+boot serveGate = do
   api <- liftEffect Browser.getBrowser
   -- Register the live browser-event listeners NOW — synchronously, before the
   -- first `await` below. This is a non-persistent (event) page: Firefox suspends
@@ -95,6 +111,17 @@ main = launchAff_ do
   liftEffect $ Browser.onBackupAlarm api do
     Ref.write true backupPendingRef
     join (Ref.read backupKickRef)
+  -- The sidebar's request listener, registered now for the same reason: a click
+  -- in the sidebar while this page is suspended is a `runtime.sendMessage` that
+  -- wakes it, and Firefox delivers that message to whatever listener the initial
+  -- top-level run registered. Registered after boot, there was none, the message
+  -- resolved `undefined`, and the click (say, restoring a saved window) was lost.
+  -- A request that arrives mid-boot waits on `serveGate` until boot opens it with
+  -- the real handler, so it is served exactly once — never dropped, and never
+  -- retried by the sidebar (a retried restore would open its windows twice).
+  liftEffect $ Channel.onRequest api \reqJson -> do
+    serve <- Gate.wait serveGate
+    serve reqJson
   db <- Persist.open
   loaded <- Persist.load db
   t0 <- liftEffect nowMs
@@ -127,10 +154,8 @@ main = launchAff_ do
   -- each origin's shared icon (`Model.View.originIcons`), memoized per version:
   -- O(N) like the order, but independent of the query
   iconsRef <- liftEffect (Ref.new { version: (-1), icons: (Map.empty :: OriginIcons) })
-  -- persist the re-match for durability, but do NOT broadcast yet: we aren't
-  -- serving requests until onRequest is registered below, and the sidebar whose
-  -- message woke this (possibly suspended) page must hear its refetch ping only
-  -- once we can answer it.
+  -- persist the re-match for durability; open sidebars hear about it from the
+  -- post-boot ping below.
   unless (isEmptyPatch bootPatch) (Persist.writePatch db bootPatch)
   -- Stamp each live tab with the node id re-match bound it to (via browser.sessions),
   -- so the NEXT restart can re-bind by that stable id instead of guessing by url.
@@ -296,98 +321,103 @@ main = launchAff_ do
   -- `invalidate`, and runs its browser actions; a GetView returns one window of the
   -- visible order. The sidebar holds no model — it only ever renders the window it
   -- is given here.
-  liftEffect $ Channel.onRequest api \reqJson -> case decodeRequest reqJson of
-    Right (GetView vr) -> do
-      ts0 <- liftEffect Profile.nowMs
-      m <- liftEffect (Ref.read ref)
-      v <- liftEffect (Ref.read versionRef)
-      cache <- liftEffect (Ref.read viewRef)
-      -- reuse the cached order unless the model changed or the query differs;
-      -- a pure scroll (same version + query) skips the O(N) recompute.
-      order <-
-        if cache.version == v && cache.query == vr.query then pure cache.order
-        else do
-          let o = computeOrder vr.query m
-          liftEffect (Ref.write { version: v, query: vr.query, order: o } viewRef)
-          pure o
-      iconCache <- liftEffect (Ref.read iconsRef)
-      icons <-
-        if iconCache.version == v then pure iconCache.icons
-        else do
-          let i = originIcons m
-          liftEffect (Ref.write { version: v, icons: i } iconsRef)
-          pure i
-      let
-        total = Array.length order
-        -- `tail` (the open default) asks for the last window without the sidebar
-        -- needing to know `total` first.
-        start = if vr.tail then max 0 (total - vr.count) else startForView vr.start vr.count vr.targetNodeId order
-        focusIndex = case vr.myWindow of
-          Just w | vr.wantFocus -> focusIndexOf w order m
-          _ -> -1
-        rows = sliceView m icons vr.query order start vr.count
-        stats = viewStats vr.query m
-      ts1 <- liftEffect Profile.nowMs
-      pure (encodeView
-        { total
-        , rows
-        , focusIndex
-        , serverMs: ts1 - ts0
-        , nodeTotal: stats.nodeTotal
-        , openTabTotal: stats.openTabTotal
-        , matchTotal: stats.matchTotal
-        })
-    Right (RunCommand cmd) -> do
-      m <- liftEffect (Ref.read ref)
-      t <- liftEffect nowMs
-      let r = applyCommand t cmd m
-      let changed = not (isEmptyPatch r.patch) || not (Array.null r.actions)
-      let missingSource = pasteSourceMissing cmd m
-      -- counted against the PRE-command model `m`, before the restore consumes it
-      let unopenable = unopenableOnRestore cmd m
-      liftEffect do
-        Ref.write r.model ref
-        -- record the inverse so this command can be undone; a fresh edit
-        -- invalidates any redo future. A command that relocated real browser tabs
-        -- (a live-tab move, or flattening a live window) is skipped: undo can't move
-        -- those tabs back, so reverting only the tree would desync the two.
-        when (undoable cmd && not (isEmptyPatch r.patch) && not (Array.any relocates r.actions)) do
-          Ref.modify_ (pushBounded (inversePatch t m r.patch)) undoRef
-          Ref.write [] redoRef
-      persistAndBroadcast api db versionRef r.patch
-      runActions r.actions
-      pure (ackChangedJson changed missingSource unopenable)
-    Right Undo -> stepStack undoRef redoRef
-    Right Redo -> stepStack redoRef undoRef
-    -- export needs the whole tree; it's a rare, explicit user action, so paying
-    -- O(total) once here (rather than keeping a model copy in the sidebar) is
-    -- fine. The tree is written to a file here, never returned — see `runExport`.
-    Right Export -> runExport
-    Right (OpenFullSizeOutliner sourceWindowId) -> do
-      Browser.openFullSizeOutliner api sourceWindowId
-      pure ackJson
-    Right GetAutomaticBackups -> do
-      enabled <- Browser.getAutomaticBackupsEnabled api
-      pure (encodeJson { enabled })
-    Right (SetAutomaticBackups enabled) -> do
-      Browser.setAutomaticBackupsEnabled api enabled
-      configureAutomaticBackups enabled enabled
-      pure (encodeJson { enabled })
-    _ -> pure ackJson
+  let
+    serve :: Json -> Aff Json
+    serve reqJson = case decodeRequest reqJson of
+      Right (GetView vr) -> do
+        ts0 <- liftEffect Profile.nowMs
+        m <- liftEffect (Ref.read ref)
+        v <- liftEffect (Ref.read versionRef)
+        cache <- liftEffect (Ref.read viewRef)
+        -- reuse the cached order unless the model changed or the query differs;
+        -- a pure scroll (same version + query) skips the O(N) recompute.
+        order <-
+          if cache.version == v && cache.query == vr.query then pure cache.order
+          else do
+            let o = computeOrder vr.query m
+            liftEffect (Ref.write { version: v, query: vr.query, order: o } viewRef)
+            pure o
+        iconCache <- liftEffect (Ref.read iconsRef)
+        icons <-
+          if iconCache.version == v then pure iconCache.icons
+          else do
+            let i = originIcons m
+            liftEffect (Ref.write { version: v, icons: i } iconsRef)
+            pure i
+        let
+          total = Array.length order
+          -- `tail` (the open default) asks for the last window without the sidebar
+          -- needing to know `total` first.
+          start = if vr.tail then max 0 (total - vr.count) else startForView vr.start vr.count vr.targetNodeId order
+          focusIndex = case vr.myWindow of
+            Just w | vr.wantFocus -> focusIndexOf w order m
+            _ -> -1
+          rows = sliceView m icons vr.query order start vr.count
+          stats = viewStats vr.query m
+        ts1 <- liftEffect Profile.nowMs
+        pure (encodeView
+          { total
+          , rows
+          , focusIndex
+          , serverMs: ts1 - ts0
+          , nodeTotal: stats.nodeTotal
+          , openTabTotal: stats.openTabTotal
+          , matchTotal: stats.matchTotal
+          })
+      Right (RunCommand cmd) -> do
+        m <- liftEffect (Ref.read ref)
+        t <- liftEffect nowMs
+        let r = applyCommand t cmd m
+        let changed = not (isEmptyPatch r.patch) || not (Array.null r.actions)
+        let missingSource = pasteSourceMissing cmd m
+        -- counted against the PRE-command model `m`, before the restore consumes it
+        let unopenable = unopenableOnRestore cmd m
+        liftEffect do
+          Ref.write r.model ref
+          -- record the inverse so this command can be undone; a fresh edit
+          -- invalidates any redo future. A command that relocated real browser tabs
+          -- (a live-tab move, or flattening a live window) is skipped: undo can't move
+          -- those tabs back, so reverting only the tree would desync the two.
+          when (undoable cmd && not (isEmptyPatch r.patch) && not (Array.any relocates r.actions)) do
+            Ref.modify_ (pushBounded (inversePatch t m r.patch)) undoRef
+            Ref.write [] redoRef
+        persistAndBroadcast api db versionRef r.patch
+        runActions r.actions
+        pure (ackChangedJson changed missingSource unopenable)
+      Right Undo -> stepStack undoRef redoRef
+      Right Redo -> stepStack redoRef undoRef
+      -- export needs the whole tree; it's a rare, explicit user action, so paying
+      -- O(total) once here (rather than keeping a model copy in the sidebar) is
+      -- fine. The tree is written to a file here, never returned — see `runExport`.
+      Right Export -> runExport
+      Right (OpenFullSizeOutliner sourceWindowId) -> do
+        Browser.openFullSizeOutliner api sourceWindowId
+        pure ackJson
+      Right GetAutomaticBackups -> do
+        enabled <- Browser.getAutomaticBackupsEnabled api
+        pure (encodeJson { enabled })
+      Right (SetAutomaticBackups enabled) -> do
+        Browser.setAutomaticBackupsEnabled api enabled
+        configureAutomaticBackups enabled enabled
+        pure (encodeJson { enabled })
+      _ -> pure ackJson
 
-  -- We can now serve requests: ping every open sidebar to (re)fetch its window.
-  -- UNCONDITIONAL — on a clean restart the re-match patch is empty, but a sidebar
-  -- that opened while this (event) page was suspended still needs this wake-up to
-  -- recover from its first request racing our boot.
-  liftEffect (Channel.broadcast api invalidateMsg)
-
-  -- Boot done, model live: install the drainer (so the buffered backlog and every
-  -- future event flow through `dispatch`) and flush whatever arrived while booting.
   liftEffect do
+    -- Boot done, model live: install the drainer (so the buffered backlog and
+    -- every future event flow through `dispatch`) and flush whatever arrived while
+    -- booting. Held requests interleave with that drain as live ones do; each
+    -- read-apply-write is synchronous, so neither can lose the other's update.
     Ref.write kick kickRef
     Ref.write backupKick backupKickRef
     kick
     backupKick
+    -- Serve held requests, in arrival order, and every later one.
+    Gate.open serveGate serve
+    -- Ping every open sidebar to (re)fetch its window. UNCONDITIONAL — on a clean
+    -- restart the re-match patch is empty, but a sidebar whose first GetView
+    -- arrived before this page had loaded at all (so no listener could hold it)
+    -- still needs this wake-up.
+    Channel.broadcast api invalidateMsg
 
 -- Bump the structural version, ping open sidebars to re-fetch, then persist.
 -- The version bump + broadcast are synchronous with the caller's model write (no
