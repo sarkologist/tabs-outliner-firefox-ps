@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { installFakeBrowser } from "./support/fake-browser";
-import { readNodes, fake } from "./support/harness";
+import { bootBackgroundAndSidebar, readNodes, fake } from "./support/harness";
 
 // A non-persistent background ("event") page is suspended when idle and woken by
 // the very event that fires. For a link opened from another application that is
@@ -79,5 +79,61 @@ test.describe("cold wake (event page)", () => {
       .poll(() => readNodes(page).then((n) => n.filter((x) => x.tabId === 12).length))
       .toBe(1);
     expect((await readNodes(page)).filter((n) => n.title === "External").length).toBe(1);
+  });
+
+  // A sidebar click while the page is suspended is the `runtime.sendMessage` that
+  // wakes it. The request listener is registered before boot's first await, so
+  // Firefox has a listener to deliver that message to; the request is held until
+  // boot finishes and then served — exactly once, since a lost click retried by
+  // hand (or by the sidebar) would restore the same window twice.
+  test("a click sent while the page is still booting runs exactly once", async ({ context }) => {
+    const seed = { windows: [{ id: 1, tabs: [{ id: 11, url: "http://a", title: "Alpha", active: true }] }] };
+    const closedTab = (id: string, url: string) => ({
+      id, kind: "tab", parent: "g", children: [], title: id, customTitle: null, url, favIconUrl: null,
+      active: false, collapsed: false, createdAt: 0, closedAt: 0, tabId: null, windowId: null, sessionId: null,
+    });
+
+    // Session 1 saves a window and leaves the sidebar's boot cache behind, so the
+    // next cold open paints it before the background can answer.
+    const a = await context.newPage();
+    await bootBackgroundAndSidebar(a, seed, {
+      persisted: {
+        nodes: [
+          { ...closedTab("g", ""), kind: "group", parent: null, title: "Saved", url: null, children: ["Old1", "Old2"] },
+          closedTab("Old1", "http://old1"),
+          closedTab("Old2", "http://old2"),
+        ],
+        roots: ["g"],
+      },
+    });
+    await expect(a.getByText("Saved")).toBeVisible();
+    await expect.poll(() => a.evaluate(() => localStorage.getItem("tabsOutlinerBootWindow"))).toBeTruthy();
+    await a.close();
+
+    // Session 2: the background wakes and parks mid-boot; the sidebar paints from
+    // its cache and the user clicks the saved window.
+    const b = await context.newPage();
+    await b.addInitScript(installFakeBrowser, seed);
+    await b.goto("/blank.html");
+    await fake(b, "blockGetAll");
+    await b.addScriptTag({ path: "dist/background/background.js" });
+    await expect.poll(() => b.evaluate(() => (globalThis as any).__fake.getAllCalls)).toBeGreaterThan(0);
+    await b.addStyleTag({ path: "dist/sidebar/sidebar.css" });
+    await b.addScriptTag({ path: "dist/sidebar/sidebar.js" });
+    await b.locator(".row").filter({ hasText: "Saved" }).locator(".title").click();
+
+    const created = () => b.evaluate(() => (globalThis as any).__fake.windowCreateLog.length as number);
+    // held, not run against a model that isn't loaded yet
+    await b.waitForTimeout(300);
+    expect(await created()).toBe(0);
+
+    await fake(b, "releaseGetAll");
+    await expect.poll(created).toBe(1);
+    await expect
+      .poll(() => readNodes(b).then((ns) => ns.filter((n) => n.id.startsWith("Old") && n.tabId != null).length))
+      .toBe(2);
+    // and not a second time
+    await b.waitForTimeout(500);
+    expect(await created()).toBe(1);
   });
 });
