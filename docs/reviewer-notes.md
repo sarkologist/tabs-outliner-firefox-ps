@@ -56,12 +56,12 @@ pnpm run build                  # clean dist/ -> spago build -> esbuild bundle -
 
 The result in `dist/` is exactly what the submitted XPI contains. CI checks this
 on every change (`pnpm run check:source`): it rebuilds from the source zip with
-these steps on Linux and on macOS and requires a byte-identical `dist/`. Build the
-package — and the source zip (`pnpm run package:source`) — from the **same clean
-commit**; `package:source` refuses a dirty tree so the XPI and source can't drift:
+these steps on Linux and on macOS and requires a byte-identical `dist/`. The XPI and
+the source zip are built together from the **same clean commit**; packaging
+refuses a dirty tree so they can't drift:
 
 ```sh
-pnpm run package           # runs the build, then `web-ext build` over dist/
+pnpm run package           # source zip, then the build, then `web-ext build` over dist/
 ```
 
 `pnpm run check` additionally runs the full test suite (PureScript unit +
