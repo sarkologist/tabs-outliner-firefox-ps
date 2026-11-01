@@ -13,6 +13,7 @@
   --font-scale: 1;
 
   --node-icon-size: 16px;
+  --node-favicon-size: 14px;
   --node-indent: 11px;
   --node-row-padding-x: 4px;
   --node-label-padding-x: 3px;
@@ -350,7 +351,7 @@ body {
 .row {
   /* position/left/right/height/top and --depth are set inline (virtualization) */
   display: grid;
-  grid-template-columns: var(--node-icon-size) minmax(0, 1fr);
+  grid-template-columns: var(--node-icon-size) var(--node-favicon-size) minmax(0, 1fr);
   gap: var(--node-row-gap);
   align-items: center;
   box-sizing: border-box;
@@ -402,6 +403,7 @@ body {
    own position:absolute (a broad `.row > :not(.guide-layer)` would outrank it). */
 .toggle,
 .spacer,
+.favicon,
 .title,
 .rename-input {
   position: relative;
@@ -553,6 +555,39 @@ body {
 
 .toggle:hover {
   background: color-mix(in srgb, CanvasText 12%, transparent);
+}
+
+/* Favicon slot ------------------------------------------------------------ */
+
+/* Always occupies its grid column, favicon or not, so labels stay on one
+   left edge down the whole tree. */
+.favicon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--node-favicon-size);
+  height: var(--node-favicon-size);
+  flex: none;
+}
+
+.favicon-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* an icon that fails to load is replaced by the kind glyph (see
+     `FaviconFailed`); until that lands, suppress the broken-image mark */
+  -moz-force-broken-image-icon: 0;
+}
+
+.favicon-fallback {
+  width: var(--node-favicon-size);
+  height: var(--node-favicon-size);
+  color: color-mix(in srgb, CanvasText 55%, transparent);
+}
+
+/* a saved page's icon is dimmed, so live rows read as the live ones at a glance */
+.row.closed .favicon {
+  opacity: 0.65;
 }
 
 /* Title + rename input ---------------------------------------------------- */

@@ -52,7 +52,7 @@ durable, searchable tree you can reorganize, rename, and return to anytime.
 - Full undo/redo of every outline edit — rename, move, group, delete, import.
 
 **Yours, and private**
-- Everything lives locally in your browser. Grove collects nothing and sends nothing anywhere.
+- Everything lives locally in your browser. Grove has no account, no server and no analytics, and sends your outline nowhere. The only thing it loads from the network is the site icons shown beside the rows, fetched from each page's own host.
 - Configurable keyboard shortcuts, font zoom, and a browser shortcut to toggle the sidebar (default Ctrl+Shift+Y / ⌘⇧Y).
 
 Grove is a clean-slate, open-source rewrite of the classic tree-style

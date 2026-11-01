@@ -18,6 +18,8 @@ import Data.Int as Int
 import Data.Int.Bits (and)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Set (Set)
+import Data.Set as Set
 import Data.String.Common (joinWith)
 import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple(..))
@@ -101,6 +103,10 @@ type State =
   , cut :: Maybe Cut
   , dropTarget :: Maybe NodeId
   , hover :: Maybe NodeId
+  -- favicon urls that failed to load (a saved page's icon rots; Firefox's
+  -- `upgrade-insecure-requests` also kills `http://` icons on http-only hosts).
+  -- Keyed by url, not node, so one dead icon is known for every row that shows it.
+  , faviconFailed :: Set String
   , showInTreeFlash :: Maybe NodeId
   , query :: String
   , zoom :: Number
@@ -141,6 +147,7 @@ data Action
   | DropOn NodeId
   | DragEnd
   | SetHover (Maybe NodeId)
+  | FaviconFailed String
   | SetQuery String
   | SearchKey String
   | ClearSearch Boolean
@@ -160,7 +167,7 @@ component :: forall q i o. H.Component q i o Aff
 component = H.mkComponent
   { initialState: \_ ->
       { api: Nothing, total: 0, nodeTotal: 0, openTabTotal: 0, matchTotal: 0, rows: [], reqStart: 0, editing: Nothing, dragId: Nothing, dragSpan: Nothing
-      , cut: Nothing, dropTarget: Nothing, hover: Nothing, showInTreeFlash: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
+      , cut: Nothing, dropTarget: Nothing, hover: Nothing, faviconFailed: Set.empty, showInTreeFlash: Nothing, query: "", zoom: 1.0, notice: Nothing, scrollTop: 0.0
       , viewportH: 600.0, listener: Nothing, myWindow: Nothing, focusObserved: Nothing
       , fullSizeView: false, profiling: false, bootProfiled: false, opened: false
       }
@@ -262,6 +269,8 @@ handleAction = case _ of
   GroupClick nid -> sendCommand (Group nid)
   MoveTopLevelClick nid -> sendCommand (MoveTopLevel nid)
   MoveBottomClick nid -> sendCommand (MoveBottom nid)
+
+  FaviconFailed u -> H.modify_ \st -> st { faviconFailed = Set.insert u st.faviconFailed }
 
   StartRename nid text -> H.modify_ _ { editing = Just { id: nid, text }, hover = Nothing }
   EditInput text -> H.modify_ \s -> s { editing = map (_ { text = text }) s.editing }
@@ -654,7 +663,7 @@ render st =
       Just hi -> buildGuide windowEntries hi
       Nothing -> emptyGuide
     _, _ -> emptyGuide
-  slot wi r = Tuple r.id (renderRow st.query (st.dragId == Just r.id) st.cut st.showInTreeFlash st.editing guide wi rowH r)
+  slot wi r = Tuple r.id (renderRow st.query (st.dragId == Just r.id) st.cut st.showInTreeFlash st.editing st.faviconFailed guide wi rowH r)
   dropSlots = case st.dragId, st.dropTarget, st.dragSpan of
     Just dragId, Just targetId, Just span | dragId /= targetId ->
       case Array.find (\r -> r.id == targetId) st.rows >>= dropPlacement span of
@@ -772,8 +781,8 @@ noticeBanner = case _ of
         ]
     ]
 
-renderRow :: String -> Boolean -> Maybe Cut -> Maybe NodeId -> Maybe Editing -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
-renderRow query dragging cut showInTreeFlash editing guide wi rowH r =
+renderRow :: String -> Boolean -> Maybe Cut -> Maybe NodeId -> Maybe Editing -> Set String -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
+renderRow query dragging cut showInTreeFlash editing faviconFailed guide wi rowH r =
   HH.div
     [ HP.classes (map ClassName (rowClasses dragging cut showInTreeFlash r))
     , HP.attr (AttrName "data-node-id") r.id
@@ -791,7 +800,7 @@ renderRow query dragging cut showInTreeFlash editing guide wi rowH r =
     , HE.onDrop \_ -> DropOn r.id
     , HE.onDragEnd \_ -> DragEnd
     ]
-    [ toggleEl r, body query editing r, actionsEl query cut r, guideLayer guide wi ]
+    [ toggleEl r, faviconEl faviconFailed r, body query editing r, actionsEl query cut r, guideLayer guide wi ]
 
 rowClasses :: Boolean -> Maybe Cut -> Maybe NodeId -> ViewRow -> Array String
 rowClasses dragging cut showInTreeFlash r =
@@ -812,7 +821,44 @@ body query editing r = case editing of
       , HE.onBlur \_ -> CommitRename
       ]
   _ ->
-    HH.span [ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow r.id ] (titleContent query r)
+    HH.span
+      ([ HP.class_ (ClassName "title"), HE.onClick \_ -> ClickRow r.id ] <> urlTooltip r)
+      (titleContent query r)
+
+-- | The row's url, as a native tooltip. A title is often a truncated fragment of
+-- | prose; the url is how the user tells two same-titled rows apart, and it is the
+-- | one thing the row has no room to show. Containers carry no url, hence no tip.
+urlTooltip :: forall r i. { url :: Maybe String | r } -> Array (HP.IProp (title :: String | i) Action)
+urlTooltip r = maybe [] (\u -> [ HP.title u ]) r.url
+
+-- | The slot left of the label: the page's own favicon when we have one that
+-- | loads, otherwise a glyph for the row's kind, so the column never goes ragged.
+-- | The icon is scenery — it carries the row's tooltip but no click of its own
+-- | (`Activate` sits a pixel from the twisty, and on a saved window it reopens
+-- | every tab in it), it is not itself draggable (that would start an *image*
+-- | drag instead of the row's), and it sends no referrer when the url is remote.
+faviconEl :: Set String -> ViewRow -> H.ComponentHTML Action () Aff
+faviconEl faviconFailed r =
+  HH.span
+    ([ HP.class_ (ClassName "favicon") ] <> urlTooltip r)
+    [ case r.favIconUrl of
+        Just u | not (Set.member u faviconFailed) ->
+          HH.img
+            [ HP.class_ (ClassName "favicon-img")
+            , HP.src u
+            , HP.alt ""
+            , HP.draggable false
+            , HP.attr (AttrName "referrerpolicy") "no-referrer"
+            , HP.attr (AttrName "loading") "lazy"
+            , HE.onError \_ -> FaviconFailed u
+            ]
+        _ -> iconWith [ "button-icon", "favicon-fallback" ] (kindGlyph r)
+    ]
+
+kindGlyph :: ViewRow -> String
+kindGlyph r = case r.kind of
+  KTab -> "globe"
+  KGroup -> if r.live then "window" else "folder"
 
 titleContent :: String -> ViewRow -> Array (H.ComponentHTML Action () Aff)
 titleContent query r =

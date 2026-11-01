@@ -13,8 +13,12 @@ the build recipe; the source itself ships as `grove-source.zip`
 ## What Grove is
 
 A Firefox sidebar extension that keeps a durable, editable outline of your live
-and saved tabs/windows, stored locally in IndexedDB. No network access, no
-analytics, no remote code. `data_collection_permissions.required = ["none"]`.
+and saved tabs/windows, stored locally in IndexedDB. No analytics, no remote
+code, no server of its own: the only network requests are the row favicons the
+sidebar renders, which the browser fetches from each page's own host (the
+`favIconUrl` the `tabs` API reports, loaded with `referrerpolicy="no-referrer"`).
+Nothing is sent to the developer or to any third party, hence
+`data_collection_permissions.required = ["none"]`.
 
 ## Build environment (pinned)
 
@@ -78,7 +82,9 @@ Static assets (`manifest.json`, the HTML/CSS, icons) are copied verbatim from
 | `alarms` | Schedule the once-a-day automatic backup. |
 | `downloads` | Write the automatic daily backup file, and the manual JSON export. Both are written from the background page, because the whole-tree payload is too large to hand to the sidebar over `runtime.sendMessage`. |
 
-No host permissions, no content scripts, no remote code execution.
+No host permissions, no content scripts, no remote code execution. Favicons are
+rendered as plain `<img>` elements pointed at the `favIconUrl` the `tabs` API
+reports; they need no host permission and no `fetch`.
 
 ---
 
@@ -95,4 +101,6 @@ No host permissions, no content scripts, no remote code execution.
 > The resulting `dist/` is the extension. Entry points: src/Background/Main.purs
 > → dist/background/background.js, src/Sidebar/Main.purs → dist/sidebar/sidebar.js,
 > src/Options/Main.purs → dist/options/options.js. Everything runs locally in the
-> browser (IndexedDB); the add-on makes no network requests and collects no data.
+> browser (IndexedDB) and the add-on collects no data. Its only network traffic
+> is favicon images, loaded by the browser from each page's own host to draw the
+> rows; nothing is sent anywhere else.

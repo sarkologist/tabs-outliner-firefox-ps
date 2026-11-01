@@ -7,6 +7,8 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.String (length) as String
+import Data.String.Common (joinWith) as String
 import Data.Tuple (Tuple(..))
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
 import Model.View (computeOrder, decodeView, encodeView, focusIndexOf, sliceView, startForView, viewStats)
@@ -31,6 +33,45 @@ m = emptyModel
   , byWindow = Map.fromFoldable [ Tuple 1 "W" ]
   , byTab = Map.fromFoldable [ Tuple 11 "A" ]
   }
+
+-- the same shape, with a page url + favicon on A and an absurdly large `data:`
+-- favicon on B (the kind that must not ride along in every view window)
+mIcons :: Model
+mIcons = m
+  { nodes = Map.union
+      ( Map.fromFoldable $ map (\n -> Tuple n.id n)
+          [ (node "A" KTab (Just "W") []) { tabId = Just 11, active = true, title = "A", url = Just "http://a/page", favIconUrl = Just "http://a/favicon.ico" }
+          , (node "B" KTab (Just "W") []) { title = "B", url = Just "http://b/page", favIconUrl = Just hugeFavicon }
+          ]
+      )
+      m.nodes
+  }
+
+-- a `data:` favicon of exactly `n` characters
+favicon :: Int -> String
+favicon n = prefix <> String.joinWith "" (Array.replicate (n - String.length prefix) "A")
+  where
+  prefix = "data:image/png;base64,"
+
+hugeFavicon :: String
+hugeFavicon = favicon 16385
+
+-- one window of `n` tabs, each with a 16 KB favicon: what a tall full-size view
+-- at minimum zoom asks for, and what the per-window budget has to survive
+mManyIcons :: Int -> Model
+mManyIcons n = emptyModel
+  { roots = [ "W" ]
+  , nodes = Map.fromFoldable $ map (\x -> Tuple x.id x)
+      ( [ (node "W" KGroup Nothing (map tabId (Array.range 1 n))) { windowId = Just 1, title = "W" } ]
+          <> map
+            ( \i -> (node (tabId i) KTab (Just "W") []) { title = tabId i, favIconUrl = Just (favicon 16384) }
+            )
+            (Array.range 1 n)
+      )
+  , byWindow = Map.fromFoldable [ Tuple 1 "W" ]
+  }
+  where
+  tabId i = "T" <> show i
 
 spec :: Spec Unit
 spec = describe "Model.View" do
@@ -80,6 +121,78 @@ spec = describe "Model.View" do
           , byTab = Map.fromFoldable [ Tuple 11 "A", Tuple 12 "missing" ]
           }
     viewStats "" stale `shouldEqual` { nodeTotal: 5, openTabTotal: 0, matchTotal: 0 }
+
+  it "projects each row's url and favicon" do
+    let rows = sliceView mIcons "" (computeOrder "" mIcons) 1 1
+    map _.url rows `shouldEqual` [ Just "http://a/page" ]
+    map _.favIconUrl rows `shouldEqual` [ Just "http://a/favicon.ico" ]
+
+  it "drops a favicon too large to ride in every view window" do
+    -- the url still travels (it is small, and it is the row's tooltip); the row
+    -- falls back to its kind glyph instead of carrying ~5 KB of base64
+    let rows = sliceView mIcons "" (computeOrder "" mIcons) 2 1
+    map _.url rows `shouldEqual` [ Just "http://b/page" ]
+    map _.favIconUrl rows `shouldEqual` [ Nothing ]
+
+  it "keeps a favicon at the per-icon limit and drops the one past it" do
+    let
+      one m' = sliceView m' "" (computeOrder "" m') 1 1
+      with url = m { nodes = Map.insert "A" ((node "A" KTab (Just "W") []) { title = "A", favIconUrl = Just url }) m.nodes }
+    map _.favIconUrl (one (with (favicon 16384))) `shouldEqual` [ Just (favicon 16384) ]
+    map _.favIconUrl (one (with (favicon 16385))) `shouldEqual` [ Nothing ]
+
+  it "renders only favicon schemes an <img> may be pointed at" do
+    let
+      faviconOf url =
+        map _.favIconUrl
+          ( sliceView
+              (m { nodes = Map.insert "A" ((node "A" KTab (Just "W") []) { title = "A", favIconUrl = Just url }) m.nodes })
+              ""
+              (computeOrder "" m)
+              1
+              1
+          )
+    -- an imported tree carries whatever favIconUrl the file claimed
+    faviconOf "https://a/i.png" `shouldEqual` [ Just "https://a/i.png" ]
+    faviconOf "data:image/png;base64,AAAA" `shouldEqual` [ Just "data:image/png;base64,AAAA" ]
+    faviconOf "javascript:alert(1)" `shouldEqual` [ Nothing ]
+    faviconOf "chrome://branding/content/icon32.png" `shouldEqual` [ Nothing ]
+    faviconOf "data:text/html,<script>x</script>" `shouldEqual` [ Nothing ]
+
+  it "spends a favicon budget across the whole window, not per row" do
+    let
+      big = mManyIcons 200
+      rows = sliceView big "" (computeOrder "" big) 1 200
+      withIcons = Array.length (Array.filter (\r -> r.favIconUrl /= Nothing) rows)
+    -- 131072 / 16384 = 8 rows keep their icon; the rest fall back to a glyph but
+    -- are otherwise intact, so the reply stays bounded however tall the viewport
+    withIcons `shouldEqual` 8
+    Array.length rows `shouldEqual` 200
+    map _.title (Array.take 1 (Array.drop 8 rows)) `shouldEqual` [ "T9" ]
+
+  it "clamps a url to a length a tooltip can use" do
+    let
+      long = "http://a/?q=" <> String.joinWith "" (Array.replicate 4000 "x")
+      rows = sliceView (m { nodes = Map.insert "A" ((node "A" KTab (Just "W") []) { title = "A", url = Just long }) m.nodes }) "" (computeOrder "" m) 1 1
+    map (\r -> String.length <$> r.url) rows `shouldEqual` [ Just 2049 ] -- 2048 + the ellipsis
+
+  it "round-trips a row's url and favicon on the wire" do
+    let
+      rows = sliceView mIcons "" (computeOrder "" mIcons) 1 1
+      view = { total: 5, rows, focusIndex: 1, serverMs: 0.0, nodeTotal: 5, openTabTotal: 1, matchTotal: 0 }
+    case decodeView (encodeView view) of
+      Right decoded ->
+        map (\r -> Tuple r.url r.favIconUrl) decoded.rows
+          `shouldEqual` [ Tuple (Just "http://a/page") (Just "http://a/favicon.ico") ]
+      Left err -> fail err
+
+  it "decodes a cached row saved before rows carried a url or favicon" do
+    let
+      json = """{"total":1,"focusIndex":-1,"serverMs":0,"rows":[{"id":"A","index":0,"depth":0,"subtreeEnd":1,"kind":"tab","title":"A","live":false,"active":false,"collapsed":false,"hasChildren":false,"isLastRoot":true}]}"""
+    case jsonParser json >>= decodeView of
+      Right decoded ->
+        map (\r -> Tuple r.url r.favIconUrl) decoded.rows `shouldEqual` [ Tuple Nothing Nothing ]
+      Left err -> fail err
 
   it "round-trips view stats on the wire" do
     let
