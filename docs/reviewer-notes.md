@@ -5,8 +5,8 @@ then **bundled and minified with esbuild**. Under Mozilla's
 [source-code submission policy](https://extensionworkshop.com/documentation/publish/source-code-submission/),
 that means the review requires the original source plus instructions to
 reproduce the bundle. This file is the paste-ready "Notes to reviewer" text and
-the build recipe; the source itself ships as `grove-source.zip`
-(`pnpm run package:source`).
+the build recipe; the source itself ships as `grove-source.zip`, written
+alongside the XPI by `pnpm run package`.
 
 ---
 
@@ -56,12 +56,12 @@ pnpm run build                  # clean dist/ -> spago build -> esbuild bundle -
 
 The result in `dist/` is exactly what the submitted XPI contains. CI checks this
 on every change (`pnpm run check:source`): it rebuilds from the source zip with
-these steps on Linux and on macOS and requires a byte-identical `dist/`. The XPI and
-the source zip are built together from the **same clean commit**; packaging
-refuses a dirty tree so they can't drift:
+these steps on Linux and on macOS and requires a byte-identical `dist/`. The XPI
+and the source zip are built together from the **same clean commit**, and the
+XPI is zipped only from a `dist/` that this rebuild has just matched:
 
 ```sh
-pnpm run package           # source zip, then the build, then `web-ext build` over dist/
+pnpm run package           # pnpm run check:source, then `web-ext build` over the verified dist/
 ```
 
 `pnpm run check` additionally runs the full test suite (PureScript unit +

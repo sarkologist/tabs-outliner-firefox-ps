@@ -104,7 +104,7 @@ Captions, as on the listing:
 ## Before you upload
 
 - Version is `1.1.1` (`public/manifest.json` and `package.json`). **AMO never lets a version number be reused**, so bump it for every future upload.
-- Build the package from a clean commit: `pnpm run package` → `web-ext-artifacts/grove_persistent_tab_tree_manager-<version>.zip` plus the source zip `web-ext-artifacts/grove-source.zip` (it refuses a dirty tree).
+- Build the package from a clean commit: `pnpm run package` → `web-ext-artifacts/grove_persistent_tab_tree_manager-<version>.zip` plus the source zip `web-ext-artifacts/grove-source.zip` (it refuses a dirty tree and runs `check:source` first, so it needs network).
 - Because the bundle is compiled + minified, you must also submit that source zip: see [`reviewer-notes.md`](reviewer-notes.md).
 
 ## Version notes

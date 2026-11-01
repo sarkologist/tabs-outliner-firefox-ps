@@ -9,7 +9,6 @@ import { execFileSync } from "node:child_process";
 // The source zip must correspond to the uploaded XPI. `git archive` snapshots
 // HEAD, while the build reads the working tree — so a dirty tree would ship a
 // source zip a reviewer can't reproduce the XPI from. Refuse in that case.
-// `pnpm run package` runs this first, so it refuses too and writes both zips.
 const dirty = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim();
 if (dirty) {
   console.error(
@@ -32,4 +31,4 @@ execFileSync(
   ],
   { stdio: "inherit" },
 );
-console.log("package:source: wrote web-ext-artifacts/grove-source.zip");
+console.log("source zip: wrote web-ext-artifacts/grove-source.zip");

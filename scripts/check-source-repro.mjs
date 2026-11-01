@@ -7,8 +7,9 @@
 // local output/, and a nondeterministic build. The rebuild shares this
 // machine's pnpm store and spago cache, so it does not prove a cold fetch works.
 //
-// Writes the shipped dist/'s digests to web-ext-artifacts/dist-digests.json so
-// CI can compare builds across operating systems.
+// `pnpm run package` runs this and then zips the verified dist/, so the XPI is
+// always the reviewers' build. Writes the shipped dist/'s digests to
+// web-ext-artifacts/dist-digests.json so CI can compare builds across OSes.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -18,6 +19,9 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 let work;
+
+const git = (...args) => execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
+const head = git("rev-parse", "HEAD");
 
 const stage = (name, cmd, args, opts) => {
   try {
@@ -83,6 +87,11 @@ const problems = [
     .filter(([f, d]) => rebuilt.has(f) && rebuilt.get(f) !== d)
     .map(([f, d]) => `differs:              ${f}\n    checkout ${d}\n    rebuild  ${rebuilt.get(f)}`),
 ];
+// An edit or checkout during the build would make dist/ reflect neither HEAD
+// nor the zip.
+if (git("rev-parse", "HEAD") !== head || git("status", "--porcelain")) {
+  problems.push("tree changed during the build (HEAD moved or files edited)");
+}
 if (problems.length > 0) {
   console.error("\ncheck-source-repro: the source zip does not reproduce dist/:\n");
   for (const p of problems.sort()) console.error(`  ${p}`);
