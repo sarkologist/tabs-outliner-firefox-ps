@@ -544,7 +544,8 @@ sendCommand = sendRequest <<< RunCommand
 
 -- | Commands are sent once, never retried (unlike `attemptView`): a retried
 -- | restore would open its windows twice. A command that wakes a suspended
--- | background is held there until boot finishes, not lost — see `serveGate`.
+-- | background is held there until boot finishes, not lost — see `serveGate`
+-- | (a background that has not loaded at all still has no receiver).
 sendCommandAck :: forall o. Command -> H.HalogenM State Action () o Aff CommandAck
 sendCommandAck cmd = do
   st <- H.get

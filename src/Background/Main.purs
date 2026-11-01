@@ -16,10 +16,10 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), isNothing, maybe)
 import Data.Newtype (unwrap)
 import Effect (Effect)
-import Effect.Aff (Aff, attempt, launchAff_)
+import Effect.Aff (Aff, attempt, launchAff_, runAff_, throwError)
 import Effect.Class (liftEffect)
 import Effect.Class.Console as Console
-import Effect.Exception (message)
+import Effect.Exception (Error, message)
 import Effect.Now (now)
 import Effect.Ref as Ref
 import Effect.Browser (BrowserApi)
@@ -43,7 +43,22 @@ nowMs :: Effect Number
 nowMs = (unwrap <<< unInstant) <$> now
 
 main :: Effect Unit
-main = launchAff_ do
+main = do
+  serveGate <- Gate.new
+  runAff_ (bootFailed serveGate) (boot serveGate)
+
+-- | A boot that throws never opens the gate, so open it with a handler that
+-- | rejects: held and later requests fail at once (the sidebar's `GetView` retry
+-- | can see that) instead of waiting forever.
+bootFailed :: Gate.Gate (Json -> Aff Json) -> Either Error Unit -> Effect Unit
+bootFailed serveGate = case _ of
+  Left err -> do
+    Console.error ("background: boot failed: " <> message err)
+    Gate.open serveGate \_ -> throwError err
+  Right _ -> pure unit
+
+boot :: Gate.Gate (Json -> Aff Json) -> Aff Unit
+boot serveGate = do
   api <- liftEffect Browser.getBrowser
   -- Register the live browser-event listeners NOW — synchronously, before the
   -- first `await` below. This is a non-persistent (event) page: Firefox suspends
@@ -104,7 +119,6 @@ main = launchAff_ do
   -- A request that arrives mid-boot waits on `serveGate` until boot opens it with
   -- the real handler, so it is served exactly once — never dropped, and never
   -- retried by the sidebar (a retried restore would open its windows twice).
-  serveGate <- liftEffect Gate.new
   liftEffect $ Channel.onRequest api \reqJson -> do
     serve <- Gate.wait serveGate
     serve reqJson
@@ -137,9 +151,8 @@ main = launchAff_ do
   -- the last (version, query), so scrolling (same query, no edits) is O(window).
   versionRef <- liftEffect (Ref.new 0)
   viewRef <- liftEffect (Ref.new { version: (-1), query: "", order: ([] :: Array OrderEntry) })
-  -- persist the re-match for durability, but do NOT broadcast yet: requests are
-  -- held until `serveGate` opens below, and a sidebar must hear its refetch ping
-  -- only once we can answer it.
+  -- persist the re-match for durability; open sidebars hear about it from the
+  -- post-boot ping below.
   unless (isEmptyPatch bootPatch) (Persist.writePatch db bootPatch)
   -- Stamp each live tab with the node id re-match bound it to (via browser.sessions),
   -- so the NEXT restart can re-bind by that stable id instead of guessing by url.
@@ -382,12 +395,13 @@ main = launchAff_ do
   liftEffect do
     -- Boot done, model live: install the drainer (so the buffered backlog and
     -- every future event flow through `dispatch`) and flush whatever arrived while
-    -- booting — before any held request, so the backlog is queued ahead of it.
+    -- booting. Held requests interleave with that drain as live ones do; each
+    -- read-apply-write is synchronous, so neither can lose the other's update.
     Ref.write kick kickRef
     Ref.write backupKick backupKickRef
     kick
     backupKick
-    -- Serve: held requests run now, in arrival order, then later ones directly.
+    -- Serve held requests, in arrival order, and every later one.
     Gate.open serveGate serve
     -- Ping every open sidebar to (re)fetch its window. UNCONDITIONAL — on a clean
     -- restart the re-match patch is empty, but a sidebar whose first GetView

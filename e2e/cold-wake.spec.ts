@@ -136,4 +136,31 @@ test.describe("cold wake (event page)", () => {
     await b.waitForTimeout(500);
     expect(await created()).toBe(1);
   });
+
+  // A boot that throws must not leave requests waiting forever: held and later
+  // requests reject, as they did when nothing was listening.
+  test("a failed boot rejects held and later requests", async ({ page }) => {
+    await page.addInitScript(installFakeBrowser, { windows: [] });
+    await page.goto("/blank.html");
+    await page.evaluate(() => ((globalThis as any).__fake.failGetAll = true));
+    await fake(page, "blockGetAll");
+    await page.addScriptTag({ path: "dist/background/background.js" });
+    await expect.poll(() => page.evaluate(() => (globalThis as any).__fake.getAllCalls)).toBeGreaterThan(0);
+
+    const send = () =>
+      page.evaluate(() =>
+        Promise.race([
+          (globalThis as any).browser.runtime
+            .sendMessage({ kind: "req", body: { tag: "undo" } })
+            .then(() => "resolved", () => "rejected"),
+          new Promise((r) => setTimeout(() => r("pending"), 2000)),
+        ])
+      );
+    // sent while boot is still running, so it is held on the gate...
+    const held = send();
+    await fake(page, "releaseGetAll");
+    // ...and fails once boot does, like one sent afterwards
+    expect(await held).toBe("rejected");
+    expect(await send()).toBe("rejected");
+  });
 });
