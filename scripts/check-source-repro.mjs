@@ -33,7 +33,7 @@ const stage = (name, cmd, args, opts) => {
 };
 
 // Refuses a dirty tree, so the zip is exactly what the local build sees.
-stage("package:source", "node", ["scripts/package-source.mjs"], { cwd: repoRoot });
+stage("source zip", "node", ["scripts/package-source.mjs"], { cwd: repoRoot });
 stage("checkout build", "pnpm", ["run", "build"], { cwd: repoRoot });
 
 work = mkdtempSync(join(tmpdir(), "grove-source-repro-"));
