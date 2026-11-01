@@ -3,6 +3,7 @@ module Test.Main where
 import Prelude
 
 import Effect (Effect)
+import Test.Effect.GateSpec as GateSpec
 import Test.Model.CodecSpec as CodecSpec
 import Test.Model.CommandSpec as CommandSpec
 import Test.Model.DropSpec as DropSpec
@@ -41,3 +42,4 @@ main = runSpecAndExitProcess [ consoleReporter ] do
   SearchSpec.spec
   ShortcutsSpec.spec
   UndoSpec.spec
+  GateSpec.spec

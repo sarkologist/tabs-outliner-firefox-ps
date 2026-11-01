@@ -397,8 +397,8 @@ requestView reveal = attemptView reveal Nothing 20
 requestViewTarget :: forall o. NodeId -> H.HalogenM State Action () o Aff Unit
 requestViewTarget nid = attemptView false (Just nid) 20
 
--- | Fetch the window; on failure (a suspended background still waking up, a flaky
--- | wake-delivery) retry a bounded number of times. The retry is *forked* so it
+-- | Fetch the window; on failure (no background loaded yet to hold the request, a
+-- | flaky wake-delivery) retry a bounded number of times. The retry is *forked* so it
 -- | never blocks the action queue, and each attempt re-reads state so it always
 -- | fetches the current window. The background's post-boot ping is the primary
 -- | recovery path; this is the belt-and-suspenders.
@@ -542,6 +542,10 @@ revealRowIndex idx = do
 sendCommand :: forall o. Command -> H.HalogenM State Action () o Aff Unit
 sendCommand = sendRequest <<< RunCommand
 
+-- | Commands are sent once, never retried (unlike `attemptView`): a retried
+-- | restore would open its windows twice. A command that wakes a suspended
+-- | background is held there until boot finishes, not lost — see `serveGate`
+-- | (a background that has not loaded at all still has no receiver).
 sendCommandAck :: forall o. Command -> H.HalogenM State Action () o Aff CommandAck
 sendCommandAck cmd = do
   st <- H.get
