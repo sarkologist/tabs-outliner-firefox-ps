@@ -51,12 +51,19 @@ jobs:
           path: test-results/
           retention-days: 7
 
-  # The AMO source zip must rebuild the shipped dist/ (scripts/check-source-repro.mjs).
+  # The AMO source zip must rebuild the shipped dist/ (scripts/check-source-repro.mjs),
+  # on Linux (a likely reviewer box) and macOS (where releases are built).
   source-repro:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      # The script rebuilds under os.tmpdir(); keep it where a failure upload can see it.
+      TMPDIR: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v7
 
@@ -70,3 +77,28 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - run: pnpm run check:source
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-digests-${{ matrix.os }}
+          path: web-ext-artifacts/dist-digests.json
+
+      - name: Upload both dist/ trees
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: source-repro-${{ matrix.os }}
+          path: |
+            dist/
+            ${{ runner.temp }}/grove-source-repro-*/grove-source/dist/
+          retention-days: 7
+
+  # A reviewer on Linux must get the same bytes as an XPI built on macOS.
+  source-repro-cross-os:
+    needs: source-repro
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-digests-*
+      - run: diff dist-digests-ubuntu-latest/dist-digests.json dist-digests-macos-latest/dist-digests.json

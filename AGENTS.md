@@ -40,9 +40,10 @@ Mozilla's reviewers.
 
 A second CI job, `source-repro` (`pnpm run check:source`), unpacks that source
 zip, follows the reviewer build recipe in `docs/reviewer-notes.md`, and fails
-unless the rebuilt `dist/` is byte-identical to the checkout's. It needs a clean
-tree and network, so it is not part of `pnpm check`; run it locally after
-touching the build, `.gitattributes`, or the reviewer recipe.
+unless the rebuilt `dist/` is byte-identical to the checkout's. It runs on Linux
+and macOS, and `source-repro-cross-os` requires the two builds to match. It
+needs a clean tree and network, so it is not part of `pnpm check`; run it
+locally after touching the build, `.gitattributes`, or the reviewer recipe.
 
 The project has a strict **no-manual-testing** contract: the whole suite is
 deterministic and headless. Add unit + e2e coverage for new behavior rather than
