@@ -251,6 +251,37 @@ test.describe("sidebar view", () => {
     await expect(videoRows.locator(".favicon use")).toHaveCount(0);
   });
 
+  // Most of a saved tree has no icon of its own (saved before capture existed, or
+  // imported); a row borrows one its origin already holds — bytes, so no request.
+  test("an icon-less saved row borrows its origin's captured icon", async ({ page }) => {
+    const ICON = noisePng(16);
+    const tabs = [
+      record({ id: "t0", parent: "g", title: "Seen video", url: "https://video.example/watch?v=0", favIconUrl: ICON, closedAt: 0 }),
+      ...Array.from({ length: 5 }, (_, i) =>
+        record({ id: `t${i + 1}`, parent: "g", title: `Unseen video ${i + 1}`, url: `https://video.example/watch?v=${i + 1}`, closedAt: 0 })
+      ),
+      record({ id: "o", parent: "g", title: "Other site", url: "https://other.example/", closedAt: 0 }),
+    ];
+    await bootBackgroundAndSidebar(
+      page,
+      { windows: [] },
+      {
+        persisted: {
+          nodes: [record({ id: "g", kind: "group", title: "Saved", children: tabs.map((t) => t.id) }), ...tabs],
+          roots: ["g"],
+        },
+      }
+    );
+    const requests = recordRequests(page);
+    const unseen = page.locator(".row").filter({ hasText: "Unseen video" });
+    await expect(unseen).toHaveCount(5);
+    await expect(unseen.locator(".favicon-img")).toHaveCount(5);
+    for (const img of await unseen.locator(".favicon-img").all()) await expect(img).toHaveAttribute("src", ICON);
+    const other = page.locator(".row").filter({ hasText: "Other site" });
+    await expect(other.locator(".favicon use")).toHaveAttribute("href", "#icon-globe");
+    expect(requests.map((r) => r.url())).toEqual([]);
+  });
+
   // Stored icons ---------------------------------------------------------------
   // A closed row is a page the user is not on: drawing it must not talk to that
   // site. It draws the bytes captured while the tab was live, or a glyph.

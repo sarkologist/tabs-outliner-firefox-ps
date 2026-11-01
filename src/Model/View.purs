@@ -7,7 +7,9 @@ module Model.View
   , View
   , ViewStats
   , OrderEntry
+  , OriginIcons
   , computeOrder
+  , originIcons
   , sliceView
   , startForView
   , focusIndexOf
@@ -35,7 +37,7 @@ import Data.String (length, stripPrefix, take) as String
 import Data.String.Pattern (Pattern(..))
 import Data.Traversable (mapAccumL)
 import Model.Codec (kindStr, parseKind)
-import Model.Favicon (isIconBytes)
+import Model.Favicon (isIconBytes, origin)
 import Model.Search (matchesSearch, normalizeSearchQuery)
 import Model.Scroll (activeTabInWindow)
 import Model.Tree (Entry, searchVisible, visible)
@@ -107,9 +109,38 @@ withSubtreeEnds entries =
       , ends: foldl (\m s -> Map.insert s.idx i m) acc.ends r.init
       }
 
+-- Sharing a site's icon ------------------------------------------------------
+--
+-- Icons are captured per tab, while it is live, so most of a saved tree has none:
+-- rows saved before capture existed, or imported, or closed before their page
+-- reported one. A row without an icon of its own borrows one its origin already
+-- has: bytes the tree holds, so drawing it still makes no request (`Model.Favicon`).
+-- Per origin, not per host or page, because that is what a site's fallback
+-- `/favicon.ico` is scoped to; a page that declares its own (Docs vs Sheets on one
+-- host) can borrow a sibling's until its own tab is seen. Every stored icon votes,
+-- an imported node's too, so a crafted file could pick the icon an origin's other
+-- rows borrow: cosmetic only, since what it can lend is bytes, never a request.
+
+-- | Each origin's shared icon: the stored bytes most of its tabs carry (so a
+-- | one-off variant, an unread badge, loses to the site's usual icon), ties going
+-- | to the smaller. O(nodes); the background caches it per model version.
+type OriginIcons = Map.Map String String
+
+originIcons :: Model -> OriginIcons
+originIcons model = Map.mapMaybe pick (foldl tally Map.empty model.nodes)
+  where
+  tally acc n = case n.kind, n.url >>= origin, n.favIconUrl of
+    KTab, Just o, Just u | isIconBytes u && String.length u <= faviconByteLimit ->
+      Map.alter (Just <<< Map.insertWith (+) u 1 <<< fromMaybe Map.empty) o acc
+    _, _, _ -> acc
+  pick counts = _.icon <$> foldlWithIndex better Nothing counts
+  better u best c = case best of
+    Just b | b.count > c || (b.count == c && String.length b.icon <= String.length u) -> best
+    _ -> Just { icon: u, count: c }
+
 -- | Project the rows in window `[start, start+count)` of an already-computed order.
-sliceView :: Model -> String -> Array OrderEntry -> Int -> Int -> Array ViewRow
-sliceView model query order start count =
+sliceView :: Model -> OriginIcons -> String -> Array OrderEntry -> Int -> Int -> Array ViewRow
+sliceView model icons query order start count =
   let
     total = Array.length order
     -- clamp to the last legal window, so a start past a shrunk order (collapse/
@@ -117,9 +148,10 @@ sliceView model query order start count =
     s = clamp 0 (max 0 (total - count)) start
     lastRoot = Array.last model.roots
     window = Array.slice s (s + count) order
+    rows = Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model query lastRoot (s + off) oe) window)
+    lend r = if r.kind == KTab then r.url >>= origin >>= flip Map.lookup icons else Nothing
   in
-    budgetFavicons
-      (Array.catMaybes (Array.mapWithIndex (\off oe -> toRow model query lastRoot (s + off) oe) window))
+    budgetFavicons (map (\r -> { row: r, borrowed: lend r }) rows)
 
 -- | Resolve the start row for a view request. A target-centered request wins
 -- | over the caller's scroll start when the target exists in the current order.
@@ -186,17 +218,24 @@ clampUrl u = if String.length u <= urlByteLimit then u else String.take urlByteL
 
 -- | Spend `faviconWindowByteBudget` left to right over a projected window's
 -- | distinct icons: an icon already admitted rides free, and rows whose icon did
--- | not fit keep everything but it.
-budgetFavicons :: Array ViewRow -> Array ViewRow
-budgetFavicons rows = (mapAccumL spend { left: faviconWindowByteBudget, admitted: Set.empty } rows).value
+-- | not fit keep everything but it. Rows' own icons are paid for first; a row left
+-- | without one then borrows its origin's (`borrowed`) from what remains, so a
+-- | borrowed icon never costs a real one its place.
+budgetFavicons :: Array { row :: ViewRow, borrowed :: Maybe String } -> Array ViewRow
+budgetFavicons entries =
+  let
+    own = mapAccumL (\acc e -> spend acc e e.row.favIconUrl) { left: faviconWindowByteBudget, admitted: Set.empty } entries
+    lent = mapAccumL (\acc e -> if isJust e.row.favIconUrl then { accum: acc, value: e } else spend acc e e.borrowed) own.accum own.value
+  in
+    map _.row lent.value
   where
-  spend acc r = case r.favIconUrl of
+  spend acc e = case _ of
     Just u
-      | Set.member u acc.admitted -> { accum: acc, value: r }
+      | Set.member u acc.admitted -> { accum: acc, value: e { row = e.row { favIconUrl = Just u } } }
       | String.length u <= acc.left ->
-          { accum: { left: acc.left - String.length u, admitted: Set.insert u acc.admitted }, value: r }
-      | otherwise -> { accum: acc, value: r { favIconUrl = Nothing } }
-    Nothing -> { accum: acc, value: r }
+          { accum: { left: acc.left - String.length u, admitted: Set.insert u acc.admitted }, value: e { row = e.row { favIconUrl = Just u } } }
+      | otherwise -> { accum: acc, value: e { row = e.row { favIconUrl = Nothing } } }
+    Nothing -> { accum: acc, value: e }
 
 toRow :: Model -> String -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
 toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->

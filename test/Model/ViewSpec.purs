@@ -13,7 +13,7 @@ import Data.String (length) as String
 import Data.String.Common (joinWith) as String
 import Data.Tuple (Tuple(..))
 import Model.Types (Kind(..), Model, Node, defaultNode, emptyModel)
-import Model.View (computeOrder, decodeView, encodeView, focusIndexOf, sliceView, startForView, viewStats)
+import Model.View (computeOrder, decodeView, encodeView, focusIndexOf, originIcons, sliceView, startForView, viewStats)
 import Test.Spec (Spec, describe, it)
 import Test.Spec.Assertions (fail, shouldEqual)
 
@@ -61,6 +61,7 @@ faviconOfRow url bind =
   map _.favIconUrl
     ( sliceView
         (m { nodes = Map.insert "A" (bind ((node "A" KTab (Just "W") []) { title = "A", favIconUrl = Just url })) m.nodes })
+        Map.empty
         ""
         (computeOrder "" m)
         1
@@ -97,6 +98,20 @@ mIconsBy n iconOf = emptyModel
   where
   tabId i = "T" <> show i
 
+-- one saved group "W" of closed tabs, tab `i` at `sites[i-1]`'s url and icon
+mSites :: Array { url :: String, icon :: Maybe String } -> Model
+mSites sites = emptyModel
+  { roots = [ "W" ]
+  , nodes = Map.fromFoldable $ map (\x -> Tuple x.id x)
+      ( [ (node "W" KGroup Nothing (map tabId (Array.range 1 (Array.length sites)))) { title = "W" } ]
+          <> Array.mapWithIndex
+            (\i site -> (node (tabId (i + 1)) KTab (Just "W") []) { title = tabId (i + 1), url = Just site.url, favIconUrl = site.icon })
+            sites
+      )
+  }
+  where
+  tabId i = "T" <> show i
+
 spec :: Spec Unit
 spec = describe "Model.View" do
   it "computeOrder tags each visible entry with its subtree end" do
@@ -104,7 +119,7 @@ spec = describe "Model.View" do
       `shouldEqual` [ Tuple "W" 3, Tuple "A" 2, Tuple "B" 3, Tuple "G" 5, Tuple "C" 5 ]
 
   it "sliceView windows the order, keeping absolute indices and subtree ends" do
-    let rows = sliceView m "" (computeOrder "" m) 1 2
+    let rows = sliceView m Map.empty "" (computeOrder "" m) 1 2
     map _.id rows `shouldEqual` [ "A", "B" ]
     map _.index rows `shouldEqual` [ 1, 2 ]
     map _.subtreeEnd rows `shouldEqual` [ 2, 3 ]
@@ -112,7 +127,7 @@ spec = describe "Model.View" do
     (_.hasChildren <$> Array.head rows) `shouldEqual` Just false
 
   it "the first row carries its window/last-root flags" do
-    let rows = sliceView m "" (computeOrder "" m) 0 1
+    let rows = sliceView m Map.empty "" (computeOrder "" m) 0 1
     map _.hasChildren rows `shouldEqual` [ true ] -- W has children
     map _.isLastRoot rows `shouldEqual` [ false ] -- G is the last root
 
@@ -123,7 +138,7 @@ spec = describe "Model.View" do
     focusIndexOf 99 (computeOrder "" m) m `shouldEqual` (-1)
 
   it "marks only direct search matches, not ancestor path rows" do
-    let rows = sliceView m "c" (computeOrder "c" m) 0 2
+    let rows = sliceView m Map.empty "c" (computeOrder "c" m) 0 2
     map (\r -> Tuple r.id r.isSearchMatch) rows `shouldEqual` [ Tuple "G" false, Tuple "C" true ]
 
   it "centers a target row and clamps to the order bounds" do
@@ -147,20 +162,20 @@ spec = describe "Model.View" do
     viewStats "" stale `shouldEqual` { nodeTotal: 5, openTabTotal: 0, matchTotal: 0 }
 
   it "projects each row's url and favicon" do
-    let rows = sliceView mIcons "" (computeOrder "" mIcons) 1 1
+    let rows = sliceView mIcons Map.empty "" (computeOrder "" mIcons) 1 1
     map _.url rows `shouldEqual` [ Just "http://a/page" ]
     map _.favIconUrl rows `shouldEqual` [ Just "http://a/favicon.ico" ]
 
   it "drops a favicon too large to ride in every view window" do
     -- the url still travels (it is small, and it is the row's tooltip); the row
     -- falls back to its kind glyph instead of carrying ~5 KB of base64
-    let rows = sliceView mIcons "" (computeOrder "" mIcons) 2 1
+    let rows = sliceView mIcons Map.empty "" (computeOrder "" mIcons) 2 1
     map _.url rows `shouldEqual` [ Just "http://b/page" ]
     map _.favIconUrl rows `shouldEqual` [ Nothing ]
 
   it "keeps a favicon at the per-icon limit and drops the one past it" do
     let
-      one m' = sliceView m' "" (computeOrder "" m') 1 1
+      one m' = sliceView m' Map.empty "" (computeOrder "" m') 1 1
       with url = m { nodes = Map.insert "A" ((node "A" KTab (Just "W") []) { title = "A", favIconUrl = Just url }) m.nodes }
     map _.favIconUrl (one (with (favicon 16384))) `shouldEqual` [ Just (favicon 16384) ]
     map _.favIconUrl (one (with (favicon 16385))) `shouldEqual` [ Nothing ]
@@ -194,6 +209,7 @@ spec = describe "Model.View" do
         map _.favIconUrl
           ( sliceView
               (m { nodes = Map.update (\w -> Just (w { favIconUrl = Just url })) "W" m.nodes })
+              Map.empty
               ""
               (computeOrder "" m)
               0
@@ -205,7 +221,7 @@ spec = describe "Model.View" do
   it "spends a favicon budget across the whole window, not per row" do
     let
       big = mManyIcons 200
-      rows = sliceView big "" (computeOrder "" big) 1 200
+      rows = sliceView big Map.empty "" (computeOrder "" big) 1 200
       withIcons = Array.length (Array.filter (\r -> r.favIconUrl /= Nothing) rows)
     -- 131072 / 16384 = 8 rows keep their icon; the rest fall back to a glyph but
     -- are otherwise intact, so the reply stays bounded however tall the viewport
@@ -218,7 +234,7 @@ spec = describe "Model.View" do
       -- a column of YouTube rows is one icon over and over: per-row charging let
       -- ~40 copies of it spend the budget and blanked every row below them
       same = mIconsBy 200 (const (favicon 16384))
-      rows = sliceView same "" (computeOrder "" same) 1 200
+      rows = sliceView same Map.empty "" (computeOrder "" same) 1 200
     Array.length (Array.filter (\r -> r.favIconUrl == Just (favicon 16384)) rows) `shouldEqual` 200
 
   it "lets a repeat of an admitted icon ride free once the budget is spent" do
@@ -226,7 +242,7 @@ spec = describe "Model.View" do
       -- eight distinct 16 KB icons spend all 131072; row 9 repeats one of them
       -- (free), row 10 is a ninth distinct one (dropped)
       mixed = mIconsBy 10 (\i -> if i == 9 then distinctFavicon 1 16384 else distinctFavicon i 16384)
-      rows = sliceView mixed "" (computeOrder "" mixed) 1 10
+      rows = sliceView mixed Map.empty "" (computeOrder "" mixed) 1 10
     map (\r -> r.favIconUrl /= Nothing) rows `shouldEqual` (Array.replicate 9 true <> [ false ])
 
   it "points each row at its own icon in the wire table" do
@@ -236,7 +252,7 @@ spec = describe "Model.View" do
       dropped = hugeFavicon -- past the per-icon cap: never rendered
       icons = [ Just a, Just dropped, Just b, Just a, Nothing, Just b ]
       model = mIconsBy 6 (\i -> fromMaybe "" (join (Array.index icons (i - 1))))
-      rows = sliceView model "" (computeOrder "" model) 1 6
+      rows = sliceView model Map.empty "" (computeOrder "" model) 1 6
       view = { total: 7, rows, focusIndex: -1, serverMs: 0.0, nodeTotal: 7, openTabTotal: 0, matchTotal: 0 }
       wire = encodeView view
       wireShape = decodeJson wire :: Either _ { icons :: Array String, rows :: Array { icon :: Maybe Int } }
@@ -249,7 +265,7 @@ spec = describe "Model.View" do
   it "sends a repeated icon over the wire once" do
     let
       same = mIconsBy 50 (const (favicon 4096))
-      rows = sliceView same "" (computeOrder "" same) 1 50
+      rows = sliceView same Map.empty "" (computeOrder "" same) 1 50
       view = { total: 51, rows, focusIndex: -1, serverMs: 0.0, nodeTotal: 51, openTabTotal: 0, matchTotal: 0 }
       wire = encodeView view
       bare = encodeView view { rows = map (_ { favIconUrl = Nothing }) rows }
@@ -260,15 +276,108 @@ spec = describe "Model.View" do
       Right decoded -> map _.favIconUrl decoded.rows `shouldEqual` Array.replicate 50 (Just (favicon 4096))
       Left err -> fail err
 
+  it "lends an icon-less tab its origin's stored icon" do
+    let
+      yt = distinctFavicon 1 3450
+      -- T1 carries YouTube's icon; T2 (same origin, none captured) borrows it,
+      -- T3 (another origin) and T4 (http, not https) do not
+      model = mSites
+        [ { url: "https://www.youtube.com/watch?v=1", icon: Just yt }
+        , { url: "https://www.youtube.com/watch?v=2", icon: Nothing }
+        , { url: "https://example.com/", icon: Nothing }
+        , { url: "http://www.youtube.com/watch?v=3", icon: Nothing }
+        ]
+      rows = sliceView model (originIcons model) "" (computeOrder "" model) 0 5
+    map _.favIconUrl rows `shouldEqual` [ Nothing, Just yt, Just yt, Nothing, Nothing ]
+
+  it "keeps a tab's own icon over its origin's" do
+    let
+      a = distinctFavicon 1 100
+      b = distinctFavicon 2 100
+      model = mSites [ { url: "https://a.example/1", icon: Just a }, { url: "https://a.example/1", icon: Just a }, { url: "https://a.example/2", icon: Just b } ]
+      rows = sliceView model (originIcons model) "" (computeOrder "" model) 1 3
+    map _.favIconUrl rows `shouldEqual` [ Just a, Just a, Just b ]
+
+  it "shares the icon most of an origin's tabs carry, ties to the smaller" do
+    let
+      usual = distinctFavicon 1 3450
+      badge = distinctFavicon 2 666 -- an unread-count variant, on one tab
+      small = distinctFavicon 3 500
+      big = distinctFavicon 4 900
+      shared sites = Map.lookup "https://a.example" (originIcons (mSites sites))
+    shared
+      [ { url: "https://a.example/1", icon: Just usual }
+      , { url: "https://a.example/2", icon: Just badge }
+      , { url: "https://a.example/3", icon: Just usual }
+      ] `shouldEqual` Just usual
+    shared [ { url: "https://a.example/1", icon: Just big }, { url: "https://a.example/2", icon: Just small } ]
+      `shouldEqual` Just small
+
+  it "breaks an equal tie the same way every time" do
+    let
+      x = distinctFavicon 1 500
+      y = distinctFavicon 2 500
+      shared sites = Map.lookup "https://a.example" (originIcons (mSites sites))
+    shared [ { url: "https://a.example/1", icon: Just x }, { url: "https://a.example/2", icon: Just y } ]
+      `shouldEqual` shared [ { url: "https://a.example/2", icon: Just y }, { url: "https://a.example/1", icon: Just x } ]
+
+  it "keeps a live tab's own icon url over its origin's bytes" do
+    let
+      yt = distinctFavicon 1 100
+      model = mSites [ { url: "https://a.example/1", icon: Just yt }, { url: "https://a.example/2", icon: Just "https://a.example/own.png" } ]
+      -- T2 is live: the url its page reports is its own icon
+      live = model { nodes = Map.update (\n -> Just (n { tabId = Just 7 })) "T2" model.nodes }
+      rows = sliceView live (originIcons live) "" (computeOrder "" live) 2 1
+    map _.favIconUrl rows `shouldEqual` [ Just "https://a.example/own.png" ]
+
+  it "lends a saved row its origin's bytes in place of an icon url it cannot draw" do
+    let
+      yt = distinctFavicon 1 100
+      -- T2 is closed and holds an old icon url: never drawn (it would be a request),
+      -- so it borrows like a row with nothing
+      model = mSites [ { url: "https://a.example/1", icon: Just yt }, { url: "https://a.example/2", icon: Just "https://a.example/favicon.ico" } ]
+      rows = sliceView model (originIcons model) "" (computeOrder "" model) 2 1
+    map _.favIconUrl rows `shouldEqual` [ Just yt ]
+
+  it "pays for rows' own icons before lending any" do
+    let
+      -- T1..T8: eight origins, each with its own 16 KB icon (outside the window);
+      -- T9..T16 borrow them; T17 has an icon of its own. In the window T9..T17 the
+      -- budget (8 x 16 KB) goes to T17's own icon first, then 7 of the 8 lent ones.
+      site i icon = { url: "https://o" <> show i <> ".example/", icon }
+      model = mSites
+        ( map (\i -> site i (Just (distinctFavicon i 16384))) (Array.range 1 8)
+            <> map (\i -> site i Nothing) (Array.range 1 8)
+            <> [ site 9 (Just (distinctFavicon 9 16384)) ]
+        )
+      rows = sliceView model (originIcons model) "" (computeOrder "" model) 9 9
+    (Array.last rows >>= _.favIconUrl) `shouldEqual` Just (distinctFavicon 9 16384)
+    Array.length (Array.filter (\r -> r.favIconUrl /= Nothing) rows) `shouldEqual` 8
+
+  it "shares only stored bytes, never an icon url" do
+    let
+      -- a live tab may draw the url its page reports, but lending that url to a
+      -- closed row would be a request to the site the user is not on
+      model = mSites [ { url: "https://a.example/1", icon: Just "https://a.example/favicon.ico" } ]
+    originIcons model `shouldEqual` Map.empty
+
+  it "never lends a window or group an icon" do
+    let
+      yt = distinctFavicon 1 100
+      model = mSites [ { url: "https://a.example/1", icon: Just yt } ]
+      withGroupUrl = model { nodes = Map.update (\w -> Just (w { url = Just "https://a.example/" })) "W" model.nodes }
+      rows = sliceView withGroupUrl (originIcons withGroupUrl) "" (computeOrder "" withGroupUrl) 0 1
+    map _.favIconUrl rows `shouldEqual` [ Nothing ]
+
   it "clamps a url to a length a tooltip can use" do
     let
       long = "http://a/?q=" <> String.joinWith "" (Array.replicate 4000 "x")
-      rows = sliceView (m { nodes = Map.insert "A" ((node "A" KTab (Just "W") []) { title = "A", url = Just long }) m.nodes }) "" (computeOrder "" m) 1 1
+      rows = sliceView (m { nodes = Map.insert "A" ((node "A" KTab (Just "W") []) { title = "A", url = Just long }) m.nodes }) Map.empty "" (computeOrder "" m) 1 1
     map (\r -> String.length <$> r.url) rows `shouldEqual` [ Just 2049 ] -- 2048 + the ellipsis
 
   it "round-trips a row's url and favicon on the wire" do
     let
-      rows = sliceView mIcons "" (computeOrder "" mIcons) 1 1
+      rows = sliceView mIcons Map.empty "" (computeOrder "" mIcons) 1 1
       view = { total: 5, rows, focusIndex: 1, serverMs: 0.0, nodeTotal: 5, openTabTotal: 1, matchTotal: 0 }
     case decodeView (encodeView view) of
       Right decoded ->
@@ -286,7 +395,7 @@ spec = describe "Model.View" do
 
   it "round-trips view stats on the wire" do
     let
-      rows = sliceView m "" (computeOrder "" m) 0 1
+      rows = sliceView m Map.empty "" (computeOrder "" m) 0 1
       view = { total: 5, rows, focusIndex: 1, serverMs: 2.0, nodeTotal: 5, openTabTotal: 1, matchTotal: 0 }
     case decodeView (encodeView view) of
       Right decoded ->

@@ -37,7 +37,7 @@ import Model.Rematch (rematchOnStartup)
 import Model.Tree (mergePatch)
 import Model.Types (Model, Patch)
 import Model.Undo (applyEntry, inversePatch, undoable)
-import Model.View (OrderEntry, computeOrder, encodeView, focusIndexOf, sliceView, startForView, viewStats)
+import Model.View (OrderEntry, OriginIcons, computeOrder, encodeView, focusIndexOf, originIcons, sliceView, startForView, viewStats)
 
 nowMs :: Effect Number
 nowMs = (unwrap <<< unInstant) <$> now
@@ -151,6 +151,9 @@ boot serveGate = do
   -- the last (version, query), so scrolling (same query, no edits) is O(window).
   versionRef <- liftEffect (Ref.new 0)
   viewRef <- liftEffect (Ref.new { version: (-1), query: "", order: ([] :: Array OrderEntry) })
+  -- each origin's shared icon (`Model.View.originIcons`), memoized per version:
+  -- O(N) like the order, but independent of the query
+  iconsRef <- liftEffect (Ref.new { version: (-1), icons: (Map.empty :: OriginIcons) })
   -- persist the re-match for durability; open sidebars hear about it from the
   -- post-boot ping below.
   unless (isEmptyPatch bootPatch) (Persist.writePatch db bootPatch)
@@ -334,6 +337,13 @@ boot serveGate = do
             let o = computeOrder vr.query m
             liftEffect (Ref.write { version: v, query: vr.query, order: o } viewRef)
             pure o
+        iconCache <- liftEffect (Ref.read iconsRef)
+        icons <-
+          if iconCache.version == v then pure iconCache.icons
+          else do
+            let i = originIcons m
+            liftEffect (Ref.write { version: v, icons: i } iconsRef)
+            pure i
         let
           total = Array.length order
           -- `tail` (the open default) asks for the last window without the sidebar
@@ -342,7 +352,7 @@ boot serveGate = do
           focusIndex = case vr.myWindow of
             Just w | vr.wantFocus -> focusIndexOf w order m
             _ -> -1
-          rows = sliceView m vr.query order start vr.count
+          rows = sliceView m icons vr.query order start vr.count
           stats = viewStats vr.query m
         ts1 <- liftEffect Profile.nowMs
         pure (encodeView
