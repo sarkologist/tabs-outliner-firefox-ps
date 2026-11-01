@@ -103,13 +103,19 @@ Captions, as on the listing:
 
 ## Before you upload
 
-- Version is `1.1.0` (`public/manifest.json` and `package.json`). **AMO never lets a version number be reused**, so bump it for every future upload.
+- Version is `1.1.1` (`public/manifest.json` and `package.json`). **AMO never lets a version number be reused**, so bump it for every future upload.
 - Build the package: `pnpm run package` → `web-ext-artifacts/*.zip`.
 - Because the bundle is compiled + minified, you must also submit source: see [`reviewer-notes.md`](reviewer-notes.md) and run `pnpm run package:source`.
 
 ## Version notes
 
 Paste into the upload's "Release notes" field.
+
+### 1.1.1
+
+- Saved rows with no icon of their own now show their site's icon, borrowed from other tabs of the same site (still from local bytes, no network request).
+- Fixed: in a long list of one site's tabs, rows past the first few dozen lost their icon.
+- Fixed: after Firefox had been idle, the first click in the sidebar could be ignored (e.g. restoring a saved window took two clicks).
 
 ### 1.1.0
 

@@ -26,15 +26,19 @@ module Model.Favicon
   , mergeReported
   , storedBytes
   , sameSite
+  , origin
   , importedIcon
   , reportedIcon
   ) where
 
 import Prelude
 
+import Control.Alt ((<|>))
+import Control.Alternative (guard)
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
-import Data.String (codePointFromChar, drop, indexOf, length, stripPrefix, takeWhile) as String
+import Data.String (codePointFromChar, drop, indexOf, length, stripPrefix, stripSuffix, take, takeWhile, toLower) as String
 import Data.String.Pattern (Pattern(..))
+import Data.Tuple (Tuple(..))
 import Model.Event (BrowserEvent(..))
 
 -- | The most a node may keep, in characters of its `data:` url. A 32px PNG — what
@@ -95,6 +99,23 @@ sameSite a b = map host a == map host b
   host u = String.takeWhile (\c -> c /= String.codePointFromChar '/' && c /= String.codePointFromChar '?' && c /= String.codePointFromChar '#')
     (fromMaybe u (afterScheme u))
   afterScheme u = map (\i -> String.drop (i + 3) u) (String.indexOf (Pattern "://") u)
+
+-- | A web page url's origin (scheme, host, port), lowercased, with a scheme's
+-- | default port dropped: the scope a site's fallback `/favicon.ico` lives in, so
+-- | the unit `Model.View` shares a captured icon across. Nothing for anything but
+-- | http(s) — no site, no shared icon. Reads only the url's head (a host is at
+-- | most 253 characters; a url can run to tens of KB).
+origin :: String -> Maybe String
+origin u = do
+  let lower = String.toLower (String.take 300 u)
+  Tuple scheme rest <- after "https://" lower <|> after "http://" lower
+  let
+    authority = String.takeWhile (\c -> c /= String.codePointFromChar '/' && c /= String.codePointFromChar '?' && c /= String.codePointFromChar '#') rest
+    host = fromMaybe authority (String.stripSuffix (Pattern (if scheme == "https://" then ":443" else ":80")) authority)
+  guard (host /= "")
+  pure (scheme <> host)
+  where
+  after scheme s = Tuple scheme <$> String.stripPrefix (Pattern scheme) s
 
 -- | What an imported node keeps of the icon its file claimed: storable bytes
 -- | only. A claimed url is dropped outright — an imported node is closed, so it
