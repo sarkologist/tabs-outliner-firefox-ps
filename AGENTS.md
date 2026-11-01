@@ -38,25 +38,19 @@ relying on eyeballing the result.
 
 ## Independent AI review
 
-- Prefer a reviewer that is not the agent doing the implementation. If the
-  implementing agent knows it is Codex, use Claude Code for the review instead
-  of codex-cli. Claude Code is on PATH as `claude`.
-- Run Claude Code in non-interactive plan mode, scoped to the feature commit(s);
-  tell it to inspect the diff and not modify files:
+- The reviewer must be an independent agent: a fresh session with no context
+  from the implementation, given the diff rather than the author's conclusions.
+  Which tool runs it does not matter — e.g. Claude Code (`claude` on PATH) or
+  codex-cli (`codex`), whichever is available.
+- Run it read-only, scoped to the feature commit(s); tell it to inspect the
+  diff and not modify files:
 
   ```sh
   claude -p --permission-mode plan "Review HEAD — inspect it via 'git show HEAD' \
     and read any files you need; do NOT modify files. <what to scrutinize>"
-  ```
-
-- If the implementing agent is not Codex, codex-cli is still available on PATH
-  as `codex`. Run it read-only, scoped to the feature commit(s);
-  tell it to inspect the diff and not modify files:
-
-  ```sh
+  # or
   codex exec --sandbox read-only "Review HEAD — inspect it via 'git show HEAD' \
     and read any files you need; do NOT modify files. <what to scrutinize>"
   ```
 
-- Commits that address review feedback use a suffix naming the reviewer, e.g.
-  `(claude review)` or `(codex review)`.
+- Commits that address review feedback use the suffix `(ai review)`.
