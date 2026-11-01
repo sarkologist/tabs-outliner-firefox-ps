@@ -30,6 +30,7 @@ import Data.List (List(..))
 import Data.List as List
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Set as Set
 import Data.String (length, stripPrefix, take) as String
 import Data.String.Pattern (Pattern(..))
 import Data.Traversable (mapAccumL)
@@ -135,23 +136,29 @@ startForView requested count targetNodeId order =
 
 -- Keeping the reply bounded ---------------------------------------------------
 --
--- Favicons and urls travel inline in every view window, and `data:` favicons are
--- what make a real tree heavy (4.5 MB of one 13.4 MB tree). The failure they
--- threaten is not a loud one: an over-large `runtime.sendMessage` *response*
--- resolves as `undefined` instead of rejecting, so the sidebar would simply stop
--- painting (the bug Export hit). The window is NOT ~50 rows — the full-size view
--- at minimum zoom asks for a row per 10.8px, so a tall display can ask for ~200 —
+-- Favicons and urls travel in every view window, and `data:` favicons are what
+-- make a real tree heavy (4.5 MB of one 13.4 MB tree). The failure they threaten
+-- is not a loud one: an over-large `runtime.sendMessage` *response* resolves as
+-- `undefined` instead of rejecting, so the sidebar would simply stop painting
+-- (the bug Export hit). The window is NOT ~50 rows — the full-size view at
+-- minimum zoom asks for a row per 10.8px, so a tall display can ask for ~200 —
 -- hence a budget over the whole window, not just a per-row test.
+--
+-- What the window pays for is each DISTINCT icon, once: a window is mostly a few
+-- sites over and over (a column of YouTube rows is one 3 KB icon), so the wire
+-- carries each icon once in a table the rows point into (`encodeView`), and the
+-- budget charges an icon only the first time it appears. Charging per row instead
+-- spent the whole budget on ~40 copies of one icon and blanked every row below.
 
 -- | Per icon: enough for a multi-resolution `.ico` or an SVG (what Firefox
 -- | actually hands back), past which it is not a 16px image any more.
 faviconByteLimit :: Int
 faviconByteLimit = 16384
 
--- | Per window, across all its rows: the first rows that fit keep their icon and
--- | the rest fall back to their kind glyph. Chosen so a window's favicons stay an
--- | order of magnitude below the ~1.3 MB at which a reply was seen to vanish,
--- | leaving room for the titles and urls beside them.
+-- | Per window, across its distinct icons: the first icons that fit ride along and
+-- | rows whose icon did not fit fall back to their kind glyph. Chosen so a window's
+-- | favicons stay an order of magnitude below the ~1.3 MB at which a reply was seen
+-- | to vanish, leaving room for the titles and urls beside them.
 faviconWindowByteBudget :: Int
 faviconWindowByteBudget = 131072
 
@@ -177,16 +184,19 @@ renderableFavicon liveTab u
 clampUrl :: String -> String
 clampUrl u = if String.length u <= urlByteLimit then u else String.take urlByteLimit u <> "\x2026"
 
--- | Spend `faviconWindowByteBudget` left to right over a projected window: rows
--- | past it keep everything but their icon.
+-- | Spend `faviconWindowByteBudget` left to right over a projected window's
+-- | distinct icons: an icon already admitted rides free, and rows whose icon did
+-- | not fit keep everything but it.
 budgetFavicons :: Array ViewRow -> Array ViewRow
-budgetFavicons rows = (mapAccumL spend faviconWindowByteBudget rows).value
+budgetFavicons rows = (mapAccumL spend { left: faviconWindowByteBudget, admitted: Set.empty } rows).value
   where
-  spend left r = case r.favIconUrl of
+  spend acc r = case r.favIconUrl of
     Just u
-      | String.length u <= left -> { accum: left - String.length u, value: r }
-      | otherwise -> { accum: left, value: r { favIconUrl = Nothing } }
-    Nothing -> { accum: left, value: r }
+      | Set.member u acc.admitted -> { accum: acc, value: r }
+      | String.length u <= acc.left ->
+          { accum: { left: acc.left - String.length u, admitted: Set.insert u acc.admitted }, value: r }
+      | otherwise -> { accum: acc, value: r { favIconUrl = Nothing } }
+    Nothing -> { accum: acc, value: r }
 
 toRow :: Model -> String -> Maybe NodeId -> Int -> OrderEntry -> Maybe ViewRow
 toRow model query lastRoot i oe = Map.lookup oe.id model.nodes <#> \n ->
@@ -246,7 +256,7 @@ type RowWire =
   , kind :: String
   , title :: String
   , url :: Maybe String
-  , favIconUrl :: Maybe String
+  , icon :: Maybe Int -- index into the view's `icons` table
   , live :: Boolean
   , active :: Boolean
   , collapsed :: Boolean
@@ -255,36 +265,58 @@ type RowWire =
   , isSearchMatch :: Maybe Boolean
   }
 
-rowToWire :: ViewRow -> RowWire
-rowToWire r =
+rowToWire :: Maybe Int -> ViewRow -> RowWire
+rowToWire icon r =
   { id: r.id, index: r.index, depth: r.depth, subtreeEnd: r.subtreeEnd, kind: kindStr r.kind
-  , title: r.title, url: r.url, favIconUrl: r.favIconUrl, live: r.live, active: r.active, collapsed: r.collapsed
+  , title: r.title, url: r.url, icon, live: r.live, active: r.active, collapsed: r.collapsed
   , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot, isSearchMatch: if r.isSearchMatch then Just true else Nothing
   }
 
-rowFromWire :: RowWire -> ViewRow
-rowFromWire r =
+rowFromWire :: Array String -> RowWire -> ViewRow
+rowFromWire icons r =
   { id: r.id, index: r.index, depth: r.depth, subtreeEnd: r.subtreeEnd, kind: parseKind r.kind
-  , title: r.title, url: r.url, favIconUrl: r.favIconUrl, live: r.live, active: r.active, collapsed: r.collapsed
+  , title: r.title, url: r.url, favIconUrl: r.icon >>= Array.index icons, live: r.live, active: r.active, collapsed: r.collapsed
   , hasChildren: r.hasChildren, isLastRoot: r.isLastRoot, isSearchMatch: r.isSearchMatch == Just true
   }
 
+-- | Each distinct icon once, in first-seen order, with every row pointing at its
+-- | slot: the reply grows with the icons in view, not the rows that repeat them.
+iconTable :: Array ViewRow -> { icons :: Array String, rows :: Array RowWire }
+iconTable rows =
+  let
+    step acc r = case r.favIconUrl of
+      Nothing -> { accum: acc, value: rowToWire Nothing r }
+      Just u -> case Map.lookup u acc.slots of
+        Just i -> { accum: acc, value: rowToWire (Just i) r }
+        Nothing ->
+          let i = Map.size acc.slots
+          in { accum: { slots: Map.insert u i acc.slots, icons: Cons u acc.icons }, value: rowToWire (Just i) r }
+    res = mapAccumL step { slots: Map.empty, icons: Nil } rows
+  in
+    { icons: Array.reverse (Array.fromFoldable res.accum.icons), rows: res.value }
+
 encodeView :: View -> Json
-encodeView v = encodeJson
-  { total: v.total
-  , rows: map rowToWire v.rows
-  , focusIndex: v.focusIndex
-  , serverMs: v.serverMs
-  , nodeTotal: v.nodeTotal
-  , openTabTotal: v.openTabTotal
-  , matchTotal: v.matchTotal
-  }
+encodeView v =
+  let
+    wire = iconTable v.rows
+  in
+    encodeJson
+      { total: v.total
+      , icons: wire.icons
+      , rows: wire.rows
+      , focusIndex: v.focusIndex
+      , serverMs: v.serverMs
+      , nodeTotal: v.nodeTotal
+      , openTabTotal: v.openTabTotal
+      , matchTotal: v.matchTotal
+      }
 
 decodeView :: Json -> Either String View
 decodeView json = do
   rec <- lmap printJsonDecodeError
     ( decodeJson json :: Either _
         { total :: Int
+        , icons :: Maybe (Array String)
         , rows :: Array RowWire
         , focusIndex :: Int
         , serverMs :: Number
@@ -295,7 +327,7 @@ decodeView json = do
     )
   pure
     { total: rec.total
-    , rows: map rowFromWire rec.rows
+    , rows: map (rowFromWire (fromMaybe [] rec.icons)) rec.rows
     , focusIndex: rec.focusIndex
     , serverMs: rec.serverMs
     , nodeTotal: fromMaybe rec.total rec.nodeTotal
