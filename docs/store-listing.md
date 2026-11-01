@@ -63,7 +63,7 @@ tab-outliner idea, rebuilt small and fast in PureScript.
 - **Tabs** — to show your tabs and windows in the outline and focus them when you click.
 - **Sessions** — to remember which outline node a tab belongs to, so a restore lands it back in place instead of creating a duplicate.
 - **Storage / Unlimited storage** — to save your tree locally with no size cap.
-- **Alarms + Downloads** — to schedule and write the automatic daily backup file. (Manual export/import needs no download permission — export is a plain file download, import is a file picker.)
+- **Alarms + Downloads** — to schedule and write the automatic daily backup file, and to write the file when you click Export. (Import needs no permission — it's a file picker.)
 
 Grove does **not** collect, transmit, or sell any data. Everything is stored
 locally in the browser (`data_collection_permissions.required = ["none"]` in the

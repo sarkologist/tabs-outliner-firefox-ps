@@ -55,17 +55,11 @@ export const closeToolbarMoreOnOutsideClick = () => {
   });
 };
 
-// Download a string as a file via a Blob URL (no downloads permission needed).
-export const downloadJson = (filename) => (content) => () => {
-  const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-};
+// NOTE: there is deliberately no sidebar-side download here. Export writes its
+// file from the BACKGROUND via `browser.downloads` (Effect.Browser
+// `downloadJsonFile`), because the payload is the whole tree and cannot survive
+// the `runtime.sendMessage` trip to this context — see Background.Main's Export
+// handler. Reintroducing a blob download here would reintroduce that bug.
 
 // Open a file picker, read the chosen file as text, and hand it to the callback.
 export const pickJson = (cb) => () => {

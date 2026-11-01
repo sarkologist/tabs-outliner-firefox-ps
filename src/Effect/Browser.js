@@ -510,16 +510,50 @@ const localDateSlug = (date) => {
 export const backupFilename = () =>
   `grove-backups/grove-${localDateSlug(new Date())}.json`;
 
-export const downloadBackupImpl = (api) => (filename) => (content) => () => {
+// Write `content` to the user's downloads as `filename`, resolving only once the
+// download actually completed (so a caller can report a failure rather than
+// assume success). Shared by the daily automatic backup and manual Export: both
+// must run in the BACKGROUND, because a whole-tree snapshot cannot be handed to
+// the sidebar over `runtime.sendMessage` — see the Export handler in
+// Background.Main. A Blob URL has no such size ceiling.
+//
+// `saveAs` null means "omit the option", leaving the save-location prompt to the
+// user's own "Always ask where to save files" setting — right for a download they
+// just asked for. The unattended backup passes false: it must never prompt.
+export const downloadJsonFileImpl = (api) => (filename) => (saveAs) => (content) => () => {
   const downloads = api && api.downloads;
-  if (!downloads || typeof downloads.download !== "function") return Promise.resolve();
-  const blob = new Blob([content], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
+  // Reject rather than resolve: both callers now report success to someone (a
+  // notice in the sidebar, a recorded backup timestamp), and "no API, so nothing
+  // happened" must not read as "written".
+  if (!downloads || typeof downloads.download !== "function") {
+    return Promise.reject(new Error("downloads API unavailable"));
+  }
+  // Never write a placeholder file. An empty or non-string payload means the
+  // snapshot never reached us, and a .json holding the seven characters
+  // "undefined" (what `new Blob([undefined])` produces, and what the old
+  // sidebar-side export shipped on a large tree) is far worse than a loud
+  // failure: it looks like a backup right up to the moment you need it.
+  if (typeof content !== "string" || content.length === 0) {
+    return Promise.reject(new Error("refusing to write an empty download: " + filename));
+  }
+  // Completion is observed through downloads.onChanged, so resolving means the
+  // bytes really landed. Without it we could only resolve when the download
+  // STARTED — which both overstates success to the caller and would revoke the
+  // Blob URL out from under an in-flight write. Firefox always exposes onChanged
+  // alongside the `downloads` permission we declare, so refuse instead of
+  // guessing.
   const changes = downloads.onChanged;
-  const canObserve =
-    changes &&
-    typeof changes.addListener === "function" &&
-    typeof changes.removeListener === "function";
+  if (
+    !changes ||
+    typeof changes.addListener !== "function" ||
+    typeof changes.removeListener !== "function"
+  ) {
+    return Promise.reject(new Error("downloads.onChanged unavailable; cannot confirm the write"));
+  }
+  const options = { url: null, filename, conflictAction: "uniquify" };
+  if (saveAs !== null && saveAs !== undefined) options.saveAs = saveAs;
+  const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+  options.url = url;
   let revoked = false;
   const revoke = () => {
     if (!revoked) {
@@ -527,14 +561,6 @@ export const downloadBackupImpl = (api) => (filename) => (content) => () => {
       URL.revokeObjectURL(url);
     }
   };
-  if (!canObserve) {
-    return Promise.resolve(
-      downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
-    ).then(() => revoke(), (err) => {
-      revoke();
-      throw err;
-    });
-  }
   return new Promise((resolve, reject) => {
     let downloadId = null;
     const pending = [];
@@ -563,7 +589,7 @@ export const downloadBackupImpl = (api) => (filename) => (content) => () => {
       }
       if (state === "interrupted") {
         const detail = delta.error && (delta.error.current || delta.error);
-        settle(reject, new Error("Automatic backup download interrupted" + (detail ? ": " + detail : "")));
+        settle(reject, new Error("download interrupted" + (detail ? ": " + detail : "")));
         return true;
       }
       return false;
@@ -572,9 +598,7 @@ export const downloadBackupImpl = (api) => (filename) => (content) => () => {
       finishFromDelta(delta);
     };
     changes.addListener(listener);
-    Promise.resolve(
-      downloads.download({ url, filename, saveAs: false, conflictAction: "uniquify" })
-    ).then((id) => {
+    Promise.resolve(downloads.download(options)).then((id) => {
       downloadId = id;
       pending.slice().some(finishFromDelta);
     }, (err) => settle(reject, err));

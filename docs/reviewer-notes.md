@@ -76,7 +76,7 @@ Static assets (`manifest.json`, the HTML/CSS, icons) are copied verbatim from
 | `sessions` | Stamp each live tab with its outline-node id so a restore re-binds to the same node. |
 | `storage`, `unlimitedStorage` | Persist the outline locally (IndexedDB) with no quota cap. |
 | `alarms` | Schedule the once-a-day automatic backup. |
-| `downloads` | Write the automatic daily backup file. (Manual JSON export uses a Blob download and needs no permission.) |
+| `downloads` | Write the automatic daily backup file, and the manual JSON export. Both are written from the background page, because the whole-tree payload is too large to hand to the sidebar over `runtime.sendMessage`. |
 
 No host permissions, no content scripts, no remote code execution.
 

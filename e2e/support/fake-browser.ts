@@ -32,6 +32,19 @@ export type Seed = {
   // Make windows.create reject (no window, no onCreated) when a url in the batch
   // contains any of these substrings — how Firefox answers a url it refuses.
   rejectWindowCreateUrlsContaining?: string[];
+  // Cap how large a runtime.sendMessage RESPONSE may be, in serialized bytes.
+  // Firefox will not deliver an arbitrarily large reply across contexts, and the
+  // way it declines is the trap: past some size the sender's promise RESOLVES
+  // WITH `undefined` instead of rejecting, so `catch`/`attempt` sees success and
+  // the caller happily uses the non-value. Measured on a real 19,451-node /
+  // 13.4 MB export, 4.5 MB of it base64 `data:` favicons. Set this in a test to
+  // hold a handler to the "never return a whole-tree payload" rule; unset (the
+  // default, so every other test is unaffected) means no ceiling.
+  //
+  // Requests are deliberately NOT capped: only the response direction was
+  // observed to fail this way, and Import — which does send a whole snapshot as a
+  // request — works on that same 13.4 MB tree.
+  messageResponseLimitBytes?: number;
 };
 
 export function installFakeBrowser(seed: Seed) {
@@ -69,6 +82,20 @@ export function installFakeBrowser(seed: Seed) {
     if (mods.some((m) => !primary.includes(m) && m !== "Shift")) return "Invalid modifier.";
     if (!fkey && !mods.some((m) => primary.includes(m))) return "Shortcut must include Ctrl, Alt, Command, or MacCtrl.";
     return null;
+  };
+
+  // Drop an over-large reply the way Firefox does: resolve with `undefined`
+  // rather than reject (see `messageResponseLimitBytes`).
+  const clampResponse = (v: any) => {
+    const limit = seed?.messageResponseLimitBytes;
+    if (typeof limit !== "number") return v;
+    let size: number;
+    try {
+      size = JSON.stringify(v ?? null).length;
+    } catch (_) {
+      return v; // not measurable; leave it alone rather than invent a failure
+    }
+    return size > limit ? undefined : v;
   };
 
   const listener = () => {
@@ -281,7 +308,7 @@ export function installFakeBrowser(seed: Seed) {
         const m = structuredClone(msg);
         for (const l of msgListeners.slice()) {
           const r = l(m, {});
-          if (r !== undefined) return Promise.resolve(r).then((v) => structuredClone(v));
+          if (r !== undefined) return Promise.resolve(r).then((v) => clampResponse(structuredClone(v)));
         }
         return Promise.reject(new Error("no receiver"));
       },
