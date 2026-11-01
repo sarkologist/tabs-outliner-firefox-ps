@@ -10,7 +10,8 @@ const PORT = 5174;
 // Playwright's Firefox (before r1564 / Firefox 158) still reads the real
 // Firefox's app-data dir, ~/Library/Application Support/Firefox, which macOS 27
 // TCC-protects: launch hangs, or exits with "Could not find profile folder".
-// An empty home dir for Cocoa's lookups sidesteps it (microsoft/playwright#42768).
+// A throwaway home dir for Cocoa's lookups sidesteps it (microsoft/playwright#42768);
+// Playwright still passes its own fresh -profile, so leftovers there don't matter.
 // Firefox's own sandboxes are untouched.
 const firefoxHome = join(tmpdir(), "grove-screenshots-firefox-home");
 mkdirSync(firefoxHome, { recursive: true });
