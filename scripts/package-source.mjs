@@ -7,13 +7,13 @@ import { mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 // The source zip must correspond to the uploaded XPI. `git archive` snapshots
-// HEAD, while `pnpm run package` builds the working tree — so a dirty tree would
-// ship a source zip a reviewer can't reproduce the XPI from. Refuse in that case.
+// HEAD, while the build reads the working tree — so a dirty tree would ship a
+// source zip a reviewer can't reproduce the XPI from. Refuse in that case.
 const dirty = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim();
 if (dirty) {
   console.error(
-    "package:source: working tree is dirty — commit or stash first so the source\n" +
-      "zip matches the XPI built by `pnpm run package`.",
+    "packaging refused: working tree is dirty — commit or stash first, so the XPI\n" +
+      "and the source zip are both built from that commit.",
   );
   process.exit(1);
 }
@@ -31,4 +31,4 @@ execFileSync(
   ],
   { stdio: "inherit" },
 );
-console.log("package:source: wrote web-ext-artifacts/grove-source.zip");
+console.log("source zip: wrote web-ext-artifacts/grove-source.zip");

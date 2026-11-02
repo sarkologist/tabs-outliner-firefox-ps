@@ -5,8 +5,8 @@ then **bundled and minified with esbuild**. Under Mozilla's
 [source-code submission policy](https://extensionworkshop.com/documentation/publish/source-code-submission/),
 that means the review requires the original source plus instructions to
 reproduce the bundle. This file is the paste-ready "Notes to reviewer" text and
-the build recipe; the source itself ships as `grove-source.zip`
-(`pnpm run package:source`).
+the build recipe; the source itself ships as `grove-source.zip`, written
+alongside the XPI by `pnpm run package`.
 
 ---
 
@@ -49,17 +49,19 @@ pnpm's `use-node-version` fetches the exact Node version.
 From a clean checkout of `grove-source.zip`:
 
 ```sh
-corepack enable            # activates the pinned pnpm
-pnpm install               # installs JS toolchain + PureScript package set
-pnpm run build             # clean dist/ -> spago build -> esbuild bundle -> copy static files
+corepack enable                 # activates the pinned pnpm
+pnpm install --frozen-lockfile  # installs the locked JS toolchain + PureScript package set
+pnpm run build                  # clean dist/ -> spago build -> esbuild bundle -> copy static files
 ```
 
-The result in `dist/` is exactly what the submitted XPI contains. Build the
-package — and the source zip (`pnpm run package:source`) — from the **same clean
-commit**; `package:source` refuses a dirty tree so the XPI and source can't drift:
+The result in `dist/` is exactly what the submitted XPI contains. CI checks this
+on every change (`pnpm run check:source`): it rebuilds from the source zip with
+these steps on Linux and on macOS and requires a byte-identical `dist/`. The XPI
+and the source zip are built together from the **same clean commit**, and the
+XPI is zipped only from a `dist/` that this rebuild has just matched:
 
 ```sh
-pnpm run package           # runs the build, then `web-ext build` over dist/
+pnpm run package           # pnpm run check:source, then `web-ext build` over the verified dist/
 ```
 
 `pnpm run check` additionally runs the full test suite (PureScript unit +
@@ -105,7 +107,7 @@ page, which needs no host permission (a `data:` image does not taint it).
 > pnpm 10.28.1 (both auto-fetched via Corepack + pnpm's use-node-version):
 >
 >     corepack enable
->     pnpm install
+>     pnpm install --frozen-lockfile
 >     pnpm run build
 >
 > The resulting `dist/` is the extension. Entry points: src/Background/Main.purs
