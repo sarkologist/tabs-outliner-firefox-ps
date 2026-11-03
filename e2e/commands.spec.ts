@@ -133,6 +133,21 @@ test.describe("commands", () => {
     await expect(page.getByText("Alpha")).toHaveCount(0);
   });
 
+  test("rename focuses the box with the whole title selected", async ({ page }) => {
+    await bootBackgroundAndSidebar(page, seed);
+    await clickAction(page, "Alpha", ".btn-rename");
+    const input = page.locator(".rename-input");
+    await expect(input).toBeFocused();
+    expect(
+      await input.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd, el.value.length]),
+    ).toEqual([0, "Alpha".length, "Alpha".length]);
+    // typing straight away replaces the title, no click or select-all needed
+    await page.keyboard.type("Fresh");
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Fresh")).toBeVisible();
+    await expect(page.getByText("Alpha")).toHaveCount(0);
+  });
+
   test("group wraps a closed tab in a saved group", async ({ page }) => {
     await bootBackgroundAndSidebar(page, seed);
     await clickAction(page, "Beta", ".btn-close");

@@ -62,6 +62,7 @@ foreign import treeViewportHeight :: Effect Number
 foreign import scrollTreeTo :: Number -> Effect Unit
 foreign import onResize :: Effect Unit -> Effect Unit
 foreign import focusSearch :: Effect Unit
+foreign import focusRenameInput :: Effect Unit
 foreign import openOptions :: Effect Unit
 foreign import isFullSizeView :: Effect Boolean
 foreign import closeToolbarMoreOnOutsideClick :: Effect Unit
@@ -272,7 +273,9 @@ handleAction = case _ of
 
   FaviconFailed u -> H.modify_ \st -> st { faviconFailed = Set.insert u st.faviconFailed }
 
-  StartRename nid text -> H.modify_ _ { editing = Just { id: nid, text }, hover = Nothing }
+  StartRename nid text -> do
+    H.modify_ _ { editing = Just { id: nid, text }, hover = Nothing }
+    H.liftEffect focusRenameInput
   EditInput text -> H.modify_ \s -> s { editing = map (_ { text = text }) s.editing }
   EditKey k
     | k == "Enter" -> handleAction CommitRename
