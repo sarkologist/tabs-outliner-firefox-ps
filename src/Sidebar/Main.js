@@ -119,6 +119,21 @@ export const focusSearch = () => {
   if (el) el.focus();
 };
 
+// Focus the rename box with its whole text selected, so typing replaces the
+// title outright and an arrow key drops to a caret for a partial edit. Halogen
+// normally renders the box before this runs; the frame retry covers the case
+// where it has not landed yet.
+export const focusRenameInput = () => {
+  const grab = () => {
+    const el = document.querySelector(".rename-input");
+    if (!el) return false;
+    el.focus();
+    el.select();
+    return true;
+  };
+  if (!grab()) requestAnimationFrame(grab);
+};
+
 // Open the extension's options page (the gear button; also reachable from
 // about:addons -> Preferences once options_ui is declared in the manifest).
 export const openOptions = () => {
