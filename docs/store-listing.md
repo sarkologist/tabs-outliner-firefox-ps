@@ -103,13 +103,17 @@ Captions, as on the listing:
 
 ## Before you upload
 
-- Version is `1.1.1` (`public/manifest.json` and `package.json`). **AMO never lets a version number be reused**, so bump it for every future upload.
+- Version is `1.1.2` (`public/manifest.json` and `package.json`). **AMO never lets a version number be reused**, so bump it for every future upload.
 - Build the package from a clean commit: `pnpm run package` → `web-ext-artifacts/grove_persistent_tab_tree_manager-<version>.zip` plus the source zip `web-ext-artifacts/grove-source.zip` (it refuses a dirty tree and runs `check:source` first, so it needs network).
 - Because the bundle is compiled + minified, you must also submit that source zip: see [`reviewer-notes.md`](reviewer-notes.md).
 
 ## Version notes
 
 Paste into the upload's "Release notes" field.
+
+### 1.1.2
+
+- Rename opens with the whole title selected, so you can type the new name straight away, or press an arrow key to edit part of it.
 
 ### 1.1.1
 
