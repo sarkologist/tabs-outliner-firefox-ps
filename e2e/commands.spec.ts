@@ -141,6 +141,11 @@ test.describe("commands", () => {
     expect(
       await input.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd, el.value.length]),
     ).toEqual([0, "Alpha".length, "Alpha".length]);
+    // the row's own Rename is hidden while its box is open: clicking it would
+    // blur-commit the edit, then reopen on the stale title
+    const ownRename = page.locator(".row.renaming .btn-rename");
+    await expect(ownRename).toHaveCount(1);
+    await expect(ownRename).toBeHidden();
     // typing straight away replaces the title, no click or select-all needed
     await page.keyboard.type("Fresh");
     await page.keyboard.press("Enter");

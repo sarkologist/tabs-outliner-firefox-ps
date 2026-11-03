@@ -651,6 +651,13 @@ body {
   pointer-events: auto;
 }
 
+/* The focused rename box shows its row's actions (focus-within). Its own Rename
+   would blur-commit the edit and then reopen it on the not-yet-updated title,
+   which the next commit would write back; hide it, keeping its slot. */
+.row.renaming .node-actions .btn-rename {
+  visibility: hidden;
+}
+
 .row .node-actions button {
   box-sizing: border-box;
   display: inline-flex;

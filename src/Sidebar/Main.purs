@@ -791,7 +791,7 @@ noticeBanner = case _ of
 renderRow :: String -> Boolean -> Maybe Cut -> Maybe NodeId -> Maybe Editing -> Set String -> Guide -> Int -> Number -> ViewRow -> H.ComponentHTML Action () Aff
 renderRow query dragging cut showInTreeFlash editing faviconFailed guide wi rowH r =
   HH.div
-    [ HP.classes (map ClassName (rowClasses dragging cut showInTreeFlash r))
+    [ HP.classes (map ClassName (rowClasses dragging (map _.id editing == Just r.id) cut showInTreeFlash r))
     , HP.attr (AttrName "data-node-id") r.id
     , HP.attr (AttrName "data-status") (statusClass r)
     , HP.attr (AttrName "role") "treeitem"
@@ -809,11 +809,12 @@ renderRow query dragging cut showInTreeFlash editing faviconFailed guide wi rowH
     ]
     [ toggleEl r, faviconEl faviconFailed r, body query editing r, actionsEl query cut r, guideLayer guide wi ]
 
-rowClasses :: Boolean -> Maybe Cut -> Maybe NodeId -> ViewRow -> Array String
-rowClasses dragging cut showInTreeFlash r =
+rowClasses :: Boolean -> Boolean -> Maybe Cut -> Maybe NodeId -> ViewRow -> Array String
+rowClasses dragging renaming cut showInTreeFlash r =
   [ "row", statusClass r, kindClass r ]
     <> (if r.active && r.live then [ "active" ] else [])
     <> (if dragging then [ "dragging" ] else [])
+    <> (if renaming then [ "renaming" ] else [])
     <> (if maybe false (\c -> cutContainsRow c r) cut then [ "cut" ] else [])
     <> (if showInTreeFlash == Just r.id then [ "show-in-tree-flash" ] else [])
 
